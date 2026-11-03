@@ -1,0 +1,41 @@
+# Build products, downloaded binaries and installers
+build/
+dist/
+*.exe
+*.apk
+*.tgz
+*.zip
+*.dll
+*.pdb
+# Gradle and local machine configuration
+android/.gradle/
+android/.kotlin/
+android/**/build/
+android/local.properties
+.idea/
+.vscode/
+# Runtime data, credentials and private keys
+.env
+.env.*
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.key
+*.pem
+*.p12
+*.pfx
+config.json
+hub.json
+run.json
+# Scratch, logs, backups and generated release metadata
+*.log
+*.out
+*.tmp
+repair-backup-*/
+*-backup-*/
+.publish-*.json
+publish-preflight.json
+npm-*-dryrun.json
+quick-*.txt
+quick-*.cmd
