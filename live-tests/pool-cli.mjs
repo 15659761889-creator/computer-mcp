@@ -1,23 +1,24 @@
 // Calls the local hub's pool tools over MCP for an AI that only has a shell.
 // The session token is kept in a private state file and never printed.
-// usage: node pool-cli.mjs <name> join|read|post|ack '<json args>'
+// usage: node pool-cli.mjs <name> join|topic|read|wait|post|ack '<json args>'   (or - to read the JSON from stdin)
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 const [, , name, action, json = '{}'] = process.argv;
-const tools = { join: 'pool_join', read: 'pool_read', post: 'pool_post', ack: 'pool_ack' };
+const tools = { join: 'pool_join', topic: 'pool_topic', read: 'pool_read', wait: 'pool_wait', post: 'pool_post', ack: 'pool_ack' };
 if (!/^[a-z0-9-]+$/i.test(name || '') || !tools[action]) {
-  console.error("usage: node pool-cli.mjs <name> join|read|post|ack '<json args>'");
+  console.error("usage: node pool-cli.mjs <name> join|topic|read|wait|post|ack '<json args>' (or - to read the JSON from stdin)");
   process.exit(2);
 }
 const home = process.env.COMPUTER_MCP_HOME || path.join(process.env.APPDATA || os.homedir(), 'computer-mcp');
 const config = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'));
 const stateFile = path.join(os.tmpdir(), `pool-cli-${name}.json`);
 const saved = fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, 'utf8')) : null;
-const args = JSON.parse(json);
+// Reading from stdin avoids shell quoting trouble with apostrophes in the text.
+const args = JSON.parse(json === '-' ? fs.readFileSync(0, 'utf8') : json);
 if (action !== 'join') {
-  if (!saved) { console.error('join first'); process.exit(2); }
+  if (!saved) { console.error(`join first: node pool-cli.mjs ${name} join '{"agent":"<your name>","conversation":"<chat name>"}'`); process.exit(2); }
   Object.assign(args, { session_id: saved.session_id, session_token: saved.session_token });
 }
 const res = await fetch(`http://127.0.0.1:${config.port}/t/${config.token}/mcp`, {

@@ -31,7 +31,7 @@ foreach($f in @("NODE_LICENSE.txt","CLOUDFLARED_LICENSE.txt")) {
   if(-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $f))) {throw "Missing license: $f"}
 }
 $package = Get-Content -Raw -LiteralPath (Join-Path $root "package.json") | ConvertFrom-Json
-if($package.version -ne "0.4.4") {throw "Installer metadata expects Computer MCP package version 0.4.4."}
+if($package.version -ne "0.4.5") {throw "Installer metadata expects Computer MCP package version 0.4.5."}
 if(Test-Path -LiteralPath $app) { Remove-Item -LiteralPath $app -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stage,$app,$runtime,$licenses | Out-Null
 $compiler = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
@@ -59,7 +59,7 @@ if($LASTEXITCODE -ne 0) {throw "Bundled Cloudflare binary smoke test failed."}
 Write-Output "Building the installer..."
 & $iscc "/Q" (Join-Path $PSScriptRoot "ComputerMCP-Verified.iss")
 if($LASTEXITCODE -ne 0) {throw "Inno Setup compilation failed."}
-$target = Join-Path $root "dist\ComputerMCP-Setup-0.4.4-Windows-x64.exe"
+$target = Join-Path $root "dist\ComputerMCP-Setup-0.4.5-Windows-x64.exe"
 if(-not (Test-Path -LiteralPath $target)) {throw "Installer was not produced."}
 $sha = Get-FileHash -Algorithm SHA256 -LiteralPath $target
 Write-Output "INSTALLER=$target"

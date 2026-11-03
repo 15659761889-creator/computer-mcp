@@ -153,6 +153,9 @@ data class SecretRequest(
     val where: String,
 )
 
+/** Something in the AI chat pool the owner should know about: a question, a conclusion, a stuck discussion. */
+data class PoolAlert(val key: String, val title: String, val text: String, val topicId: Int?)
+
 data class HubStatus(
     val full: String,
     val address: String,
@@ -160,6 +163,7 @@ data class HubStatus(
     val computers: List<Computer>,
     val secretRequests: List<SecretRequest> = emptyList(),
     val version: Int = 0,
+    val poolAlerts: List<PoolAlert> = emptyList(),
 )
 
 data class Invite(val pair: String, val minutes: Int)
@@ -191,7 +195,8 @@ class HubClient(private val connection: Connection) {
             if (status == 401) throw HubException("连接已失效，请重新扫描主电脑上的二维码", unauthorized = true)
             // Without the hub the address answers 404, and a stopped tunnel answers 5xx.
             if (status == 404 && path == "status") throw HubException("这个地址还不是主电脑，请在电脑上重新生成二维码")
-            if (status >= 500) throw HubException(UNREACHABLE)
+            // The pool answers 503 with its own reason (for example an old Node.js on the main computer).
+            if (status >= 500 && !(status == 503 && path.startsWith("pool"))) throw HubException(UNREACHABLE)
             val stream = if (status in 200..299) http.inputStream else http.errorStream
             val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
             val json = try {
@@ -211,8 +216,13 @@ class HubClient(private val connection: Connection) {
         val mcp = json.getJSONObject("mcp")
         val list = json.getJSONArray("computers")
         val secrets = json.optJSONArray("secretRequests")
+        val alerts = json.optJSONArray("poolAlerts")
         return HubStatus(
             version = json.optInt("version"),
+            poolAlerts = List(alerts?.length() ?: 0) { index ->
+                val a = alerts!!.getJSONObject(index)
+                PoolAlert(a.optString("key"), a.optString("title"), a.optString("text"), if (a.isNull("topic_id")) null else a.optInt("topic_id"))
+            },
             secretRequests = List(secrets?.length() ?: 0) { index ->
                 val r = secrets!!.getJSONObject(index)
                 SecretRequest(r.getString("id"), r.optString("computer"), r.optString("hint"), r.optString("part"), r.optString("reason"), r.optString("where"))
@@ -238,6 +248,25 @@ class HubClient(private val connection: Connection) {
 
     /** Read the one shared AI message pool through the existing admin-authenticated API. */
     fun poolFeed(): JSONObject = request("GET", "pool?limit=60")
+
+    /** One discussion with its latest messages, oldest first. */
+    fun poolTopic(topicId: Int): JSONObject = request("GET", "pool?topic=$topicId&limit=100")
+
+    fun startTopic(title: String, goal: String): JSONObject =
+        request("POST", "pool/topics", JSONObject().put("title", title).put("goal", goal)).getJSONObject("topic")
+
+    /** The owner's own message, in a discussion or in the general stream. */
+    fun postToPool(content: String, topicId: Int?, replyTo: Int? = null): JSONObject {
+        val body = JSONObject().put("content", content)
+        if (topicId != null) body.put("topic_id", topicId)
+        if (replyTo != null) body.put("reply_to", replyTo)
+        return request("POST", "pool/messages", body)
+    }
+
+    fun concludeTopic(topicId: Int, conclusion: String): JSONObject =
+        request("POST", "pool/topics/$topicId/conclude", JSONObject().put("conclusion", conclusion)).getJSONObject("topic")
+
+    fun reopenTopic(topicId: Int): JSONObject = request("POST", "pool/topics/$topicId/reopen").getJSONObject("topic")
 
     fun invite(): Invite {
         val json = request("POST", "invites")

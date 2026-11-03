@@ -19,8 +19,6 @@ test('one shared pool: session identity, mentions, public acknowledgment, refusa
     const a = pool.join({ agent: 'GPT', conversation: 'gpt-conv-1', computer: 'pc-a' });
     const b = pool.join({ agent: 'Claude', model: 'test-model', conversation: 'claude-conv-2', computer: 'pc-b' });
     assert.notEqual(a.session_id, b.session_id);
-    assert.ok(a.session_token.length >= 32);
-    assert.ok(!JSON.stringify(pool.summary()).includes(a.session_token));
     const request = pool.post({ ...a, type: 'help_request', content: 'Can you check concurrency?', mentions: [b.session_id], client_message_id: 'req-1' });
     assert.equal(request.message.mentions[0], b.session_id);
     assert.equal(pool.post({ ...a, type: 'help_request', content: 'Can you check concurrency?', mentions: [b.session_id], client_message_id: 'req-1' }).duplicate, true);
@@ -42,7 +40,7 @@ test('one shared pool: session identity, mentions, public acknowledgment, refusa
     assert.deepEqual(receivedReply.pending_mentions, []);
     assert.equal(receivedReply.messages.length, 1, 'only newly fetched replies appear');
     assert.equal(pool.read(b).messages.length, 0, 'cursor is persisted');
-    assert.throws(() => pool.read({ ...b, session_token: a.session_token }), /wrong session token/);
+    assert.throws(() => pool.read({ session_id: 's_nope' }), /unknown session_id/);
     assert.throws(() => pool.post({ ...b, content: 'x'.repeat(4001) }), /content/);
     pool.close();
     pool = null;
@@ -136,7 +134,12 @@ test('MCP tools and phone feed use one pool but enforce separate credentials', a
 function withPool(options, fn) {
   const dir = workspace();
   const pool = new PublicPool(path.join(dir, 'p.sqlite'), undefined, options);
-  try { return fn(pool, dir); } finally { pool.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+  const done = () => { pool.close(); fs.rmSync(dir, { recursive: true, force: true }); };
+  let result;
+  try { result = fn(pool, dir); } catch (err) { done(); throw err; }
+  if (result && typeof result.then === 'function') return result.finally(done);
+  done();
+  return result;
 }
 
 test('an acknowledgment cannot be faked by type, and only the server record marks one', () => withPool({}, (pool) => {
@@ -145,10 +148,10 @@ test('an acknowledgment cannot be faked by type, and only the server record mark
   const request = pool.post({ ...a, content: 'help', mentions: [b.session_id] }).message;
   assert.throws(() => pool.post({ ...a, type: 'ack', content: 'read #' + request.seq, reply_to: request.seq }), /type ack/);
   assert.equal(request.mention_status[0].acknowledged, false);
-  assert.equal(request.acknowledges, null);
+  assert.deepEqual(request.acknowledges, []);
   const viaPost = pool.post({ ...b, content: 'on it', reply_to: request.seq, ack: true, decision: 'accept' }).message;
   assert.equal(viaPost.type, 'ack', 'ack:true without a type is an ack');
-  assert.equal(viaPost.acknowledges, request.seq);
+  assert.deepEqual(viaPost.acknowledges, [request.seq]);
   const original = pool.feed().messages.find((m) => m.seq === request.seq);
   assert.deepEqual(original.mention_status, [{ session_id: b.session_id, acknowledged: true, decision: 'accept', ack_message_id: viaPost.seq }]);
 }));
@@ -165,36 +168,51 @@ test('a caller-chosen client id can never block the real acknowledgment', () => 
   assert.equal(pool.ack({ ...b, message_id: request.seq }).duplicate, true);
 }));
 
-test('null optional fields are treated as omitted, and bad replies give clear errors', () => withPool({}, (pool) => {
-  const a = JSON.parse(pool.invoke('pool_join', { agent: 'GPT', conversation: 'g', model: null, computer: null }).text);
-  const posted = pool.invoke('pool_post', { ...a, content: 'hi', decision: null, reply_to: null, mentions: null, type: null, client_message_id: null });
+test('null optional fields are treated as omitted, and bad replies give clear errors', () => withPool({}, async (pool) => {
+  const a = JSON.parse((await pool.invoke('pool_join', { agent: 'GPT', conversation: 'g', model: null, computer: null })).text);
+  const posted = await pool.invoke('pool_post', { ...a, content: 'hi', decision: null, reply_to: null, mentions: null, type: null, client_message_id: null });
   assert.equal(posted.isError, undefined, posted.text);
-  const zero = pool.invoke('pool_post', { ...a, content: 'hi', reply_to: 0 });
+  const zero = await pool.invoke('pool_post', { ...a, content: 'hi', reply_to: 0 });
   assert.equal(zero.isError, true);
   assert.match(zero.text, /reply_to/);
-  assert.equal(pool.invoke('pool_read', null).isError, true);
+  assert.equal((await pool.invoke('pool_read', null)).isError, true);
 }));
 
-test('a session can resume with its token or hand its unanswered mentions to a new session', () => withPool({}, (pool) => {
+test('the same agent and conversation always get the same session back, and mentions can use names', () => withPool({}, (pool) => {
   const a = pool.join({ agent: 'GPT', conversation: 'g' });
   const b = pool.join({ agent: 'Claude', conversation: 'c' });
+  assert.equal(b.resumed, false);
   const before = pool.latestSeq();
-  const resumed = pool.join({ agent: 'Claude', conversation: 'c', session_id: b.session_id, session_token: b.session_token });
-  assert.equal(resumed.resumed, true);
-  assert.equal(resumed.session_id, b.session_id);
-  assert.equal(pool.latestSeq(), before, 'resuming posts nothing');
-  const request = pool.post({ ...a, content: 'help', mentions: [b.session_id] }).message;
-  pool.read(b);
-  assert.throws(() => pool.join({ agent: 'Claude', conversation: 'other', previous_session_id: b.session_id }), /different agent or conversation/);
-  const b2 = pool.join({ agent: 'Claude', conversation: 'c', previous_session_id: b.session_id });
-  assert.equal(b2.mentions_moved, 1);
-  assert.throws(() => pool.read(b), /taken over/);
-  assert.throws(() => pool.post({ ...a, content: 'x', mentions: [b.session_id] }), /taken over/);
-  const read = pool.read(b2);
-  assert.equal(read.pending_mentions[0].message_id, request.seq);
-  assert.ok(read.messages.every((m) => m.seq > request.seq), 'read progress carries over');
-  assert.equal(pool.ack({ ...b2, message_id: request.seq }).message.acknowledges, request.seq);
-  assert.throws(() => pool.join({ agent: 'Claude', conversation: 'c', previous_session_id: b.session_id }), /already taken over/);
+  const again = pool.join({ agent: ' claude ', conversation: 'C', model: 'opus' });
+  assert.equal(again.resumed, true);
+  assert.equal(again.session_id, b.session_id);
+  assert.equal(again.model, 'opus', 'a newly stated model is kept');
+  assert.equal(pool.latestSeq(), before, 'coming back posts nothing');
+  const byName = pool.post({ ...a, content: 'Claude, a question', mentions: ['claude'] }).message;
+  assert.deepEqual(byName.mentions, [b.session_id]);
+  const read = pool.read({ session_id: b.session_id });
+  assert.equal(read.you.session_id, b.session_id);
+  assert.deepEqual(read.online.map((s) => s.agent).sort(), ['Claude', 'GPT']);
+  assert.equal(read.pending_mentions[0].message_id, byName.seq);
+  const other = pool.join({ agent: 'Claude', conversation: 'second chat' });
+  assert.notEqual(other.session_id, b.session_id);
+  assert.throws(() => pool.post({ ...a, content: 'x', mentions: ['Claude'] }), /several sessions/);
+  assert.deepEqual(pool.post({ ...a, content: 'x', mentions: [other.session_id, other.session_id] }).message.mentions, [other.session_id]);
+  assert.throws(() => pool.post({ ...a, content: 'x', mentions: ['Nobody'] }), /unknown mention target/);
+  assert.throws(() => pool.post({ ...a, content: 'x', mentions: [a.session_id] }), /yourself/);
+  assert.throws(() => pool.join({ agent: '主人', conversation: 'x' }), /reserved/);
+  assert.throws(() => pool.join({ agent: 'Owner', conversation: 'x' }), /reserved/);
+  assert.throws(() => pool.read({}), /missing session_id/);
+}));
+
+test('sessions taken over by 0.4.4 stay replaced and point to their successor', () => withPool({}, (pool) => {
+  const a = pool.join({ agent: 'GPT', conversation: 'g' });
+  const old = pool.join({ agent: 'Claude', conversation: 'old' });
+  const next = pool.join({ agent: 'Claude', conversation: 'new' });
+  pool.db.prepare('UPDATE sessions SET replaced_by=? WHERE id=?').run(next.session_id, old.session_id);
+  assert.throws(() => pool.read({ session_id: old.session_id }), /replaced by/);
+  assert.throws(() => pool.post({ ...a, content: 'x', mentions: [old.session_id] }), /replaced by/);
+  assert.equal(pool.join({ agent: 'Claude', conversation: 'old' }).resumed, false, 'a replaced session is never handed back');
 }));
 
 test('long-silent sessions stop counting as pending, and are flagged when mentioned', () => {
@@ -287,7 +305,7 @@ test('a pool database from 0.4.3 is upgraded in place', () => {
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('pool posts do not wake the phone notification poll', () => {
+test('ordinary pool posts do not wake the phone notification poll', () => {
   const dir = workspace();
   const hub = new Hub({ file: path.join(dir, 'hub.json'), selfName: 'host', origin: () => 'https://unit.example', getToken: () => 't' });
   try {

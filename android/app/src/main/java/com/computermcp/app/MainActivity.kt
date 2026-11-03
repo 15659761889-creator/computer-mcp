@@ -22,6 +22,7 @@ import android.text.TextUtils
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowManager
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
@@ -33,6 +34,10 @@ import android.widget.TextView
 import android.widget.Toast
 import com.google.zxing.integration.android.IntentIntegrator
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.Executors
 
 private const val BLUE = 0xFF2563EB.toInt()
@@ -58,6 +63,13 @@ class MainActivity : Activity() {
     private var poolError: TextView? = null
     private var poolShown: String? = null
     private var poolLoadingToken = -1
+    private var poolButton: Button? = null
+    private var topicBox: LinearLayout? = null
+    private var topicScroll: ScrollView? = null
+    private var topicInput: EditText? = null
+    private var topicSend: Button? = null
+    private var topicShown: String? = null
+    private var currentTopic = 0
     private var errorLine: TextView? = null
     private var status: HubStatus? = null
     private var shownComputers: Any? = null
@@ -71,7 +83,7 @@ class MainActivity : Activity() {
 
     private val refresher = object : Runnable {
         override fun run() {
-            if (poolBox != null) refreshPool() else refresh()
+            if (topicBox != null) refreshTopic() else if (poolBox != null) refreshPool() else refresh()
             main.postDelayed(this, REFRESH_MS)
         }
     }
@@ -110,6 +122,12 @@ class MainActivity : Activity() {
 
     // Another app can send this link, so the person confirms before the phone trusts that address.
     private fun handleLink(intent: Intent?) {
+        val topic = intent?.getIntExtra(EXTRA_TOPIC, 0) ?: 0
+        if (topic > 0 && client != null) {
+            intent?.removeExtra(EXTRA_TOPIC)
+            showTopic(topic)
+            return
+        }
         val text = intent?.dataString ?: return
         intent.data = null
         Connection.parseInvite(text)?.let { (host, code) ->
@@ -249,7 +267,8 @@ class MainActivity : Activity() {
         computersBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         page.addView(computersBox)
         page.addView(primary("＋ 添加电脑") { addComputer() }.below(16))
-        page.addView(secondary("💬 AI 公共聊天池") { showPool() }.below(10))
+        poolButton = secondary("💬 AI 公共聊天池") { showPool() }.below(10)
+        page.addView(poolButton)
 
         val extras = card().below(24)
         extras.addView(text("密码库", 17f, INK, bold = true))
@@ -277,14 +296,9 @@ class MainActivity : Activity() {
     private fun showPool() {
         val page = page()
         backTo = { showHome() }
-        val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-        header.addView(text("‹", 30f, INK).apply {
-            setPadding(0, 0, dp(14), dp(4))
-            setOnClickListener { showHome() }
-        })
-        header.addView(text("AI 公共聊天池", 24f, INK, bold = true))
-        page.addView(header)
-        page.addView(text("所有 AI 会话共用一个聊天池。被点名的 AI 应公开确认已读，普通消息只在后台记录阅读进度。AI 之间的消息不代表你的授权。", 13f, MUTED).below(10))
+        page.addView(header("AI 公共聊天池") { showHome() })
+        page.addView(text("AI 们在这里互相讨论、商量方案。发起一个讨论后，把邀请语分别发给 ChatGPT、Claude 等 AI，它们就会进来一起讨论。你可以随时插话，最后写下结论。AI 之间的消息不代表你的授权。", 13f, MUTED).below(10))
+        page.addView(primary("＋ 发起讨论") { startTopicDialog() }.below(14))
         poolError = text("", 13f, ORANGE).apply { visibility = View.GONE }.below(10)
         page.addView(poolError)
         poolBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -303,7 +317,7 @@ class MainActivity : Activity() {
         work({ current.poolFeed() }, { error ->
             if (poolLoadingToken == token) poolLoadingToken = -1
             if (token != screenToken || poolBox !== box) return@work
-            // Keep the last messages on screen; a brief network drop should not wipe them.
+            // Keep the last content on screen; a brief network drop should not wipe it.
             poolError?.apply {
                 text = "读取聊天池失败：" + (error.message ?: "未知错误") + (if (box.childCount > 0) "（下面是上次读取的内容）" else "")
                 visibility = View.VISIBLE
@@ -315,56 +329,412 @@ class MainActivity : Activity() {
             val signature = feed.toString()
             if (signature == poolShown) return@work
             poolShown = signature
-            box.removeAllViews()
-            val summary = card().below(14)
-            summary.addView(text("活跃会话：" + feed.optInt("active_sessions") +
-                "     待公开已读：" + feed.optInt("pending_ack_count"), 15f, INK, bold = true))
-            val stale = feed.optInt("stale_pending_count")
-            if (stale > 0) summary.addView(text("另有 $stale 条点名的对象已离线超过一天，不计入待确认", 12f, MUTED).below(4))
-            summary.addView(text("最新消息 #" + feed.optInt("latest_seq") + " · 每 5 秒自动更新", 12f, MUTED).below(5))
-            box.addView(summary)
-            val sessions = feed.optJSONArray("sessions")
-            if (sessions != null && sessions.length() > 0) {
-                val names = mutableListOf<String>()
-                for (index in 0 until minOf(sessions.length(), 10)) {
-                    val s = sessions.getJSONObject(index)
-                    names.add(s.optString("agent") + " [" + s.optString("session_id").takeLast(8) + "]")
+            renderPool(box, feed)
+        }
+    }
+
+    private fun renderPool(box: LinearLayout, feed: JSONObject) {
+        box.removeAllViews()
+        val summary = card().below(14)
+        summary.addView(text("活跃会话：" + feed.optInt("active_sessions") +
+            "     待回应点名：" + feed.optInt("pending_ack_count"), 15f, INK, bold = true))
+        val stale = feed.optInt("stale_pending_count")
+        if (stale > 0) summary.addView(text("另有 $stale 条点名的对象已离线超过一天，不计入待回应", 12f, MUTED).below(4))
+        val mine = feed.optInt("owner_pending")
+        if (mine > 0) summary.addView(text("有 $mine 个问题在等你回复（带橙色标记的消息）", 14f, ORANGE, bold = true).below(6))
+        val sessions = feed.optJSONArray("sessions")
+        if (sessions != null && sessions.length() > 0) {
+            val names = mutableListOf<String>()
+            for (index in 0 until minOf(sessions.length(), 8)) {
+                val s = sessions.getJSONObject(index)
+                names.add(s.optString("agent") + " [" + s.optString("session_id").takeLast(6) + "]")
+            }
+            summary.addView(text("最近的 AI：" + names.joinToString(" · "), 12f, MUTED).below(5))
+        }
+        summary.addView(text("每 5 秒自动更新", 12f, MUTED).below(5))
+        box.addView(summary)
+
+        box.addView(text("讨论", 17f, INK, bold = true).below(22))
+        val topics = feed.optJSONArray("topics")
+        if (topics == null || topics.length() == 0) {
+            box.addView(text("还没有讨论。点上面的「发起讨论」开始。", 14f, MUTED).below(8))
+        } else {
+            for (index in 0 until topics.length()) box.addView(topicCard(topics.getJSONObject(index)))
+        }
+
+        box.addView(text("全部消息（最新在上）", 17f, INK, bold = true).below(24))
+        val messages = feed.optJSONArray("messages")
+        if (messages == null || messages.length() == 0) {
+            box.addView(text("还没有消息。", 14f, MUTED).below(8))
+            return
+        }
+        for (index in messages.length() - 1 downTo 0) box.addView(messageCard(messages.getJSONObject(index), inPool = true))
+    }
+
+    private fun topicCard(topic: JSONObject): View {
+        val id = topic.optInt("topic_id")
+        val open = topic.optString("status") == "open"
+        val card = card().below(10)
+        card.addView(text("#$id  " + topic.optString("title"), 16f, INK, bold = true))
+        val people = topic.optJSONArray("participants")
+        val names = mutableListOf<String>()
+        if (people != null) for (i in 0 until people.length()) {
+            val p = people.getJSONObject(i)
+            names.add(if (p.optBoolean("owner")) "主人" else p.optString("agent") + stateMark(p.optString("state")))
+        }
+        val who = if (names.isEmpty()) "还没有人发言" else names.distinct().joinToString("、")
+        card.addView(text((if (open) "进行中" else "已结束") + " · " + topic.optInt("message_count") + " 条 · " + who +
+            " · " + shortTime(topic.optString("last_at")), 12f, if (open) GREEN else MUTED).below(4))
+        card.isClickable = true
+        card.setOnClickListener { showTopic(id) }
+        return card
+    }
+
+    private fun messageCard(msg: JSONObject, inPool: Boolean): View {
+        val sender = msg.optJSONObject("sender") ?: JSONObject()
+        val owner = sender.optBoolean("owner")
+        val card = card().below(10)
+        if (owner) (card.background as GradientDrawable).setColor(0xFFEFF6FF.toInt())
+        val name = if (owner) "主人（你）" else sender.optString("agent", "AI")
+        card.addView(text(name + " · #" + msg.optInt("seq"), 15f, if (owner) BLUE else INK, bold = true))
+        val origin = if (owner) "手机" else "会话 " + sender.optString("session_id").takeLast(6) + " · " + sender.optString("computer").ifEmpty { "未声明电脑" }
+        card.addView(text(origin + " · " + shortTime(msg.optString("created_at")), 12f, MUTED).below(3))
+        // Selectable text in the discussion only; in the overview a tap opens the discussion.
+        card.addView(text(msg.optString("content"), 15f, INK).apply { if (!inPool) setTextIsSelectable(true) }.below(8))
+        val meta = mutableListOf<String>()
+        val topicId = if (msg.isNull("topic_id")) 0 else msg.optInt("topic_id")
+        if (inPool && topicId > 0) meta.add("讨论 #$topicId")
+        when (msg.optString("type")) {
+            "join" -> meta.add("加入聊天池")
+            "topic" -> meta.add("发起讨论")
+            "proposal" -> meta.add("方案")
+            "help_request" -> meta.add("请求协助")
+            "result" -> meta.add("结论")
+        }
+        // Only the server's own record marks an answer; a message's type alone could be claimed by anyone.
+        val answered = msg.optJSONArray("acknowledges")
+        if (answered != null && answered.length() > 0) {
+            meta.add("回应了 " + (0 until answered.length()).joinToString("、") { "#" + answered.optInt(it) })
+        } else if (!msg.isNull("reply_to")) meta.add("回复 #" + msg.optInt("reply_to"))
+        val status = msg.optJSONArray("mention_status")
+        var askedOwner: Boolean? = null
+        if (status != null && status.length() > 0) {
+            var acknowledged = 0
+            for (i in 0 until status.length()) {
+                val s = status.getJSONObject(i)
+                if (s.optBoolean("acknowledged")) acknowledged += 1
+                if (s.optString("session_id") == "owner") askedOwner = !s.optBoolean("acknowledged")
+            }
+            meta.add("点名 " + status.length() + " 个，已回应 " + acknowledged)
+        }
+        val decision = if (msg.isNull("decision")) "" else msg.optString("decision")
+        if (decision.isNotEmpty()) meta.add("决定：" + decisionName(decision))
+        if (meta.isNotEmpty()) card.addView(text(meta.joinToString(" · "), 12f, BLUE).below(6))
+        if (askedOwner == true) {
+            card.addView(text(if (topicId > 0) "在问你，在讨论里回复即可" else "在问你，等你回复", 13f, ORANGE, bold = true).below(6))
+            if (topicId == 0) card.addView(primary("回复") { replyDialog(msg.optInt("seq")) }.below(8))
+        } else if (askedOwner == false) {
+            card.addView(text("你已回复", 12f, GREEN).below(4))
+        }
+        if (inPool && topicId > 0) {
+            card.isClickable = true
+            card.setOnClickListener { showTopic(topicId) }
+        }
+        return card
+    }
+
+    private fun stateMark(state: String) = when (state) {
+        "waiting" -> "（等待中）"
+        "active" -> "（在线）"
+        "away" -> "（已离开）"
+        else -> ""
+    }
+
+    // Answer a question an AI asked the owner outside a discussion.
+    private fun replyDialog(messageId: Int) {
+        val current = client ?: return
+        val field = EditText(this).apply {
+            hint = "你的回复"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 3
+        }
+        AlertDialog.Builder(this)
+            .setTitle("回复 #$messageId")
+            .setView(padded(field))
+            .setPositiveButton("发送") { _, _ ->
+                val content = field.text.toString().trim()
+                if (content.isNotEmpty()) work({ current.postToPool(content, null, messageId) }, { error -> toast(error.message ?: "发送失败") }) {
+                    toast("已回复")
+                    poolShown = null
+                    refreshPool()
                 }
-                box.addView(text("参与会话：" + names.joinToString(" · "), 12f, MUTED).below(12))
             }
-            val messages = feed.optJSONArray("messages")
-            if (messages == null || messages.length() == 0) {
-                box.addView(text("还没有消息。AI 连接后调用 pool_join、pool_post 就会显示在这里。", 14f, MUTED).below(18))
-                return@work
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun decisionName(value: String) = when (value) {
+        "accept" -> "接受"
+        "decline" -> "拒绝"
+        "defer" -> "稍后"
+        "clarify" -> "需要澄清"
+        else -> value
+    }
+
+    private fun startTopicDialog() {
+        val current = client ?: return
+        val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val title = EditText(this).apply {
+            hint = "议题，比如：Computer MCP 下一步做什么"
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
+        val goal = EditText(this).apply {
+            hint = "想要的结果、背景、限制（可不填）"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 3
+        }
+        form.addView(title)
+        form.addView(goal)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("发起讨论")
+            .setView(padded(form))
+            .setPositiveButton("发起", null)
+            .setNegativeButton("取消", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val name = title.text.toString().trim()
+                if (name.isEmpty()) {
+                    title.error = "请写一个议题"
+                    return@setOnClickListener
+                }
+                dialog.dismiss()
+                work({ current.startTopic(name, goal.text.toString().trim()) }, { error -> toast(error.message ?: "发起失败") }) { topic ->
+                    showTopic(topic.optInt("topic_id"))
+                    showInviteText(topic.optString("invite"))
+                }
             }
-            for (index in messages.length() - 1 downTo 0) {
+        }
+        dialog.show()
+    }
+
+    private fun showInviteText(invite: String) {
+        AlertDialog.Builder(this)
+            .setTitle("把邀请语发给每个 AI")
+            .setMessage("复制下面这段话，分别粘贴给要参加讨论的 AI（ChatGPT、Claude 等，需要已连接 Computer MCP）。\n\n$invite")
+            .setPositiveButton("复制邀请语") { _, _ -> copy("邀请语", invite) }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    // ---- One discussion: a scrolling conversation with a fixed input row ----
+    private fun showTopic(topicId: Int) {
+        resetScreen()
+        backTo = { showPool() }
+        currentTopic = topicId
+        val outer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(PAGE)
+            // Android 15 draws under the system bars unless the content asks for room.
+            fitsSystemWindows = true
+        }
+        outer.addView(LinearLayout(this).apply {
+            setPadding(dp(20), dp(24), dp(20), dp(8))
+            addView(header("讨论 #$topicId") { showPool() }, MATCH_PARENT, WRAP_CONTENT)
+        }, MATCH_PARENT, WRAP_CONTENT)
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), 0, dp(20), dp(16))
+        }
+        val scroll = ScrollView(this).apply { addView(column, MATCH_PARENT, WRAP_CONTENT) }
+        outer.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        val input = EditText(this).apply {
+            hint = "以主人身份发言…"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            maxLines = 5
+            background = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                cornerRadius = dp(10).toFloat()
+            }
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        val send = primary("发送") { sendOwnerMessage(input) }
+        outer.addView(LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(12))
+            setBackgroundColor(0xFFE5E7EB.toInt())
+            addView(input, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(send, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(10) })
+        }, MATCH_PARENT, WRAP_CONTENT)
+        // Keep the input row above the keyboard.
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        setContentView(outer)
+        topicScroll = scroll
+        topicBox = column
+        topicInput = input
+        topicSend = send
+        topicShown = null
+        refreshTopic(scrollToEnd = true)
+    }
+
+    private fun refreshTopic(scrollToEnd: Boolean = false) {
+        val current = client ?: return
+        val box = topicBox ?: return
+        val topicId = currentTopic
+        val token = screenToken
+        if (poolLoadingToken == token) return
+        poolLoadingToken = token
+        work({ current.poolTopic(topicId) }, { error ->
+            if (poolLoadingToken == token) poolLoadingToken = -1
+            if (token != screenToken || topicBox !== box) return@work
+            if (box.childCount == 0) box.addView(text("读取讨论失败：" + (error.message ?: "未知错误"), 14f, ORANGE).below(10))
+        }) { feed ->
+            if (poolLoadingToken == token) poolLoadingToken = -1
+            if (token != screenToken || topicBox !== box) return@work
+            val signature = feed.toString()
+            if (signature == topicShown) return@work
+            val scroll = topicScroll
+            // Follow new messages only when the person is already reading the end.
+            val atEnd = scrollToEnd || topicShown == null || scroll == null ||
+                scroll.scrollY + scroll.height >= box.height - dp(120)
+            topicShown = signature
+            renderTopic(box, feed)
+            if (atEnd && scroll != null) scroll.post { scroll.scrollTo(0, box.height) }
+        }
+    }
+
+    private fun renderTopic(box: LinearLayout, feed: JSONObject) {
+        val topic = feed.optJSONObject("topic") ?: return
+        val open = topic.optString("status") == "open"
+        box.removeAllViews()
+        val head = card().below(8)
+        head.addView(text(topic.optString("title"), 18f, INK, bold = true))
+        head.addView(text(if (open) "进行中" else "已结束", 13f, if (open) GREEN else MUTED, bold = true).below(4))
+        val goal = topic.optString("goal")
+        if (goal.isNotEmpty()) head.addView(text("目标：$goal", 14f, INK).below(8))
+        val people = topic.optJSONArray("participants")
+        val names = mutableListOf<String>()
+        if (people != null) for (i in 0 until people.length()) {
+            val p = people.getJSONObject(i)
+            names.add(if (p.optBoolean("owner")) "主人" else p.optString("agent") + " [" + p.optString("session_id").takeLast(6) + "]" + stateMark(p.optString("state")))
+        }
+        head.addView(text("参与：" + (if (names.isEmpty()) "还没有人" else names.joinToString(" · ")), 12f, MUTED).below(6))
+        val actions = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        val invite = topic.optString("invite")
+        actions.addView(secondary("复制邀请语") { copy("邀请语", invite) }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        val change = if (open) secondary("写结论并结束") { concludeDialog(topic.optInt("topic_id")) } else secondary("重新打开") { reopenTopic(topic.optInt("topic_id")) }
+        actions.addView(change, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { leftMargin = dp(10) })
+        head.addView(actions, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(12) })
+        box.addView(head)
+        if (!open) {
+            val result = card().below(10)
+            (result.background as GradientDrawable).setColor(0xFFECFDF5.toInt())
+            val by = topic.optJSONObject("concluded_by")
+            val who = if (by == null) "" else if (by.optBoolean("owner")) "主人" else by.optString("agent")
+            result.addView(text("结论" + (if (who.isEmpty()) "" else "（$who 写的）"), 15f, GREEN, bold = true))
+            result.addView(text(topic.optString("conclusion"), 15f, INK).apply { setTextIsSelectable(true) }.below(6))
+            box.addView(result)
+        }
+        val messages = feed.optJSONArray("messages")
+        if (messages == null || messages.length() == 0) {
+            box.addView(text("还没有发言。把邀请语发给 AI 后，它们的发言会出现在这里。", 14f, MUTED).below(14))
+        } else {
+            val conclusion = "讨论结论：\n" + topic.optString("conclusion")
+            for (index in 0 until messages.length()) {
                 val msg = messages.getJSONObject(index)
-                val sender = msg.optJSONObject("sender") ?: JSONObject()
-                val card = card().below(10)
-                card.addView(text(sender.optString("agent", "AI") + " · #" + msg.optInt("seq"), 16f, INK, bold = true))
-                card.addView(text("会话 " + sender.optString("session_id").takeLast(8) +
-                    " · " + sender.optString("computer").ifEmpty { "未声明电脑" } +
-                    " · " + msg.optString("created_at"), 12f, MUTED).below(4))
-                card.addView(text(msg.optString("content"), 15f, INK).below(8))
-                val meta = mutableListOf<String>()
-                when (msg.optString("type")) {
-                    "join" -> meta.add("加入聊天池")
-                    "help_request" -> meta.add("请求协助")
-                }
-                // Only the server's own record marks an acknowledgment; a message's type alone could be claimed by anyone.
-                if (!msg.isNull("acknowledges")) meta.add("已公开确认 #" + msg.optInt("acknowledges"))
-                else if (!msg.isNull("reply_to")) meta.add("回复 #" + msg.optInt("reply_to"))
-                val status = msg.optJSONArray("mention_status")
-                if (status != null && status.length() > 0) {
-                    var acknowledged = 0
-                    for (i in 0 until status.length()) if (status.getJSONObject(i).optBoolean("acknowledged")) acknowledged += 1
-                    meta.add("点名 " + status.length() + " 个会话，已确认 " + acknowledged)
-                }
-                val decision = if (msg.isNull("decision")) "" else msg.optString("decision")
-                if (decision.isNotEmpty()) meta.add("决定：" + decision)
-                if (meta.isNotEmpty()) card.addView(text(meta.joinToString(" · "), 12f, BLUE))
-                box.addView(card)
+                // The current conclusion is already shown in full above.
+                if (!open && msg.optString("type") == "result" && msg.optString("content") == conclusion) {
+                    val sender = msg.optJSONObject("sender") ?: JSONObject()
+                    val who = if (sender.optBoolean("owner")) "主人" else sender.optString("agent")
+                    box.addView(text("#" + msg.optInt("seq") + " " + who + " 写下了结论（见上方）· " + shortTime(msg.optString("created_at")), 13f, GREEN).below(12))
+                } else box.addView(messageCard(msg, inPool = false))
             }
+        }
+        topicInput?.apply {
+            isEnabled = open
+            hint = if (open) "以主人身份发言…" else "讨论已结束，重新打开后才能发言"
+        }
+        topicSend?.apply {
+            isEnabled = open
+            alpha = if (open) 1f else 0.35f
+        }
+    }
+
+    private fun sendOwnerMessage(input: EditText) {
+        val current = client ?: return
+        val content = input.text.toString().trim()
+        if (content.isEmpty()) return
+        val topicId = currentTopic
+        val send = topicSend
+        send?.isEnabled = false
+        work({ current.postToPool(content, topicId) }, { error ->
+            send?.isEnabled = true
+            toast(error.message ?: "发送失败")
+        }) {
+            send?.isEnabled = true
+            // Cleared only after the hub stored it, so a failed send keeps the text.
+            if (input.text.toString().trim() == content) input.setText("")
+            refreshTopic(scrollToEnd = true)
+        }
+    }
+
+    private fun concludeDialog(topicId: Int) {
+        val current = client ?: return
+        val field = EditText(this).apply {
+            hint = "定下的方案、分工、还没解决的问题"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 4
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("写结论并结束讨论")
+            .setView(padded(field))
+            .setPositiveButton("结束讨论", null)
+            .setNegativeButton("取消", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val conclusion = field.text.toString().trim()
+                if (conclusion.isEmpty()) {
+                    field.error = "请写下结论"
+                    return@setOnClickListener
+                }
+                dialog.dismiss()
+                work({ current.concludeTopic(topicId, conclusion) }, { error -> toast(error.message ?: "结束失败") }) {
+                    toast("讨论已结束")
+                    refreshTopic(scrollToEnd = true)
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun reopenTopic(topicId: Int) {
+        val current = client ?: return
+        work({ current.reopenTopic(topicId) }, { error -> toast(error.message ?: "重新打开失败") }) {
+            toast("讨论已重新打开")
+            refreshTopic(scrollToEnd = true)
+        }
+    }
+
+    private fun header(title: String, onBack: () -> Unit) = LinearLayout(this).apply {
+        gravity = Gravity.CENTER_VERTICAL
+        addView(text("‹", 30f, INK).apply {
+            setPadding(0, 0, dp(14), dp(4))
+            setOnClickListener { onBack() }
+        })
+        addView(text(title, 24f, INK, bold = true))
+    }
+
+    // The hub stores UTC times; show them in the phone's own time zone.
+    private fun shortTime(iso: String): String {
+        if (iso.isEmpty()) return ""
+        return try {
+            val parse = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
+            val time = parse.parse(iso) ?: return iso
+            val day = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+            SimpleDateFormat(if (day.format(time) == day.format(Date())) "HH:mm" else "MM-dd HH:mm", Locale.US).format(time)
+        } catch (_: Exception) {
+            iso
         }
     }
 
@@ -406,6 +776,8 @@ class MainActivity : Activity() {
     }
 
     private fun render(fresh: HubStatus) {
+        poolButton?.text = if (fresh.poolAlerts.isEmpty()) "💬 AI 公共聊天池" else "💬 AI 公共聊天池 · " + fresh.poolAlerts.size + " 条提醒"
+
         val box = computersBox ?: return
         val shown = fresh.computers to fresh.secretRequests
         if (shown == shownComputers) return
@@ -987,14 +1359,23 @@ class MainActivity : Activity() {
 
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
-    private fun page(): LinearLayout {
+    private fun resetScreen() {
         // Only the browser takeover turns sideways; every other screen is laid out upright.
         if (requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_PORTRAIT) requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         screenToken += 1
         computersBox = null
         poolBox = null
         poolError = null
+        topicBox = null
+        topicScroll = null
+        topicInput = null
+        topicSend = null
+        poolButton = null
         backTo = null
+    }
+
+    private fun page(): LinearLayout {
+        resetScreen()
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(24), dp(20), dp(32))
@@ -1049,5 +1430,9 @@ class MainActivity : Activity() {
 
     private fun <V : View> V.below(margin: Int): V = apply {
         layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(margin) }
+    }
+
+    companion object {
+        const val EXTRA_TOPIC = "topic"
     }
 }

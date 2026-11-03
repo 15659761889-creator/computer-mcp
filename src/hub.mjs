@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { callDesktop, desktopSupported } from './desktop.mjs';
 import { findBash } from './shell.mjs';
-import { PublicPool, poolFile } from './public-pool.mjs';
+import { OWNER, PoolError, PublicPool, poolFile } from './public-pool.mjs';
 
 const POLL_HOLD_MS = 25000;
 // A node polls again at once, so this much silence means it is gone.
@@ -171,11 +171,12 @@ export class Hub {
     this.version = 0;
     this.eventWaiters = new Set();
     // The pool is optional: without it (old Node.js, unreadable database) computers still work.
-    // Pool posts deliberately do not bump(), which would wake the phone's notification poll for every message.
+    // Pool activity wakes the phone's notification poll only when what it should show changes, not for every message.
+    this.poolAlertKeys = '';
     this.pool = null;
     this.poolError = null;
     try {
-      this.pool = new PublicPool(poolFile(file));
+      this.pool = new PublicPool(poolFile(file), () => this.checkPoolAlerts());
     } catch (err) {
       this.poolError = err.message;
     }
@@ -293,7 +294,27 @@ export class Hub {
     this.eventWaiters.clear();
   }
 
+  // A pool problem must never break the phone's status, so failures show as no alerts.
+  poolAlerts() {
+    if (!this.pool) return [];
+    try {
+      return this.pool.ownerAlerts();
+    } catch {
+      return [];
+    }
+  }
+
+  checkPoolAlerts() {
+    if (!this.pool) return;
+    const keys = this.poolAlerts().map((a) => a.key).join('|');
+    if (keys === this.poolAlertKeys) return;
+    this.poolAlertKeys = keys;
+    this.bump();
+  }
+
   sweep() {
+    // Waiting and silence change over time, so a stuck discussion is noticed without any new message.
+    try { this.checkPoolAlerts(); } catch { /* the pool is optional */ }
     const now = Date.now();
     for (const [key, grant] of this.grants) if (grant.expires < now) this.grants.delete(key);
     for (const [id, request] of this.secretRequests) {
@@ -424,6 +445,52 @@ export class Hub {
   isAdmin(req) {
     const key = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '')?.[1];
     return sameSecret(key, this.state.adminKey);
+  }
+
+  // ---- The AI chat pool, as the owner sees and uses it from the phone ----
+
+  async handlePool(action, req, res) {
+    if (!this.pool) {
+      reply(res, 503, { error: this.poolError || 'the public AI pool is not available' });
+      return;
+    }
+    const params = new URL(req.url, 'http://localhost').searchParams;
+    const number = (name) => {
+      if (!params.has(name)) return undefined;
+      const value = Number(params.get(name));
+      if (!Number.isSafeInteger(value) || value < 0) throw new PoolError('invalid ' + name);
+      return value;
+    };
+    try {
+      if (action === 'pool' && req.method === 'GET') {
+        const limit = number('limit') ?? 50;
+        if (limit < 1) throw new PoolError('invalid limit');
+        reply(res, 200, this.pool.feed({ afterSeq: number('after_seq'), limit, topicId: number('topic') }));
+        return;
+      }
+      if (action === 'pool/messages' && req.method === 'POST') {
+        reply(res, 200, this.pool.ownerPost(await readJson(req)));
+        return;
+      }
+      if (action === 'pool/topics' && req.method === 'POST') {
+        const body = await readJson(req);
+        reply(res, 200, { topic: this.pool.startTopic(OWNER, body.title, body.goal ?? undefined) });
+        return;
+      }
+      const topicAction = /^pool\/topics\/(\d+)\/(conclude|reopen)$/.exec(action);
+      if (topicAction && req.method === 'POST') {
+        const topicId = Number(topicAction[1]);
+        const topic = topicAction[2] === 'conclude'
+          ? this.pool.concludeTopic(OWNER, topicId, (await readJson(req)).conclusion)
+          : this.pool.reopenTopic(topicId);
+        reply(res, 200, { topic });
+        return;
+      }
+      reply(res, 404, { error: 'not found' });
+    } catch (err) {
+      if (err instanceof PoolError) reply(res, 400, { error: err.message });
+      else throw err;
+    }
   }
 
   // ---- Browser takeover from the phone app, on any computer ----
@@ -646,6 +713,7 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
       version: this.version,
       mcp: { full: `${origin}/t/${token}/mcp`, address: `${origin}/mcp`, key: token },
       secretRequests: [...this.secretRequests.values()].map(({ id, computer, hint, part, reason, where }) => ({ id, computer, hint, part, reason, where })),
+      poolAlerts: this.poolAlerts(),
       computers: [
         ...(this.selfName ? [{
           id: 'self', name: this.selfName, note: this.state.selfNote || '', online: true, main: true, os: machineInfo().os, desktop: desktopSupported, takeover: this.takeoverOf('self'),
@@ -777,18 +845,8 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
           return true;
         }
         const action = pathname.slice('/hub/api/'.length);
-        if (action === 'pool' && req.method === 'GET') {
-          if (!this.pool) {
-            reply(res, 503, { error: this.poolError || 'the public AI pool is not available' });
-            return true;
-          }
-          const params = new URL(req.url, 'http://localhost').searchParams;
-          const cursor = params.get('after_seq');
-          const afterSeq = cursor === null ? undefined : Number(cursor);
-          const limit = params.has('limit') ? Number(params.get('limit')) : 50;
-          if ((afterSeq !== undefined && (!Number.isSafeInteger(afterSeq) || afterSeq < 0)) || !Number.isSafeInteger(limit) || limit < 1) {
-            reply(res, 400, { error: 'invalid pool cursor or limit' });
-          } else reply(res, 200, this.pool.feed({ afterSeq, limit }));
+        if (action === 'pool' || action.startsWith('pool/')) {
+          await this.handlePool(action, req, res);
           return true;
         }
         if (action === 'status' && req.method === 'GET') {

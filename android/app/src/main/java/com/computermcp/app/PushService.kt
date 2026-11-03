@@ -81,6 +81,11 @@ class PushService : Service() {
                     val part = if (request.part == "username") "账号" else "密码"
                     if (key !in shown) alert(key, "AI 想在 ${request.computer} 上填写「${request.hint}」的$part", request.reason.ifEmpty { "点开选择要用的账号" })
                 }
+                for (alert in status.poolAlerts) {
+                    val key = "p:${alert.key}"
+                    now += key
+                    if (key !in shown) alert(key, alert.title, alert.text, alert.topicId)
+                }
                 // Requests that were handled elsewhere no longer need their notification.
                 for (gone in shown - now) NotificationManagerCompat.from(this).cancel(gone.hashCode())
                 shown = now
@@ -104,7 +109,7 @@ class PushService : Service() {
         }
     }
 
-    private fun alert(key: String, title: String, text: String) {
+    private fun alert(key: String, title: String, text: String, topicId: Int? = null) {
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
@@ -116,7 +121,7 @@ class PushService : Service() {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setAutoCancel(true)
-            .setContentIntent(openApp(this, key.hashCode()))
+            .setContentIntent(openApp(this, key.hashCode(), topicId))
             .build()
         NotificationManagerCompat.from(this).notify(key.hashCode(), notification)
     }
@@ -153,10 +158,13 @@ class PushService : Service() {
             })
         }
 
-        private fun openApp(context: Context, code: Int): PendingIntent = PendingIntent.getActivity(
+        /** Opens the app, on a discussion when the notification is about one. */
+        private fun openApp(context: Context, code: Int, topicId: Int? = null): PendingIntent = PendingIntent.getActivity(
             context,
             code,
-            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP).apply {
+                if (topicId != null) putExtra(MainActivity.EXTRA_TOPIC, topicId)
+            },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
     }
