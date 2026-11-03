@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { callDesktop, desktopSupported } from './desktop.mjs';
 import { findBash } from './shell.mjs';
+import { PublicPool } from './public-pool.mjs';
 
 const POLL_HOLD_MS = 25000;
 // A node polls again at once, so this much silence means it is gone.
@@ -169,11 +170,13 @@ export class Hub {
     this.grants = new Map();
     this.version = 0;
     this.eventWaiters = new Set();
+    this.pool = new PublicPool(file.replace(/\.json$/i, '.pool.sqlite'), () => this.bump());
     this.sweeper = setInterval(() => this.sweep(), 5000);
     this.sweeper.unref();
   }
 
   close() {
+    this.pool.close();
     clearInterval(this.sweeper);
     for (const live of this.live.values()) this.answerWaiter(live, { calls: [] });
   }
@@ -766,6 +769,16 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
           return true;
         }
         const action = pathname.slice('/hub/api/'.length);
+        if (action === 'pool' && req.method === 'GET') {
+          const params = new URL(req.url, 'http://localhost').searchParams;
+          const cursor = params.get('after_seq');
+          const afterSeq = cursor === null ? undefined : Number(cursor);
+          const limit = params.has('limit') ? Number(params.get('limit')) : 50;
+          if ((afterSeq !== undefined && (!Number.isSafeInteger(afterSeq) || afterSeq < 0)) || !Number.isSafeInteger(limit) || limit < 1) {
+            reply(res, 400, { error: 'invalid pool cursor or limit' });
+          } else reply(res, 200, this.pool.feed({ afterSeq, limit }));
+          return true;
+        }
         if (action === 'status' && req.method === 'GET') {
           reply(res, 200, this.status());
           return true;

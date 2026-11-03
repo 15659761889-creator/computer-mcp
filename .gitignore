@@ -7,6 +7,9 @@ dist/
 *.zip
 *.dll
 *.pdb
+# Python caches
+__pycache__/
+*.pyc
 # Gradle and local machine configuration
 android/.gradle/
 android/.kotlin/

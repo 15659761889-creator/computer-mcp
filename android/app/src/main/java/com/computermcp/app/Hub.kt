@@ -236,6 +236,9 @@ class HubClient(private val connection: Connection) {
         )
     }
 
+    /** Read the one shared AI message pool through the existing admin-authenticated API. */
+    fun poolFeed(): JSONObject = request("GET", "pool?limit=60")
+
     fun invite(): Invite {
         val json = request("POST", "invites")
         return Invite(json.getString("pair"), json.optInt("expiresIn", 600) / 60)

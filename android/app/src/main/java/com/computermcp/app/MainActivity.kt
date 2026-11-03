@@ -54,6 +54,7 @@ class MainActivity : Activity() {
     private var client: HubClient? = null
 
     private var computersBox: LinearLayout? = null
+    private var poolBox: LinearLayout? = null
     private var errorLine: TextView? = null
     private var status: HubStatus? = null
     private var shownComputers: Any? = null
@@ -67,7 +68,7 @@ class MainActivity : Activity() {
 
     private val refresher = object : Runnable {
         override fun run() {
-            refresh()
+            if (poolBox != null) refreshPool() else refresh()
             main.postDelayed(this, REFRESH_MS)
         }
     }
@@ -245,6 +246,7 @@ class MainActivity : Activity() {
         computersBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         page.addView(computersBox)
         page.addView(primary("＋ 添加电脑") { addComputer() }.below(16))
+        page.addView(secondary("💬 AI 公共聊天池") { showPool() }.below(10))
 
         val extras = card().below(24)
         extras.addView(text("密码库", 17f, INK, bold = true))
@@ -266,6 +268,78 @@ class MainActivity : Activity() {
         page.addView(extras)
 
         status?.let { render(it) }
+    }
+
+    // ---- Public AI message pool ----
+    private fun showPool() {
+        val page = page()
+        backTo = { showHome() }
+        val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        header.addView(text("‹", 30f, INK).apply {
+            setPadding(0, 0, dp(14), dp(4))
+            setOnClickListener { showHome() }
+        })
+        header.addView(text("AI 公共聊天池", 24f, INK, bold = true))
+        page.addView(header)
+        page.addView(text("所有 AI 会话共用一个聊天池。被点名的 AI 需要公开确认已读，普通消息只在后台记录阅读进度。", 13f, MUTED).below(10))
+        poolBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        page.addView(poolBox)
+        refreshPool()
+    }
+
+    private fun refreshPool() {
+        val current = client ?: return
+        val box = poolBox ?: return
+        val token = screenToken
+        work({ current.poolFeed() }, { error ->
+            if (token == screenToken && poolBox === box) {
+                box.removeAllViews()
+                box.addView(text("读取聊天池失败：" + (error.message ?: "未知错误"), 14f, ORANGE))
+            }
+        }) { feed ->
+            if (token != screenToken || poolBox !== box) return@work
+            box.removeAllViews()
+            val summary = card().below(14)
+            summary.addView(text("活跃会话：" + feed.optInt("active_sessions") +
+                "     待公开已读：" + feed.optInt("pending_ack_count"), 15f, INK, bold = true))
+            summary.addView(text("最新消息 #" + feed.optInt("latest_seq") + " · 每 5 秒自动更新", 12f, MUTED).below(5))
+            box.addView(summary)
+            val sessions = feed.optJSONArray("sessions")
+            if (sessions != null && sessions.length() > 0) {
+                val names = mutableListOf<String>()
+                for (index in 0 until minOf(sessions.length(), 10)) {
+                    val s = sessions.getJSONObject(index)
+                    names.add(s.optString("agent") + " [" + s.optString("session_id").takeLast(8) + "]")
+                }
+                box.addView(text("参与会话：" + names.joinToString(" · "), 12f, MUTED).below(12))
+            }
+            val messages = feed.optJSONArray("messages")
+            if (messages == null || messages.length() == 0) {
+                box.addView(text("还没有消息。AI 连接后调用 pool_join、pool_post 就会显示在这里。", 14f, MUTED).below(18))
+                return@work
+            }
+            for (index in messages.length() - 1 downTo 0) {
+                val msg = messages.getJSONObject(index)
+                val sender = msg.optJSONObject("sender") ?: JSONObject()
+                val card = card().below(10)
+                card.addView(text(sender.optString("agent", "AI") + " · #" + msg.optInt("seq"), 16f, INK, bold = true))
+                card.addView(text("会话 " + sender.optString("session_id").takeLast(8) +
+                    " · " + sender.optString("computer", "未声明电脑") +
+                    " · " + msg.optString("created_at"), 12f, MUTED).below(4))
+                card.addView(text(msg.optString("content"), 15f, INK).below(8))
+                val meta = mutableListOf<String>()
+                if (msg.optString("type") == "join") meta.add("加入聊天池")
+                if (msg.optString("type") == "help_request") meta.add("请求协助")
+                if (msg.optString("type") == "ack") meta.add("已公开确认")
+                if (!msg.isNull("reply_to")) meta.add("回复 #" + msg.optInt("reply_to"))
+                val mentions = msg.optJSONArray("mentions")
+                if (mentions != null && mentions.length() > 0) meta.add("点名 " + mentions.length() + " 个会话")
+                val decision = msg.optString("decision")
+                if (decision.isNotEmpty() && decision != "null") meta.add("决定：" + decision)
+                if (meta.isNotEmpty()) card.addView(text(meta.joinToString(" · "), 12f, BLUE))
+                box.addView(card)
+            }
+        }
     }
 
     private fun refresh() {
@@ -892,6 +966,7 @@ class MainActivity : Activity() {
         if (requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_PORTRAIT) requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         screenToken += 1
         computersBox = null
+        poolBox = null
         backTo = null
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL

@@ -124,7 +124,7 @@ test('tools list requires a computer on everything but list_computers', async ()
   });
   const { tools } = (await res.json()).result;
   for (const tool of tools) {
-    if (tool.name === 'list_computers') continue;
+    if (tool.name === 'list_computers' || tool.name.startsWith('pool_')) continue;
     assert.ok(tool.inputSchema.required.includes('computer'), tool.name);
   }
   assert.ok(tools.some((tool) => tool.name === 'ui_act'));
