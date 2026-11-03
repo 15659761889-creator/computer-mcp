@@ -36,8 +36,9 @@ else
   REGISTRY=https://registry.npmmirror.com
 fi
 
+# The public AI pool uses the built-in node:sqlite, which needs Node.js 22.13 or newer.
 have_node() {
-  command -v node >/dev/null && [ "$(node -p 'process.versions.node.split(".")[0]')" -ge 20 ]
+  command -v node >/dev/null && node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 13) ? 0 : 1)'
 }
 
 if ! have_node; then

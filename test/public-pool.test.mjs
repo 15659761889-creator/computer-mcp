@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { Hub } from '../src/hub.mjs';
-import { PublicPool } from '../src/public-pool.mjs';
+import { PublicPool, poolFile } from '../src/public-pool.mjs';
 import { createMcpServer } from '../src/server.mjs';
 
 function workspace() { return fs.mkdtempSync(path.join(os.tmpdir(), 'computer-pool-test-')); }
@@ -130,4 +131,197 @@ test('MCP tools and phone feed use one pool but enforce separate credentials', a
     hub.close();
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+function withPool(options, fn) {
+  const dir = workspace();
+  const pool = new PublicPool(path.join(dir, 'p.sqlite'), undefined, options);
+  try { return fn(pool, dir); } finally { pool.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+test('an acknowledgment cannot be faked by type, and only the server record marks one', () => withPool({}, (pool) => {
+  const a = pool.join({ agent: 'GPT', conversation: 'g' });
+  const b = pool.join({ agent: 'Claude', conversation: 'c' });
+  const request = pool.post({ ...a, content: 'help', mentions: [b.session_id] }).message;
+  assert.throws(() => pool.post({ ...a, type: 'ack', content: 'read #' + request.seq, reply_to: request.seq }), /type ack/);
+  assert.equal(request.mention_status[0].acknowledged, false);
+  assert.equal(request.acknowledges, null);
+  const viaPost = pool.post({ ...b, content: 'on it', reply_to: request.seq, ack: true, decision: 'accept' }).message;
+  assert.equal(viaPost.type, 'ack', 'ack:true without a type is an ack');
+  assert.equal(viaPost.acknowledges, request.seq);
+  const original = pool.feed().messages.find((m) => m.seq === request.seq);
+  assert.deepEqual(original.mention_status, [{ session_id: b.session_id, acknowledged: true, decision: 'accept', ack_message_id: viaPost.seq }]);
+}));
+
+test('a caller-chosen client id can never block the real acknowledgment', () => withPool({}, (pool) => {
+  const a = pool.join({ agent: 'GPT', conversation: 'g' });
+  const b = pool.join({ agent: 'Claude', conversation: 'c' });
+  const request = pool.post({ ...a, content: 'help', mentions: [b.session_id] }).message;
+  pool.post({ ...b, content: 'unrelated', client_message_id: 'ack-' + request.seq });
+  assert.throws(() => pool.post({ ...b, content: 'x', client_message_id: 'sys:ack-' + request.seq }), /must not start/);
+  const ack = pool.ack({ ...b, message_id: request.seq, decision: 'accept' });
+  assert.equal(ack.duplicate, false);
+  assert.equal(pool.summary().pending_ack_count, 0);
+  assert.equal(pool.ack({ ...b, message_id: request.seq }).duplicate, true);
+}));
+
+test('null optional fields are treated as omitted, and bad replies give clear errors', () => withPool({}, (pool) => {
+  const a = JSON.parse(pool.invoke('pool_join', { agent: 'GPT', conversation: 'g', model: null, computer: null }).text);
+  const posted = pool.invoke('pool_post', { ...a, content: 'hi', decision: null, reply_to: null, mentions: null, type: null, client_message_id: null });
+  assert.equal(posted.isError, undefined, posted.text);
+  const zero = pool.invoke('pool_post', { ...a, content: 'hi', reply_to: 0 });
+  assert.equal(zero.isError, true);
+  assert.match(zero.text, /reply_to/);
+  assert.equal(pool.invoke('pool_read', null).isError, true);
+}));
+
+test('a session can resume with its token or hand its unanswered mentions to a new session', () => withPool({}, (pool) => {
+  const a = pool.join({ agent: 'GPT', conversation: 'g' });
+  const b = pool.join({ agent: 'Claude', conversation: 'c' });
+  const before = pool.latestSeq();
+  const resumed = pool.join({ agent: 'Claude', conversation: 'c', session_id: b.session_id, session_token: b.session_token });
+  assert.equal(resumed.resumed, true);
+  assert.equal(resumed.session_id, b.session_id);
+  assert.equal(pool.latestSeq(), before, 'resuming posts nothing');
+  const request = pool.post({ ...a, content: 'help', mentions: [b.session_id] }).message;
+  pool.read(b);
+  assert.throws(() => pool.join({ agent: 'Claude', conversation: 'other', previous_session_id: b.session_id }), /different agent or conversation/);
+  const b2 = pool.join({ agent: 'Claude', conversation: 'c', previous_session_id: b.session_id });
+  assert.equal(b2.mentions_moved, 1);
+  assert.throws(() => pool.read(b), /taken over/);
+  assert.throws(() => pool.post({ ...a, content: 'x', mentions: [b.session_id] }), /taken over/);
+  const read = pool.read(b2);
+  assert.equal(read.pending_mentions[0].message_id, request.seq);
+  assert.ok(read.messages.every((m) => m.seq > request.seq), 'read progress carries over');
+  assert.equal(pool.ack({ ...b2, message_id: request.seq }).message.acknowledges, request.seq);
+  assert.throws(() => pool.join({ agent: 'Claude', conversation: 'c', previous_session_id: b.session_id }), /already taken over/);
+}));
+
+test('long-silent sessions stop counting as pending, and are flagged when mentioned', () => {
+  let now = Date.parse('2026-11-01T00:00:00Z');
+  withPool({ now: () => now }, (pool) => {
+    const a = pool.join({ agent: 'GPT', conversation: 'g' });
+    const b = pool.join({ agent: 'Claude', conversation: 'c' });
+    pool.post({ ...a, content: 'help', mentions: [b.session_id] });
+    assert.equal(pool.summary().pending_ack_count, 1);
+    assert.equal(pool.summary().active_sessions, 2);
+    now += 25 * 3600 * 1000;
+    pool.read(a);
+    const summary = pool.summary();
+    assert.equal(summary.pending_ack_count, 0);
+    assert.equal(summary.stale_pending_count, 1);
+    assert.equal(summary.active_sessions, 1);
+    const flagged = pool.post({ ...a, content: 'again', mentions: [b.session_id] });
+    assert.match(flagged.warnings[0], /silent/);
+  });
+});
+
+test('posting and joining are rate limited, and failed attempts do not use up the limit', () => {
+  let now = Date.parse('2026-11-01T00:00:00Z');
+  withPool({ now: () => now, postsPerMinute: 3, joinsPerMinute: 3 }, (pool) => {
+    const a = pool.join({ agent: 'GPT', conversation: 'g' });
+    assert.throws(() => pool.post({ ...a, content: 'x', reply_to: 999 }), /unknown reply_to/);
+    pool.post({ ...a, content: 'm0', client_message_id: 'c1' });
+    pool.post({ ...a, content: 'm1' });
+    pool.post({ ...a, content: 'm2' });
+    assert.throws(() => pool.post({ ...a, content: 'too many' }), /too many messages/);
+    assert.equal(pool.post({ ...a, content: 'm0', client_message_id: 'c1' }).duplicate, true, 'a retry is still answered');
+    now += 61000;
+    assert.equal(pool.post({ ...a, content: 'later' }).duplicate, false);
+  });
+  withPool({ now: () => now, joinsPerMinute: 2 }, (pool) => {
+    pool.join({ agent: 'A', conversation: '1' });
+    pool.join({ agent: 'B', conversation: '2' });
+    assert.throws(() => pool.join({ agent: 'C', conversation: '3' }), /too many new sessions/);
+    now += 61000;
+    pool.join({ agent: 'C', conversation: '3' });
+  });
+});
+
+test('the database stays bounded: old messages are pruned and replies to them are cleared', () => withPool({ maxMessages: 5, postsPerMinute: 1000 }, (pool) => {
+  const a = pool.join({ agent: 'GPT', conversation: 'g' });
+  const b = pool.join({ agent: 'Claude', conversation: 'c' });
+  const old = pool.post({ ...a, content: 'old', mentions: [b.session_id] }).message;
+  for (let i = 0; i < 10; i += 1) pool.post({ ...a, content: 'n' + i });
+  const reply = pool.post({ ...b, content: 'late reply', reply_to: old.seq }).message;
+  pool.maintain();
+  const feed = pool.feed({ limit: 100 });
+  assert.equal(feed.messages.length, 5);
+  assert.equal(feed.messages.find((m) => m.seq === reply.seq).reply_to, null);
+  assert.equal(feed.pending_ack_count, 0, 'mentions on pruned messages are gone');
+}));
+
+test('a failing change listener does not turn a stored message into an error', () => {
+  const dir = workspace();
+  const pool = new PublicPool(path.join(dir, 'p.sqlite'), () => { throw new Error('listener broke'); });
+  try {
+    const a = pool.join({ agent: 'GPT', conversation: 'g' });
+    assert.equal(pool.post({ ...a, content: 'kept' }).duplicate, false);
+    assert.equal(pool.feed().messages.at(-1).content, 'kept');
+  } finally { pool.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('pool files sit beside the state file, never on it, and are private on POSIX', () => {
+  assert.equal(poolFile('/x/hub.json'), '/x/hub.pool.sqlite');
+  assert.equal(poolFile('/x/hub'), '/x/hub.pool.sqlite');
+  if (process.platform === 'win32') return;
+  withPool({}, (pool, dir) => {
+    pool.join({ agent: 'GPT', conversation: 'g' });
+    for (const f of fs.readdirSync(dir)) assert.equal(fs.statSync(path.join(dir, f)).mode & 0o077, 0, f);
+  });
+});
+
+test('a pool database from 0.4.3 is upgraded in place', () => {
+  const dir = workspace();
+  const file = path.join(dir, 'old.sqlite');
+  try {
+    const { DatabaseSync } = process.getBuiltinModule('node:sqlite');
+    const db = new DatabaseSync(file);
+    db.exec('CREATE TABLE sessions (id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, agent TEXT NOT NULL, model TEXT NOT NULL, conversation TEXT NOT NULL, computer TEXT NOT NULL, created_at TEXT NOT NULL, last_seen TEXT NOT NULL)');
+    db.close();
+    const pool = new PublicPool(file);
+    try {
+      const a = pool.join({ agent: 'GPT', conversation: 'g' });
+      assert.equal(pool.read(a).messages.length, 1);
+    } finally { pool.close(); }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('pool posts do not wake the phone notification poll', () => {
+  const dir = workspace();
+  const hub = new Hub({ file: path.join(dir, 'hub.json'), selfName: 'host', origin: () => 'https://unit.example', getToken: () => 't' });
+  try {
+    const before = hub.version;
+    const a = hub.pool.join({ agent: 'GPT', conversation: 'g' });
+    hub.pool.post({ ...a, content: 'hello' });
+    assert.equal(hub.version, before);
+  } finally { hub.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('without node:sqlite the server still starts and simply has no pool', (t) => {
+  const probe = spawnSync(process.execPath, ['--no-experimental-sqlite', '-e', 'try { require("node:sqlite"); process.exit(1) } catch { process.exit(0) }']);
+  if (probe.status !== 0) return t.skip('this Node.js cannot turn node:sqlite off');
+  const dir = workspace();
+  const script = [
+    `import { Hub } from ${JSON.stringify(new URL('../src/hub.mjs', import.meta.url).href)};`,
+    `import { createMcpServer } from ${JSON.stringify(new URL('../src/server.mjs', import.meta.url).href)};`,
+    `const token = 'no-sqlite-test-token-123';`,
+    `const hub = new Hub({ file: ${JSON.stringify(path.join(dir, 'hub.json'))}, selfName: 'host', origin: () => 'https://unit.example', getToken: () => token });`,
+    `const server = createMcpServer({ name: 'host', getToken: () => token, auditFile: null, hub });`,
+    `await new Promise((r) => server.listen(0, '127.0.0.1', r));`,
+    `const url = 'http://127.0.0.1:' + server.address().port;`,
+    `const rpc = async (method, params) => (await (await fetch(url + '/t/' + token + '/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) })).json());`,
+    `const tools = (await rpc('tools/list')).result.tools.map((t) => t.name);`,
+    `const init = (await rpc('initialize', { protocolVersion: '2025-06-18' })).result.instructions;`,
+    `const phone = await fetch(url + '/hub/api/pool', { headers: { Authorization: 'Bearer ' + hub.state.adminKey } });`,
+    `console.log(JSON.stringify({ pool: tools.some((n) => n.startsWith('pool_')), list: tools.includes('list_computers'), mentions: init.includes('pool'), status: phone.status, error: hub.poolError }));`,
+    `server.closeAllConnections(); server.close(); hub.close();`,
+  ].join('\n');
+  try {
+    const run = spawnSync(process.execPath, ['--no-experimental-sqlite', '--input-type=module', '-e', script], { encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    const out = JSON.parse(run.stdout.trim().split('\n').at(-1));
+    assert.deepEqual({ pool: out.pool, list: out.list, mentions: out.mentions, status: out.status }, { pool: false, list: true, mentions: false, status: 503 });
+    assert.match(out.error, /22\.13/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

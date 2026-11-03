@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { callDesktop, desktopSupported } from './desktop.mjs';
 import { findBash } from './shell.mjs';
-import { PublicPool } from './public-pool.mjs';
+import { PublicPool, poolFile } from './public-pool.mjs';
 
 const POLL_HOLD_MS = 25000;
 // A node polls again at once, so this much silence means it is gone.
@@ -170,13 +170,21 @@ export class Hub {
     this.grants = new Map();
     this.version = 0;
     this.eventWaiters = new Set();
-    this.pool = new PublicPool(file.replace(/\.json$/i, '.pool.sqlite'), () => this.bump());
+    // The pool is optional: without it (old Node.js, unreadable database) computers still work.
+    // Pool posts deliberately do not bump(), which would wake the phone's notification poll for every message.
+    this.pool = null;
+    this.poolError = null;
+    try {
+      this.pool = new PublicPool(poolFile(file));
+    } catch (err) {
+      this.poolError = err.message;
+    }
     this.sweeper = setInterval(() => this.sweep(), 5000);
     this.sweeper.unref();
   }
 
   close() {
-    this.pool.close();
+    this.pool?.close();
     clearInterval(this.sweeper);
     for (const live of this.live.values()) this.answerWaiter(live, { calls: [] });
   }
@@ -770,6 +778,10 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
         }
         const action = pathname.slice('/hub/api/'.length);
         if (action === 'pool' && req.method === 'GET') {
+          if (!this.pool) {
+            reply(res, 503, { error: this.poolError || 'the public AI pool is not available' });
+            return true;
+          }
           const params = new URL(req.url, 'http://localhost').searchParams;
           const cursor = params.get('after_seq');
           const afterSeq = cursor === null ? undefined : Number(cursor);

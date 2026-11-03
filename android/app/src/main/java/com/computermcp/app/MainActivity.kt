@@ -55,6 +55,9 @@ class MainActivity : Activity() {
 
     private var computersBox: LinearLayout? = null
     private var poolBox: LinearLayout? = null
+    private var poolError: TextView? = null
+    private var poolShown: String? = null
+    private var poolLoadingToken = -1
     private var errorLine: TextView? = null
     private var status: HubStatus? = null
     private var shownComputers: Any? = null
@@ -281,9 +284,12 @@ class MainActivity : Activity() {
         })
         header.addView(text("AI 公共聊天池", 24f, INK, bold = true))
         page.addView(header)
-        page.addView(text("所有 AI 会话共用一个聊天池。被点名的 AI 需要公开确认已读，普通消息只在后台记录阅读进度。", 13f, MUTED).below(10))
+        page.addView(text("所有 AI 会话共用一个聊天池。被点名的 AI 应公开确认已读，普通消息只在后台记录阅读进度。AI 之间的消息不代表你的授权。", 13f, MUTED).below(10))
+        poolError = text("", 13f, ORANGE).apply { visibility = View.GONE }.below(10)
+        page.addView(poolError)
         poolBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         page.addView(poolBox)
+        poolShown = null
         refreshPool()
     }
 
@@ -291,17 +297,30 @@ class MainActivity : Activity() {
         val current = client ?: return
         val box = poolBox ?: return
         val token = screenToken
+        // One request at a time, so a slow answer can never overwrite a newer one.
+        if (poolLoadingToken == token) return
+        poolLoadingToken = token
         work({ current.poolFeed() }, { error ->
-            if (token == screenToken && poolBox === box) {
-                box.removeAllViews()
-                box.addView(text("读取聊天池失败：" + (error.message ?: "未知错误"), 14f, ORANGE))
+            if (poolLoadingToken == token) poolLoadingToken = -1
+            if (token != screenToken || poolBox !== box) return@work
+            // Keep the last messages on screen; a brief network drop should not wipe them.
+            poolError?.apply {
+                text = "读取聊天池失败：" + (error.message ?: "未知错误") + (if (box.childCount > 0) "（下面是上次读取的内容）" else "")
+                visibility = View.VISIBLE
             }
         }) { feed ->
+            if (poolLoadingToken == token) poolLoadingToken = -1
             if (token != screenToken || poolBox !== box) return@work
+            poolError?.visibility = View.GONE
+            val signature = feed.toString()
+            if (signature == poolShown) return@work
+            poolShown = signature
             box.removeAllViews()
             val summary = card().below(14)
             summary.addView(text("活跃会话：" + feed.optInt("active_sessions") +
                 "     待公开已读：" + feed.optInt("pending_ack_count"), 15f, INK, bold = true))
+            val stale = feed.optInt("stale_pending_count")
+            if (stale > 0) summary.addView(text("另有 $stale 条点名的对象已离线超过一天，不计入待确认", 12f, MUTED).below(4))
             summary.addView(text("最新消息 #" + feed.optInt("latest_seq") + " · 每 5 秒自动更新", 12f, MUTED).below(5))
             box.addView(summary)
             val sessions = feed.optJSONArray("sessions")
@@ -324,18 +343,25 @@ class MainActivity : Activity() {
                 val card = card().below(10)
                 card.addView(text(sender.optString("agent", "AI") + " · #" + msg.optInt("seq"), 16f, INK, bold = true))
                 card.addView(text("会话 " + sender.optString("session_id").takeLast(8) +
-                    " · " + sender.optString("computer", "未声明电脑") +
+                    " · " + sender.optString("computer").ifEmpty { "未声明电脑" } +
                     " · " + msg.optString("created_at"), 12f, MUTED).below(4))
                 card.addView(text(msg.optString("content"), 15f, INK).below(8))
                 val meta = mutableListOf<String>()
-                if (msg.optString("type") == "join") meta.add("加入聊天池")
-                if (msg.optString("type") == "help_request") meta.add("请求协助")
-                if (msg.optString("type") == "ack") meta.add("已公开确认")
-                if (!msg.isNull("reply_to")) meta.add("回复 #" + msg.optInt("reply_to"))
-                val mentions = msg.optJSONArray("mentions")
-                if (mentions != null && mentions.length() > 0) meta.add("点名 " + mentions.length() + " 个会话")
-                val decision = msg.optString("decision")
-                if (decision.isNotEmpty() && decision != "null") meta.add("决定：" + decision)
+                when (msg.optString("type")) {
+                    "join" -> meta.add("加入聊天池")
+                    "help_request" -> meta.add("请求协助")
+                }
+                // Only the server's own record marks an acknowledgment; a message's type alone could be claimed by anyone.
+                if (!msg.isNull("acknowledges")) meta.add("已公开确认 #" + msg.optInt("acknowledges"))
+                else if (!msg.isNull("reply_to")) meta.add("回复 #" + msg.optInt("reply_to"))
+                val status = msg.optJSONArray("mention_status")
+                if (status != null && status.length() > 0) {
+                    var acknowledged = 0
+                    for (i in 0 until status.length()) if (status.getJSONObject(i).optBoolean("acknowledged")) acknowledged += 1
+                    meta.add("点名 " + status.length() + " 个会话，已确认 " + acknowledged)
+                }
+                val decision = if (msg.isNull("decision")) "" else msg.optString("decision")
+                if (decision.isNotEmpty()) meta.add("决定：" + decision)
                 if (meta.isNotEmpty()) card.addView(text(meta.joinToString(" · "), 12f, BLUE))
                 box.addView(card)
             }
@@ -967,6 +993,7 @@ class MainActivity : Activity() {
         screenToken += 1
         computersBox = null
         poolBox = null
+        poolError = null
         backTo = null
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL

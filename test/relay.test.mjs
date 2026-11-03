@@ -9,7 +9,7 @@ import { after, before, test } from 'node:test';
 import { buildCsr, needsRenewal } from '../src/acme.mjs';
 import { parsePair } from '../src/hub.mjs';
 import { joinHub, startNodeLink } from '../src/node-link.mjs';
-import { createAccount, createSignup, readAccount, Relay } from '../src/relay.mjs';
+import { createAccount, createSignup, readAccount, Relay, removeAccount } from '../src/relay.mjs';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmcp-relay-'));
 let relay;
@@ -122,6 +122,18 @@ test('an account removed on disk stops working', async () => {
   fs.rmSync(path.join(dir, 'accounts', `${id}.json`));
   relay.sync();
   assert.equal((await post(`/t/${token}/mcp`, {})).status, 404);
+});
+
+test('removing an account also deletes its AI pool, even while the relay held it open', () => {
+  const id = createAccount(dir).id;
+  relay.sync();
+  const accounts = path.join(dir, 'accounts');
+  const pools = () => fs.readdirSync(accounts).filter((f) => f.startsWith(id + '.pool.sqlite'));
+  assert.ok(pools().length > 0, 'the account has a pool database');
+  removeAccount(dir, id);
+  relay.sync();
+  assert.deepEqual(pools(), []);
+  assert.ok(!fs.existsSync(path.join(accounts, id + '.json')));
 });
 
 test('pair codes accept an IP address with a port', () => {
