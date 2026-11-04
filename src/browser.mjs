@@ -417,3 +417,110 @@ export function browserTool(args = {}) {
   queue = run.catch(() => {});
   return run;
 }
+
+// ---- Taking over from the phone: the same calls as the desktop's handoff_*, for this browser ----
+
+const pageIds = new WeakMap();
+let nextPageId = 1;
+// Negative, so it can never be mistaken for a Windows window handle.
+function handleOf(p) {
+  if (!pageIds.has(p)) pageIds.set(p, nextPageId++);
+  return -pageIds.get(p);
+}
+
+export const isAiBrowserHandle = (hwnd) => Number(hwnd) < 0;
+export const aiBrowserRunning = () => Boolean(context);
+
+const KEYS = {
+  enter: 'Enter', tab: 'Tab', esc: 'Escape', backspace: 'Backspace', delete: 'Delete', up: 'ArrowUp', down: 'ArrowDown',
+  left: 'ArrowLeft', right: 'ArrowRight', 'ctrl+a': 'Control+A', 'shift+tab': 'Shift+Tab', space: 'Space',
+};
+
+const titleOf = async (p) => `AI 浏览器 · ${(await p.title().catch(() => '')) || p.url()}`;
+
+function pageByHandle(hwnd) {
+  const found = context?.pages().find((p) => handleOf(p) === Number(hwnd));
+  if (!found) throw new BrowserError('that browser tab is no longer available');
+  return found;
+}
+
+async function handoff(method, args) {
+  if (method === 'handoff_list') {
+    if (!context && args.launch && browserInstalled()) await open();
+    const windows = context ? await Promise.all(context.pages().map(async (p) => ({ hwnd: handleOf(p), title: await titleOf(p), automation: false, minimized: false }))) : [];
+    return { text: `${windows.length} AI browser tabs`, windows };
+  }
+  if (method === 'handoff_start') {
+    await open();
+    const p = page() || await context.newPage();
+    return { text: 'browser selected', hwnd: handleOf(p), title: await titleOf(p) };
+  }
+  if (!context) throw new BrowserError('that browser tab is no longer available');
+  const p = pageByHandle(args.hwnd);
+  if (method === 'handoff_select') {
+    current = p;
+    await p.bringToFront();
+    return { text: 'browser selected', hwnd: handleOf(p), title: await titleOf(p) };
+  }
+  if (method === 'handoff_frame') {
+    const shot = await p.screenshot({ type: 'jpeg', quality: 66 });
+    return { text: 'browser frame', image: { data: shot.toString('base64'), mimeType: 'image/jpeg' } };
+  }
+  if (method !== 'handoff_input') throw new BrowserError(`unknown method ${method}`);
+  const view = p.viewportSize() || { width: 1280, height: 900 };
+  const at = (x, y) => {
+    if (![x, y].every((v) => typeof v === 'number' && v >= 0 && v <= 1)) throw new BrowserError('coordinates outside browser');
+    return [Math.min(view.width - 1, Math.round(x * view.width)), Math.min(view.height - 1, Math.round(y * view.height))];
+  };
+  switch (args.action) {
+    case 'click': await p.mouse.click(...at(args.x, args.y)); break;
+    case 'double_click': await p.mouse.dblclick(...at(args.x, args.y)); break;
+    case 'right_click': await p.mouse.click(...at(args.x, args.y), { button: 'right' }); break;
+    case 'drag': {
+      await p.mouse.move(...at(args.x, args.y));
+      await p.mouse.down();
+      await p.mouse.move(...at(args.to_x, args.to_y), { steps: 12 });
+      await p.mouse.up();
+      break;
+    }
+    case 'scroll': {
+      const amount = Number(args.amount);
+      if (!Number.isFinite(amount) || amount < -10 || amount > 10) throw new BrowserError('scroll amount out of range');
+      await p.mouse.move(...at(args.x, args.y));
+      // A wheel notch up is positive on Windows; in the browser positive scrolls down.
+      await p.mouse.wheel(0, -amount * 120);
+      break;
+    }
+    case 'type':
+      if (typeof args.text !== 'string' || args.text.length > 2000) throw new BrowserError('text must be at most 2000 characters');
+      await p.keyboard.insertText(args.text);
+      break;
+    case 'key':
+      if (!KEYS[args.keys]) throw new BrowserError('key not permitted');
+      await p.keyboard.press(KEYS[args.keys]);
+      break;
+    default:
+      throw new BrowserError('unsupported input action');
+  }
+  return { text: `${args.action} performed in browser` };
+}
+
+// Runs a phone takeover call against this browser, in turn with the AI's own actions.
+export function aiBrowserHandoff(method, args = {}) {
+  const run = queue.then(async () => {
+    try {
+      return await handoff(method, args);
+    } catch (err) {
+      return { text: err instanceof BrowserError ? err.message : `browser: ${clean(err)}`, isError: true };
+    } finally {
+      // The person using it from the phone keeps it open, like the AI does.
+      if (context) {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => { closeBrowser(); }, IDLE_MS);
+        idleTimer.unref();
+      }
+    }
+  });
+  queue = run.catch(() => {});
+  return run;
+}

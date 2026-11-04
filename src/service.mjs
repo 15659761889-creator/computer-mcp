@@ -7,8 +7,9 @@ import { BROWSER_METHODS, Hub, hubPath } from './hub.mjs';
 import { startNodeLink } from './node-link.mjs';
 import { auditLogger, createMcpServer } from './server.mjs';
 import { callTool, hasTool, summarizeArgs } from './tools.mjs';
-import { callDesktop, desktopSupported, stopDesktop, warmDesktop } from './desktop.mjs';
+import { stopDesktop, warmDesktop } from './desktop.mjs';
 import { cleanWorkDir } from './shell.mjs';
+import { localHandoff } from './handoff-local.mjs';
 import { LAN_PORT, allowThroughFirewall, lanAddresses, startDiscovery, startLanServer } from './lan.mjs';
 import { Transfers, handleXferLan, isXferTool, runXfer, transfersFile, xferPsk } from './transfer.mjs';
 import { spawnTunnel, tunnelConfigPath } from './tunnel.mjs';
@@ -116,10 +117,7 @@ async function runJoinedComputer(config) {
       // File copies the main computer drives; too many and too small for the audit log.
       if (isXferTool(tool)) return runXfer(tool, args);
       // The phone's browser view, relayed by the hub: not tools the AI can call.
-      if (tool.startsWith('_') && BROWSER_METHODS.includes(tool.slice(1))) {
-        if (!desktopSupported) return { text: 'this computer has no desktop control', isError: true };
-        return callDesktop(tool.slice(1), args).catch((err) => ({ text: err.message, isError: true }));
-      }
+      if (tool.startsWith('_') && BROWSER_METHODS.includes(tool.slice(1))) return localHandoff(tool.slice(1), args);
       if (!hasTool(tool)) return { text: `${tool} is not available on this computer`, isError: true };
       const started = Date.now();
       const outcome = await callTool(tool, args);

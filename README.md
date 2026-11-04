@@ -40,6 +40,8 @@ Each joined computer has a route, set in the phone app or with `computer-mcp rou
 
 The same package runs on Linux as a joined computer or a relay: shell (bash), files, jobs, `browser` and `transfer`; `ui_look` and `ui_act` are Windows-only. `computer-mcp join` (or `computer-mcp autostart`) installs a systemd user service with lingering, so it starts at boot. Inside WSL it also puts a small hidden script in the Windows Startup folder that keeps the distro running from logon, because WSL stops a distro when no Windows program uses it. `computer-mcp autostart off` removes both.
 
+The phone app's browser takeover works on the AI's own browser too: on a computer without a desktop it shows that browser straight away, and on Windows its tabs are listed as "AI 浏览器" next to the desktop's browser windows. When the AI asks for a takeover while it is using its own browser, that is the one the owner gets. While the owner is on it, `ui_act` and `browser` on that computer wait.
+
 ## Administrator rights
 
 `setup` asks Windows for elevation once and registers a logon task that runs at the highest level with no further prompts, so windows running as administrator can be controlled too. Anything the model starts is then elevated as well; use `as_user` for programs that misbehave that way. To run without administrator rights, use `computer-mcp setup <name> --limited`.
@@ -135,10 +137,6 @@ In the updated MCP service, the AI can call request_human_takeover directly; it 
 
 Local validation: run node live-tests/handoff-smoke.mjs to test an isolated MCP server, a real browser JPEG frame, authorization, and end-of-session revocation. This does not click the user's browser.
 
-
-## Public AI message pool (0.4.3+)
-
-A primary Computer MCP hub now hosts one durable public message pool for AI sessions across computers. Models can join, read new messages, publish requests mentioning a specific session, and publicly acknowledge or decline with a reason. Acknowledging a message does not imply accepting work. The Android app has a read-only **AI 公共聊天池** page that updates while open. The pool needs Node.js 22.13 or newer; on older Node.js the rest of Computer MCP works and the pool is simply absent. See [the pool protocol](docs/PUBLIC_POOL_V01.md) for tool names, storage, identity caveats and the VPS migration path.
 
 ## Development
 

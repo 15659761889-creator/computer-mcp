@@ -2,10 +2,11 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { callDesktop, desktopSupported } from './desktop.mjs';
+import { desktopSupported } from './desktop.mjs';
+import { browserInstalled } from './browser.mjs';
+import { localHandoff } from './handoff-local.mjs';
 import { availableShells } from './shell.mjs';
 import { ROUTES, nodePsk } from './lan.mjs';
-import { OWNER, PoolError, PublicPool, poolFile } from './public-pool.mjs';
 
 const POLL_HOLD_MS = 25000;
 // A node polls again at once, so this much silence means it is gone.
@@ -63,6 +64,7 @@ export function machineInfo() {
     home: os.homedir(),
     shells: availableShells(),
     desktop: desktopSupported,
+    browser: browserInstalled(),
   };
 }
 
@@ -75,6 +77,8 @@ function friendlyBrowserError(text) {
     [/elevated/i, '浏览器以管理员身份运行，Windows 不允许这样操作'],
     [/offline/i, '这台电脑不在线'],
     [/locked|secure desktop|lock screen/i, '电脑锁屏了，或者正在弹出系统权限确认，需要在电脑上处理'],
+    [/AI browser is not installed/i, '这台电脑还没装 AI 浏览器（在电脑上运行 computer-mcp browser）'],
+    [/tab is no longer available/i, '这个浏览器标签页已经关了，请重新选择'],
     [/no desktop control|not available on this computer/i, '这台电脑没有安装桌面控制'],
     [/choose a browser|choose another/i, '请先选择要看的浏览器窗口'],
   ];
@@ -184,22 +188,11 @@ export class Hub {
     this.lan = null;
     // Set by the service: moves files between computers (transfer.mjs).
     this.transfers = null;
-    // The pool is optional: without it (old Node.js, unreadable database) computers still work.
-    // Pool activity wakes the phone's notification poll only when what it should show changes, not for every message.
-    this.poolAlertKeys = '';
-    this.pool = null;
-    this.poolError = null;
-    try {
-      this.pool = new PublicPool(poolFile(file), () => this.checkPoolAlerts());
-    } catch (err) {
-      this.poolError = err.message;
-    }
     this.sweeper = setInterval(() => this.sweep(), 5000);
     this.sweeper.unref();
   }
 
   close() {
-    this.pool?.close();
     clearInterval(this.sweeper);
     for (const live of this.live.values()) this.answerWaiter(live, { calls: [] });
   }
@@ -350,27 +343,7 @@ export class Hub {
     this.eventWaiters.clear();
   }
 
-  // A pool problem must never break the phone's status, so failures show as no alerts.
-  poolAlerts() {
-    if (!this.pool) return [];
-    try {
-      return this.pool.ownerAlerts();
-    } catch {
-      return [];
-    }
-  }
-
-  checkPoolAlerts() {
-    if (!this.pool) return;
-    const keys = this.poolAlerts().map((a) => a.key).join('|');
-    if (keys === this.poolAlertKeys) return;
-    this.poolAlertKeys = keys;
-    this.bump();
-  }
-
   sweep() {
-    // Waiting and silence change over time, so a stuck discussion is noticed without any new message.
-    try { this.checkPoolAlerts(); } catch { /* the pool is optional */ }
     const now = Date.now();
     for (const [key, grant] of this.grants) if (grant.expires < now) this.grants.delete(key);
     for (const [id, request] of this.secretRequests) {
@@ -521,52 +494,6 @@ export class Hub {
     return sameSecret(key, this.state.adminKey);
   }
 
-  // ---- The AI chat pool, as the owner sees and uses it from the phone ----
-
-  async handlePool(action, req, res) {
-    if (!this.pool) {
-      reply(res, 503, { error: this.poolError || 'the public AI pool is not available' });
-      return;
-    }
-    const params = new URL(req.url, 'http://localhost').searchParams;
-    const number = (name) => {
-      if (!params.has(name)) return undefined;
-      const value = Number(params.get(name));
-      if (!Number.isSafeInteger(value) || value < 0) throw new PoolError('invalid ' + name);
-      return value;
-    };
-    try {
-      if (action === 'pool' && req.method === 'GET') {
-        const limit = number('limit') ?? 50;
-        if (limit < 1) throw new PoolError('invalid limit');
-        reply(res, 200, this.pool.feed({ afterSeq: number('after_seq'), limit, topicId: number('topic') }));
-        return;
-      }
-      if (action === 'pool/messages' && req.method === 'POST') {
-        reply(res, 200, this.pool.ownerPost(await readJson(req)));
-        return;
-      }
-      if (action === 'pool/topics' && req.method === 'POST') {
-        const body = await readJson(req);
-        reply(res, 200, { topic: this.pool.startTopic(OWNER, body.title, body.goal ?? undefined) });
-        return;
-      }
-      const topicAction = /^pool\/topics\/(\d+)\/(conclude|reopen)$/.exec(action);
-      if (topicAction && req.method === 'POST') {
-        const topicId = Number(topicAction[1]);
-        const topic = topicAction[2] === 'conclude'
-          ? this.pool.concludeTopic(OWNER, topicId, (await readJson(req)).conclusion)
-          : this.pool.reopenTopic(topicId);
-        reply(res, 200, { topic });
-        return;
-      }
-      reply(res, 404, { error: 'not found' });
-    } catch (err) {
-      if (err instanceof PoolError) reply(res, 400, { error: err.message });
-      else throw err;
-    }
-  }
-
   // ---- Browser takeover from the phone app, on any computer ----
 
   computerById(id) {
@@ -575,10 +502,7 @@ export class Hub {
   }
 
   async desktopOn(id, method, args) {
-    if (id === 'self') {
-      if (!desktopSupported) return { text: 'this computer has no desktop control', isError: true };
-      return callDesktop(method, args).catch((err) => ({ text: err.message, isError: true }));
-    }
+    if (id === 'self') return localHandoff(method, args);
     const computer = this.state.computers[id];
     if (!computer) return { text: 'no such computer', isError: true };
     return this.forward(computer, `_${method}`, args);
@@ -594,8 +518,19 @@ export class Hub {
     return reply;
   }
 
+  // A computer with only the AI's own browser has nothing to choose from.
+  onlyAiBrowser(id) {
+    const info = id === 'self' ? machineInfo() : this.state.computers[id]?.info;
+    return Boolean(info && !info.desktop && info.browser);
+  }
+
   async browserFrame(id) {
-    const session = this.browsers.get(id);
+    let session = this.browsers.get(id);
+    if (!session?.hwnd && this.onlyAiBrowser(id)) {
+      const started = await this.browserStart(id);
+      if (started.isError) return started;
+      session = this.browsers.get(id);
+    }
     if (!session?.hwnd) return { text: 'choose a browser window first', isError: true, pick: true };
     let reply = await this.desktopOn(id, 'handoff_frame', { hwnd: session.hwnd });
     // The helper restarted and forgot the window: select the same one again, never a different one.
@@ -676,7 +611,7 @@ export class Hub {
       return {
         text: `Asked the owner to take over the browser "${started.title}" on ${computerName} in the Computer MCP phone app.
 id: ${request.id}
-Tell the user to open the app, finish the verification and tap Return to AI. ui_act on ${computerName} is blocked until then (15 minutes at most). Then call check_human_takeover with this id, and ui_look before continuing.`,
+Tell the user to open the app, finish the verification and tap Return to AI. ui_act and browser on ${computerName} are blocked until then (15 minutes at most). Then call check_human_takeover with this id, and look again (browser look, or ui_look) before continuing.`,
       };
     }
     if (name === 'check_human_takeover') {
@@ -787,10 +722,9 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
       version: this.version,
       mcp: { full: `${origin}/t/${token}/mcp`, address: `${origin}/mcp`, key: token },
       secretRequests: [...this.secretRequests.values()].map(({ id, computer, hint, part, reason, where }) => ({ id, computer, hint, part, reason, where })),
-      poolAlerts: this.poolAlerts(),
       computers: [
         ...(this.selfName ? [{
-          id: 'self', name: this.selfName, note: this.state.selfNote || '', online: true, main: true, os: machineInfo().os, desktop: desktopSupported, takeover: this.takeoverOf('self'),
+          id: 'self', name: this.selfName, note: this.state.selfNote || '', online: true, main: true, os: machineInfo().os, desktop: desktopSupported, browser: browserInstalled(), takeover: this.takeoverOf('self'),
         }] : []),
         ...Object.values(this.state.computers).map((c) => ({
           id: c.id,
@@ -801,6 +735,7 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
           os: c.info?.os || '',
           lastSeen: this.lastSeenOf(c),
           desktop: c.info?.desktop === true,
+          browser: c.info?.browser === true,
           takeover: this.takeoverOf(c.id),
           route: this.routeOf(c),
           via: this.isOnline(c.id) ? this.live.get(c.id)?.via || null : null,
@@ -949,10 +884,6 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
           return true;
         }
         const action = pathname.slice('/hub/api/'.length);
-        if (action === 'pool' || action.startsWith('pool/')) {
-          await this.handlePool(action, req, res);
-          return true;
-        }
         if (action === 'activity' && req.method === 'GET') {
           res.setHeader('Cache-Control', 'no-store');
           reply(res, 200, { active: [...this.activeCalls.values()].reverse(), recent: this.recentCalls });

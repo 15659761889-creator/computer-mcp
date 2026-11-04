@@ -105,3 +105,24 @@ test('a screenshot comes back when asked', { skip: !ready && 'browser not instal
   assert.equal(shot.image.mimeType, 'image/jpeg');
   assert.ok(shot.image.data.length > 1000);
 });
+
+test('the phone can take over the AI browser: list, frame, click, type, keys', { skip: !ready && 'browser not installed' }, async () => {
+  const { aiBrowserHandoff } = await import('../src/browser.mjs');
+  const { localHandoff } = await import('../src/handoff-local.mjs');
+  await go({ action: 'open', url: base });
+  const list = await localHandoff('handoff_list', {});
+  const tab = list.windows.find((w) => w.title.includes('测试页'));
+  assert.ok(tab && tab.hwnd < 0, JSON.stringify(list));
+  assert.equal((await aiBrowserHandoff('handoff_select', { hwnd: tab.hwnd })).title, tab.title);
+  const frame = await aiBrowserHandoff('handoff_frame', { hwnd: tab.hwnd });
+  assert.equal(frame.image.mimeType, 'image/jpeg');
+  // Click the search box by its place on the page, as a finger on the phone would.
+  const box = JSON.parse((await go({ action: 'js', value: 'JSON.stringify((() => { const r = document.querySelector("input[name=q]").getBoundingClientRect(); return { x: (r.left + r.width / 2) / innerWidth, y: (r.top + r.height / 2) / innerHeight }; })())' })).text.replace(/^"|"$/g, '').replace(/\\"/g, '"'));
+  await aiBrowserHandoff('handoff_input', { hwnd: tab.hwnd, action: 'click', x: box.x, y: box.y });
+  await aiBrowserHandoff('handoff_input', { hwnd: tab.hwnd, action: 'type', text: '手机输入' });
+  await aiBrowserHandoff('handoff_input', { hwnd: tab.hwnd, action: 'key', keys: 'enter' });
+  await go({ action: 'wait', text: '你搜索了' });
+  assert.match((await go({ action: 'look' })).text, /你搜索了：手机输入/);
+  assert.equal((await aiBrowserHandoff('handoff_input', { hwnd: tab.hwnd, action: 'key', keys: 'f12' })).isError, true);
+  assert.match((await aiBrowserHandoff('handoff_frame', { hwnd: -9999 })).text, /no longer available/);
+});

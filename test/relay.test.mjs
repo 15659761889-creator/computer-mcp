@@ -136,12 +136,12 @@ test('an account removed on disk stops working', async () => {
   assert.equal((await post(`/t/${token}/mcp`, {})).status, 404);
 });
 
-test('removing an account also deletes its AI pool, even while the relay held it open', () => {
+test('removing an account also deletes its files, including an old chat pool database', () => {
   const id = createAccount(dir).id;
   relay.sync();
   const accounts = path.join(dir, 'accounts');
+  for (const end of ['', '-wal']) fs.writeFileSync(path.join(accounts, `${id}.pool.sqlite${end}`), '');
   const pools = () => fs.readdirSync(accounts).filter((f) => f.startsWith(id + '.pool.sqlite'));
-  assert.ok(pools().length > 0, 'the account has a pool database');
   removeAccount(dir, id);
   relay.sync();
   assert.deepEqual(pools(), []);

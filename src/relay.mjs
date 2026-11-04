@@ -8,7 +8,6 @@ import { LETS_ENCRYPT, LETS_ENCRYPT_STAGING, needsRenewal, obtainCertificate, re
 import { homeDir } from './config.mjs';
 import { Hub, loadHubState } from './hub.mjs';
 import { Transfers, transfersFile } from './transfer.mjs';
-import { removePoolFiles } from './public-pool.mjs';
 import { sendJson, serveMcp } from './server.mjs';
 
 // A relay is a hub on a rented server: it has no machine of its own, every computer connects
@@ -81,24 +80,8 @@ export function readAccount(dir, id) {
 export function removeAccount(dir, id) {
   fs.rmSync(accountFile(dir, id), { force: true });
   fs.rmSync(transfersFile(accountFile(dir, id)), { force: true });
-  // A running relay may still hold the pool open; its next sync removes what is left.
-  removePoolFiles(accountFile(dir, id));
-}
-
-// Pool databases whose account file is gone, left by a removal while the relay held them open.
-function orphanPools(dir, ids) {
-  let files;
-  try {
-    files = fs.readdirSync(accountsDir(dir));
-  } catch {
-    return [];
-  }
-  const orphans = new Set();
-  for (const f of files) {
-    const id = /^([a-f0-9]{8,})\.pool\.sqlite(?:-wal|-shm|-journal)?$/.exec(f)?.[1];
-    if (id && !ids.has(id)) orphans.add(id);
-  }
-  return [...orphans];
+  // Chat pool databases from versions before 0.6.1.
+  for (const end of ['', '-wal', '-shm', '-journal']) fs.rmSync(accountFile(dir, id).replace(/\.json$/, `.pool.sqlite${end}`), { force: true });
 }
 
 // One file per code, so the CLI adding codes and the service using them never write the same file.
@@ -149,7 +132,6 @@ export class Relay {
         this.hubs.delete(id);
       }
     }
-    for (const id of orphanPools(this.dir, ids)) removePoolFiles(accountFile(this.dir, id));
     for (const id of ids) {
       if (this.hubs.has(id)) continue;
       try {
