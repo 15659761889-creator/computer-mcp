@@ -64,7 +64,10 @@ function writeState(state) {
 async function openLan(config, { pskFor, handle, findMe }) {
   if (config.lan === false) return null;
   const log = (line) => console.log(line);
-  const server = await startLanServer({ port: config.lanPort || LAN_PORT, pskFor, handle, log });
+  // Never the MCP port: Windows lets a wildcard bind shadow it instead of failing.
+  let wanted = config.lanPort || LAN_PORT;
+  if (wanted === config.port) wanted += 2;
+  const server = await startLanServer({ port: wanted, pskFor, handle, log });
   if (!server) return null;
   const { port } = server.address();
   console.log(`LAN port ${port} open on ${lanAddresses().join(', ') || 'no network yet'}; firewall: ${allowThroughFirewall(port)}`);
