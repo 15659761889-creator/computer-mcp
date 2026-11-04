@@ -13,7 +13,7 @@ import { availableShells, defaultShell, findBash } from './shell.mjs';
 import { ALL_TOOLS, callTool, hasTool, summarizeArgs, TOOLS } from './tools.mjs';
 import { TRANSFER_TOOL } from './transfer.mjs';
 
-const VERSION = '0.6.4';
+const VERSION = '0.6.5';
 const SUPPORTED_PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const MAX_AUDIT_BYTES = 50 * 1024 * 1024;
