@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { BROWSER_TOOL, browserTool } from './browser.mjs';
 import { callDesktop, desktopSupported } from './desktop.mjs';
 import { describeJob, findJob, jobOutput, killJob, listJobs, logPathOf, startJob, waitForJob } from './jobs.mjs';
 import { DEFAULT_TIMEOUT_SECS, DEFAULT_WAIT_SECS, MAX_TIMEOUT_SECS, defaultShell } from './shell.mjs';
@@ -151,6 +152,7 @@ const BASE_TOOLS = [
     },
     annotations: { title: 'Edit file', destructiveHint: true, openWorldHint: false },
   },
+  BROWSER_TOOL,
 ];
 
 export function resolvePath(input) {
@@ -421,7 +423,7 @@ async function desktopCall(method, args) {
   return { text: reply.text, isError: reply.isError === true, image: reply.image };
 }
 
-const HANDLERS = { bash, job, read_file: readFile, write_file: writeFile, edit_file: editFile };
+const HANDLERS = { bash, job, read_file: readFile, write_file: writeFile, edit_file: editFile, browser: browserTool };
 if (desktopSupported) {
   HANDLERS.ui_look = (args) => desktopCall('look', args);
   HANDLERS.ui_act = (args) => desktopCall('act', args);
@@ -459,6 +461,8 @@ export function summarizeArgs(name, args = {}) {
       return summarizeAct(args);
     case 'write_file':
       return { path: args.path, bytes: typeof args.content === 'string' ? args.content.length : undefined, encoding: args.encoding };
+    case 'browser':
+      return { action: args.action, url: args.url, id: args.id, text: args.text, key: args.key, index: args.index, value_chars: typeof args.value === 'string' ? args.value.length : undefined };
     case 'transfer':
       return { from: args.from, from_path: args.from_path, to: args.to, to_path: args.to_path, route: args.route, overwrite: args.overwrite, id: args.id, cancel: args.cancel };
     case 'edit_file':

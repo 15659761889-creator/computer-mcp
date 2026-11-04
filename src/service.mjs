@@ -12,6 +12,9 @@ import { cleanWorkDir } from './shell.mjs';
 import { LAN_PORT, allowThroughFirewall, lanAddresses, startDiscovery, startLanServer } from './lan.mjs';
 import { Transfers, handleXferLan, isXferTool, runXfer, transfersFile, xferPsk } from './transfer.mjs';
 import { spawnTunnel, tunnelConfigPath } from './tunnel.mjs';
+import {
+  installLinuxAutostart, linuxAutostartState, removeLinuxAutostart, startLinuxService, stopLinuxService,
+} from './autostart-linux.mjs';
 
 const IS_WINDOWS = process.platform === 'win32';
 const TASK_NAME = 'ComputerMCP';
@@ -238,8 +241,9 @@ function runElevated(script) {
 }
 
 export function installAutostart({ limited = false } = {}) {
+  if (process.platform === 'linux') return installLinuxAutostart();
   if (!IS_WINDOWS) {
-    return { installed: false, note: 'Automatic start is Windows-only so far; run `computer-mcp run` from your service manager.' };
+    return { installed: false, note: 'Automatic start is not built for this system yet; run `computer-mcp run` from your service manager.' };
   }
   const cli = path.join(homeDir(), 'app', 'bin', 'computer-mcp.mjs');
   const launcher = path.join(homeDir(), 'launcher.vbs');
@@ -280,6 +284,7 @@ Register-ScheduledTask -TaskName ${quoted(TASK_NAME)} -Action $action -Trigger $
 }
 
 export function startService() {
+  if (process.platform === 'linux') return startLinuxService();
   if (!IS_WINDOWS) throw new Error('on this system start it with: computer-mcp run');
   const result = powershell(`Start-ScheduledTask -TaskName '${TASK_NAME}'`);
   if (result.status !== 0) throw new Error(`could not start the task: ${result.stderr.trim()}`);
@@ -305,6 +310,8 @@ async function askToStop(config) {
 
 export async function stopService() {
   if (IS_WINDOWS) powershell(`Stop-ScheduledTask -TaskName '${TASK_NAME}' -ErrorAction SilentlyContinue`);
+  // Stopped through systemd first, or Restart=always would bring it straight back.
+  if (process.platform === 'linux') stopLinuxService();
   const config = loadConfig();
   if (config) await askToStop(config);
   const state = readState();
@@ -314,12 +321,14 @@ export async function stopService() {
 }
 
 export function removeAutostart() {
+  if (process.platform === 'linux') return removeLinuxAutostart();
   if (!IS_WINDOWS) return;
   powershell(`Unregister-ScheduledTask -TaskName '${TASK_NAME}' -Confirm:$false -ErrorAction SilentlyContinue`);
   fs.rmSync(path.join(homeDir(), 'launcher.vbs'), { force: true });
 }
 
 export function autostartState() {
+  if (process.platform === 'linux') return linuxAutostartState();
   if (!IS_WINDOWS) return 'not supported';
   const result = powershell(`(Get-ScheduledTask -TaskName '${TASK_NAME}' -ErrorAction SilentlyContinue | ForEach-Object { "$($_.State), run level $($_.Principal.RunLevel)" })`);
   return result.stdout.trim() || 'not installed';

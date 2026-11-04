@@ -13,6 +13,7 @@ Give any computer its own MCP link, so a model can control it. Requires Node.js 
 | `edit_file` | Replace exact text, keeping encoding and line endings. Refuses if the match is not unique. |
 | `ui_look` | Windows only. Windows, controls and on-screen text as a numbered list with coordinates, plus a screenshot when needed. |
 | `ui_act` | Windows only. Click, type, press keys, scroll, drag and manage windows by id, text or coordinates, then return the new state. |
+| `browser` | The AI's own browser: headless Chromium with its own profile (logins kept), read as numbered elements and text like `ui_look`. Works on computers without a screen. Install with `computer-mcp browser` (about 300 MB; on Linux it also installs the libraries and Chinese fonts when sudo needs no password). |
 | `transfer` | With several computers: copy a file or folder between them, any size, over the LAN when possible. Resumes after interruptions and checks SHA-256 before putting it in place. |
 
 ## Desktop control
@@ -34,6 +35,10 @@ Each joined computer has a route, set in the phone app or with `computer-mcp rou
 - `public`: never use the LAN.
 
 `transfer` copies between any two computers. Over the LAN the receiver pulls straight from the sender; over the internet the data passes through the main computer in 8 MB pieces. A chosen route that cannot work is an error, never a silent switch; `auto` says when it fell back. The copy is written to `<to_path>.cmcp-part` and resumes from there after a restart or a dropped connection, and replaces nothing until every file matches the source's SHA-256. Links are skipped. `config.json` `"lan": false` keeps the LAN port closed, `"lanPort"` moves it.
+
+## Linux
+
+The same package runs on Linux as a joined computer or a relay: shell (bash), files, jobs, `browser` and `transfer`; `ui_look` and `ui_act` are Windows-only. `computer-mcp join` (or `computer-mcp autostart`) installs a systemd user service with lingering, so it starts at boot. Inside WSL it also puts a small hidden script in the Windows Startup folder that keeps the distro running from logon, because WSL stops a distro when no Windows program uses it. `computer-mcp autostart off` removes both.
 
 ## Administrator rights
 

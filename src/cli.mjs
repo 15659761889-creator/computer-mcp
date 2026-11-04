@@ -11,6 +11,7 @@ import {
   autostartState, installAppCopy, installAutostart, removeAutostart, runService, startService, stopService,
 } from './service.mjs';
 import { desktopInstalled, desktopSupported, installDesktop } from './desktop.mjs';
+import { browserInstalled, installBrowser } from './browser.mjs';
 import { connectionParts, copyToClipboard, getQuickLink } from './link.mjs';
 import { defaultShell, findBash, saveShellChoice, shellChoice } from './shell.mjs';
 import { installBash } from './bash-install.mjs';
@@ -73,10 +74,14 @@ const HELP = `computer-mcp: give this computer its own fixed MCP link
   computer-mcp status         show whether the service and the link work
   computer-mcp rotate         replace the secret; the old link stops working at once
   computer-mcp desktop        install desktop control (ui_look, ui_act); setup does this too
+  computer-mcp browser        install the AI's own browser (Chromium + Playwright, about 300 MB)
+      --proxy <url>           proxy for the download
   computer-mcp shell [powershell|bash|auto]   choose the AI's default shell; bash downloads
                               Git Bash first when it is missing (Windows, about 60 MB)
       --proxy <url>           proxy for the download
   computer-mcp update         make the service run this installed version
+  computer-mcp autostart [off]  start automatically with the computer (Windows: logon task;
+                              Linux: systemd user service, plus a keeper in Windows under WSL)
   computer-mcp start | stop   start or stop the service
   computer-mcp run            run in the foreground (what the startup task calls)
   computer-mcp uninstall      remove automatic start, keep the link for a later setup
@@ -356,7 +361,7 @@ async function joinCommand({ flags, positional }) {
   }
   const autostart = installAutostart({ limited: flags.limited === true });
   if (autostart.installed) startService();
-  else console.log(autostart.note);
+  if (autostart.note) console.log(autostart.note);
   console.log(`\nDone. This computer is now "${joined.name}". It starts by itself and appears in the phone app.`);
 }
 
@@ -498,6 +503,7 @@ async function status() {
     console.log(`joined to:   ${config.joined.origin}`);
     console.log(`local:       ${await localHealthy(config.port) ? 'running' : 'NOT running'}`);
     console.log(`autostart:   ${autostartState()}`);
+    console.log(`browser:     ${browserInstalled() ? 'installed' : 'not installed; run computer-mcp browser'}`);
     console.log(`audit log:   ${path.join(logDir(), 'audit.jsonl')}`);
     return;
   }
@@ -510,6 +516,7 @@ async function status() {
   console.log(`autostart:   ${autostartState()}`);
   console.log(`shell:       ${shellLine()}`);
   if (desktopSupported) console.log(`desktop:     ${desktopInstalled() ? 'installed' : 'not installed; run computer-mcp desktop'}`);
+  console.log(`browser:     ${browserInstalled() ? 'installed' : 'not installed; run computer-mcp browser'}`);
   console.log(`audit log:   ${path.join(logDir(), 'audit.jsonl')}`);
   console.log(`tunnel log:  ${tunnelLogPath()}`);
   if (!local || !remote) process.exitCode = 1;
@@ -595,6 +602,9 @@ export async function main(argv) {
     }
     case 'shell':
       return shellCommand(parsed);
+    case 'browser':
+      await installBrowser({ proxy: parsed.flags.proxy === true ? undefined : parsed.flags.proxy || loadConfig()?.proxy });
+      return undefined;
     case 'desktop':
       installDesktop({ proxy: parsed.flags.proxy === true ? undefined : parsed.flags.proxy || loadConfig()?.proxy });
       return undefined;
@@ -605,6 +615,22 @@ export async function main(argv) {
       startService();
       console.log('The service now runs this version.');
       return undefined;
+    case 'autostart': {
+      requireConfig();
+      if (parsed.positional[0] === 'off') {
+        await stopService();
+        removeAutostart();
+        console.log('Automatic start removed and the service stopped. Start it again with: computer-mcp autostart');
+        return undefined;
+      }
+      installAppCopy();
+      const autostart = installAutostart({ limited: parsed.flags.limited === true });
+      if (!autostart.installed) throw new Error(autostart.note);
+      await stopService();
+      startService();
+      console.log(`Starts automatically (${autostart.level}) and is running now.${autostart.note ? `\nNote: ${autostart.note}` : ''}`);
+      return undefined;
+    }
     case 'start':
       requireConfig();
       return startService();
