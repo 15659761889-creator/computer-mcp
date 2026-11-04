@@ -78,9 +78,10 @@ const HELP = `computer-mcp: give this computer its own fixed MCP link
       --computer <name> --tags a,b --open           optional; --open leaves the note unlocked
       lock <id|key> | unlock <id|key>               lock a note, which also makes it yours
       forget <id|key>         delete a note and wipe its text from the file
-      authors                 who has written, newest first
+      authors                 who has written, newest first, and where their calls came from
       revoke <author> [--since <date>]              undo everything one AI wrote (and wipe it)
-      purge                   rewrite the file with only the notes that are live
+      revoke --all --since <date>                   undo every AI write since then, whatever names they gave
+      purge                   keep only live notes; also ends the history, so nothing before can be undone
   computer-mcp status         show whether the service and the link work
   computer-mcp rotate         replace the secret; the old link stops working at once
   computer-mcp desktop        install desktop control (ui_look, ui_act); setup does this too
@@ -556,18 +557,20 @@ function memoryCommand({ positional, flags }) {
     case 'authors': {
       const rows = store.authors();
       if (!rows.length) console.log('Nobody has written yet.');
-      for (const row of rows) console.log(`${row.author}: ${row.events} writes, last ${row.last}`);
+      for (const row of rows) console.log(`${row.author}: ${row.events} writes, last ${row.last}${row.via.length ? `, from ${row.via.join('; ')}` : ''}`);
       return;
     }
     case 'revoke': {
-      if (!rest[0]) throw new Error('memory revoke needs the name of an AI (see: computer-mcp memory authors)');
-      const { events } = store.revoke({ author: rest[0], since: flag('since') });
-      console.log(`Undid ${events} writes by "${rest[0]}" and wiped them from the file.`);
+      const all = Boolean(flags.all);
+      if (all && !flag('since')) throw new Error('memory revoke --all needs --since <date>, the time from which every AI write is undone');
+      if (!all && !rest[0]) throw new Error('memory revoke needs the name of an AI (see: computer-mcp memory authors), or --all --since <date>');
+      const { events } = store.revoke({ author: all ? '*' : rest[0], since: flag('since') });
+      console.log(`Undid ${events} writes by ${all ? 'every AI' : `"${rest[0]}"`} and wiped them from the file.`);
       return;
     }
     case 'purge': {
       const s = store.purge();
-      console.log(`The file now holds only live notes: ${s.facts} facts, ${s.handoffs} handoffs.`);
+      console.log(`The file now holds only live notes: ${s.facts} facts, ${s.handoffs} handoffs. Earlier writes can no longer be undone.`);
       return;
     }
     default:

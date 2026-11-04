@@ -26,6 +26,7 @@ import android.view.WindowManager
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -259,6 +260,7 @@ class MainActivity : Activity() {
         page.addView(computersBox)
         page.addView(primary("＋ 添加电脑") { addComputer() }.below(16))
         page.addView(secondary("AI 正在做什么") { showActivity() }.below(10))
+        page.addView(secondary("AI 的共享记忆") { showMemory() }.below(10))
 
         val extras = card().below(24)
         extras.addView(text("密码库", 17f, INK, bold = true))
@@ -357,6 +359,10 @@ class MainActivity : Activity() {
             "request_human_takeover" -> "请求手机接管"
             "check_human_takeover" -> "查看接管状态"
             "cancel_human_takeover" -> "结束接管"
+            "memory_write" -> "写入共享记忆"
+            "memory_forget" -> "删除共享记忆"
+            "transfer" -> "在电脑之间传文件"
+            "browser" -> "使用 AI 浏览器"
             else -> "调用工具"
         }
         val (status, color) = when (entry.optString("status")) {
@@ -379,6 +385,156 @@ class MainActivity : Activity() {
             addView(text(time + elapsed, 13f, MUTED).below(6))
             addView(text(status, 13f, color).below(4))
         }.below(10)
+    }
+
+    // ---- Shared memory ----
+
+    private fun showMemory() {
+        val current = client ?: return
+        val page = page()
+        backTo = { showHome() }
+        val token = screenToken
+        page.addView(header("共享记忆") { showHome() })
+        page.addView(text("AI 之间互相留的笔记。你的笔记会交给每个连上来的 AI，锁定后 AI 改不了也删不掉；AI 写的笔记只有 AI 主动读取时才看得到。", 13f, MUTED).below(10))
+        val notice = text("正在读取…", 13f, MUTED).below(10)
+        page.addView(notice)
+        page.addView(primary("＋ 添加我的笔记") { addMemoryNote() }.below(14))
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        page.addView(box)
+        work({ current.memory() }, { error ->
+            if (token != screenToken) return@work
+            notice.text = error.message ?: "读取失败"
+            notice.setTextColor(ORANGE)
+        }) { view ->
+            if (token != screenToken) return@work
+            val mine = view.notes.filter { it.owner }
+            val fromAi = view.notes.filter { !it.owner }
+            notice.text = "共 ${view.notes.size} 条笔记，${view.chars} 字。"
+            box.addView(secondary("撤销 AI 写入的内容…") { chooseRevoke(view.authors) }.below(10))
+            box.addView(text("我的笔记（${mine.size}）", 17f, INK, bold = true).below(22))
+            if (mine.isEmpty()) box.addView(text("还没有。可以写下你希望每个 AI 都知道的规则和情况。", 14f, MUTED).below(8))
+            mine.forEach { box.addView(memoryCard(it)) }
+            box.addView(text("AI 写的笔记（${fromAi.size}）", 17f, INK, bold = true).below(22))
+            if (fromAi.isEmpty()) box.addView(text("还没有 AI 留下笔记。", 14f, MUTED).below(8))
+            fromAi.forEach { box.addView(memoryCard(it)) }
+        }
+    }
+
+    private fun memoryMeta(note: MemoryNote): String = listOfNotNull(
+        if (note.locked) "已锁定" else null,
+        if (note.owner) "我写的" else "AI：${note.author}",
+        shortTime(note.updated),
+        note.computer,
+    ).joinToString(" · ")
+
+    private fun memoryCard(note: MemoryNote) = card().apply {
+        addView(text(note.key ?: "交接记录", 15f, INK, bold = true))
+        addView(text(memoryMeta(note), 12f, if (note.locked) GREEN else MUTED).below(4))
+        addView(text(note.text, 14f, INK).apply {
+            maxLines = 6
+            ellipsize = TextUtils.TruncateAt.END
+        }.below(8))
+        setOnClickListener { openMemoryNote(note) }
+    }.below(10)
+
+    private fun openMemoryNote(note: MemoryNote) {
+        val current = client ?: return
+        val details = buildString {
+            append(note.text)
+            append("\n\n").append(memoryMeta(note))
+            if (!note.owner && note.via != null) append("\n来自：").append(note.via)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(note.key ?: "交接记录")
+            .setMessage(details)
+            .setPositiveButton(if (note.locked) "解锁" else "锁定") { _, _ ->
+                work({ current.memoryLock(note.id, !note.locked) }, { error -> toast(error.message ?: "操作失败") }) {
+                    toast(if (note.locked) "已解锁，AI 可以修改它了" else "已锁定，这条笔记现在算你的")
+                    showMemory()
+                }
+            }
+            .setNeutralButton("删除") { _, _ ->
+                AlertDialog.Builder(this)
+                    .setTitle("删除这条笔记？")
+                    .setMessage("会从电脑上彻底抹掉，不能恢复。")
+                    .setPositiveButton("删除") { _, _ ->
+                        work({ current.memoryForget(note.id) }, { error -> toast(error.message ?: "删除失败") }) {
+                            toast("已删除")
+                            showMemory()
+                        }
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    private fun addMemoryNote() {
+        val current = client ?: return
+        val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val key = EditText(this).apply { hint = "名称，比如 规则.重启、电脑2.用途" }
+        val body = EditText(this).apply { hint = "内容，一句话说清楚"; minLines = 3 }
+        val computer = EditText(this).apply { hint = "关于哪台电脑（可不填）" }
+        val locked = CheckBox(this).apply { text = "锁定（AI 不能修改或删除）"; isChecked = true }
+        listOf(key, body, computer, locked).forEach { form.addView(it) }
+        AlertDialog.Builder(this)
+            .setTitle("添加我的笔记")
+            .setView(padded(form))
+            .setPositiveButton("保存") { _, _ ->
+                val name = key.text.toString().trim()
+                val content = body.text.toString().trim()
+                if (name.isEmpty() || content.isEmpty()) {
+                    toast("名称和内容都要填")
+                    return@setPositiveButton
+                }
+                work({ current.memoryAdd(name, content, computer.text.toString().trim(), locked.isChecked) }, { error -> toast(error.message ?: "保存失败") }) {
+                    toast("已保存")
+                    showMemory()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    // The name an AI gives is only what it says about itself, so undoing by time is the sure way.
+    private fun chooseRevoke(authors: List<MemoryAuthor>) {
+        val hour = 60 * 60 * 1000L
+        val midnight = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        val choices = mutableListOf<Pair<String, () -> Pair<String?, Long?>>>(
+            "所有 AI 最近 1 小时写的" to { null to System.currentTimeMillis() - hour },
+            "所有 AI 今天写的" to { null to midnight },
+            "所有 AI 写的全部内容" to { null to 0L },
+        )
+        authors.filter { !it.author.equals("owner", ignoreCase = true) }.forEach { a ->
+            val from = if (a.via.isEmpty()) "" else "，来自 ${a.via.first()}"
+            choices += "只撤销「${a.author}」（${a.writes} 次${from}）" to { a.author to null }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("撤销哪些写入？")
+            .setItems(choices.map { it.first }.toTypedArray()) { _, which ->
+                val (label, pick) = choices[which]
+                val (author, since) = pick()
+                AlertDialog.Builder(this)
+                    .setTitle("确认撤销")
+                    .setMessage("$label：它们新写的、改过的、删掉的都会恢复原样，写入的文字会从电脑上抹掉。你自己的笔记不受影响。")
+                    .setPositiveButton("撤销") { _, _ ->
+                        val current = client ?: return@setPositiveButton
+                        work({ current.memoryRevoke(author, since) }, { error -> toast(error.message ?: "撤销失败") }) { count ->
+                            toast(if (count == 0) "没有需要撤销的写入" else "已撤销 $count 次写入")
+                            showMemory()
+                        }
+                    }
+                    .setNegativeButton("取消", null)
+                    .show()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun header(title: String, onBack: () -> Unit) = LinearLayout(this).apply {

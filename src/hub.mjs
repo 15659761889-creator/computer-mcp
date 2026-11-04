@@ -7,6 +7,7 @@ import { browserInstalled } from './browser.mjs';
 import { localHandoff } from './handoff-local.mjs';
 import { availableShells } from './shell.mjs';
 import { ROUTES, nodePsk } from './lan.mjs';
+import { MemoryError } from './memory.mjs';
 
 const POLL_HOLD_MS = 25000;
 // A node polls again at once, so this much silence means it is gone.
@@ -188,6 +189,8 @@ export class Hub {
     this.lan = null;
     // Set by the service: moves files between computers (transfer.mjs).
     this.transfers = null;
+    // Set by the service when shared memory is on (memory.mjs).
+    this.memory = null;
     this.sweeper = setInterval(() => this.sweep(), 5000);
     this.sweeper.unref();
   }
@@ -430,6 +433,68 @@ export class Hub {
     call.resolve(outcome && typeof outcome.text === 'string'
       ? outcome
       : { text: 'the computer returned an unreadable result', isError: true });
+  }
+
+  // ---- The shared memory, from the phone app ----
+
+  // The phone acts as the owner: its notes are locked unless it says otherwise, and its deletes and
+  // undos wipe the text from the file, the same as `computer-mcp memory` on the computer.
+  handleMemory(action, method, body) {
+    const memory = this.memory;
+    if (!memory) return { status: 404, body: { error: '这台主电脑没有开启共享记忆' } };
+    const id = typeof body?.id === 'string' ? body.id : undefined;
+    try {
+      if (!action && method === 'GET') {
+        const notes = memory.all().map((e) => ({
+          id: e.id,
+          kind: e.kind,
+          key: e.key ?? null,
+          text: e.text,
+          computer: e.computer ?? null,
+          tags: e.tags ?? [],
+          author: e.author,
+          owner: e.by === 'owner',
+          locked: Boolean(e.locked),
+          rev: e.rev,
+          updated: e.updated,
+          via: e.via ?? null,
+        }));
+        return { status: 200, body: { notes, stats: memory.stats(), authors: memory.authors() } };
+      }
+      if (method !== 'POST') return { status: 404, body: { error: 'not found' } };
+      if (action === 'add') {
+        const kind = body?.kind === 'handoff' ? 'handoff' : 'fact';
+        const found = kind === 'fact' && body?.key ? memory.get({ key: body.key }) : null;
+        const { entry } = memory.write({
+          kind,
+          text: body?.text,
+          key: kind === 'fact' ? body?.key : undefined,
+          computer: body?.computer || undefined,
+          if_rev: found?.rev,
+          by: 'owner',
+          locked: body?.locked !== false,
+        });
+        return { status: 200, body: { id: entry.id } };
+      }
+      if (action === 'forget') {
+        memory.forget({ id, by: 'owner' });
+        return { status: 200, body: { ok: true } };
+      }
+      if (action === 'lock') {
+        memory.setLock({ id }, body?.locked !== false);
+        return { status: 200, body: { ok: true } };
+      }
+      if (action === 'revoke') {
+        const all = body?.all === true;
+        if (all && !Number.isFinite(body?.since)) return { status: 400, body: { error: '撤销所有 AI 的写入时要给出起始时间' } };
+        const { events } = memory.revoke({ author: all ? '*' : body?.author, since: body?.since });
+        return { status: 200, body: { events } };
+      }
+    } catch (err) {
+      if (err instanceof MemoryError) return { status: 400, body: { error: err.message } };
+      throw err;
+    }
+    return { status: 404, body: { error: 'not found' } };
   }
 
   // ---- Pairing and management ----
@@ -905,6 +970,12 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
         }
         if (action === 'invites' && req.method === 'POST') {
           reply(res, 200, this.createInvite());
+          return true;
+        }
+        const memoryAction = /^memory(?:\/(add|forget|lock|revoke))?$/.exec(action);
+        if (memoryAction) {
+          const done = this.handleMemory(memoryAction[1], req.method, memoryAction[1] ? await readJson(req) : null);
+          reply(res, done.status, done.body);
           return true;
         }
         const browser = /^computers\/([a-z0-9]+)\/browser\/(frame|input|start|finish|windows|select)$/.exec(action);

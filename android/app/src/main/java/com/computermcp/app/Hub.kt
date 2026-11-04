@@ -172,6 +172,25 @@ data class HubStatus(
 
 data class Invite(val pair: String, val minutes: Int)
 
+/** One note in the shared memory. owner: the owner wrote its latest version. */
+data class MemoryNote(
+    val id: String,
+    val kind: String,
+    val key: String?,
+    val text: String,
+    val computer: String?,
+    val author: String,
+    val owner: Boolean,
+    val locked: Boolean,
+    val updated: String,
+    val via: String?,
+)
+
+/** Who has written to the memory: the name an AI gave, and where its calls came from. */
+data class MemoryAuthor(val author: String, val writes: Int, val last: String, val via: List<String>)
+
+data class MemoryView(val notes: List<MemoryNote>, val authors: List<MemoryAuthor>, val chars: Int)
+
 /** The main computer's management API. Every call blocks, so run it off the main thread. */
 class HubClient(private val connection: Connection) {
     private fun request(method: String, path: String, body: JSONObject? = null, readTimeoutMs: Int = 15000): JSONObject {
@@ -249,6 +268,63 @@ class HubClient(private val connection: Connection) {
     }
 
     fun activityFeed(): JSONObject = request("GET", "activity")
+
+    fun memory(): MemoryView {
+        val json = try {
+            request("GET", "memory")
+        } catch (error: HubException) {
+            if (error.message == "not found") throw HubException("主电脑的 Computer MCP 版本太旧，还没有共享记忆，请先升级")
+            throw error
+        }
+        val notes = json.getJSONArray("notes")
+        val authors = json.getJSONArray("authors")
+        fun JSONObject.text(name: String) = if (isNull(name)) null else optString(name).ifEmpty { null }
+        return MemoryView(
+            notes = List(notes.length()) { index ->
+                val n = notes.getJSONObject(index)
+                MemoryNote(
+                    id = n.getString("id"),
+                    kind = n.optString("kind"),
+                    key = n.text("key"),
+                    text = n.optString("text"),
+                    computer = n.text("computer"),
+                    author = n.optString("author"),
+                    owner = n.optBoolean("owner"),
+                    locked = n.optBoolean("locked"),
+                    updated = n.optString("updated"),
+                    via = n.text("via"),
+                )
+            },
+            authors = List(authors.length()) { index ->
+                val a = authors.getJSONObject(index)
+                val via = a.optJSONArray("via")
+                MemoryAuthor(a.optString("author"), a.optInt("events"), a.optString("last"), List(via?.length() ?: 0) { via!!.optString(it) })
+            },
+            chars = json.optJSONObject("stats")?.optInt("chars") ?: 0,
+        )
+    }
+
+    /** Saves a note as the owner; locked notes cannot be changed or deleted by any AI. */
+    fun memoryAdd(key: String, text: String, computer: String?, locked: Boolean) {
+        val body = JSONObject().put("kind", "fact").put("key", key).put("text", text).put("locked", locked)
+        if (!computer.isNullOrBlank()) body.put("computer", computer)
+        request("POST", "memory/add", body)
+    }
+
+    /** Deletes a note and wipes its text from the computer's disk. */
+    fun memoryForget(id: String) {
+        request("POST", "memory/forget", JSONObject().put("id", id))
+    }
+
+    fun memoryLock(id: String, locked: Boolean) {
+        request("POST", "memory/lock", JSONObject().put("id", id).put("locked", locked))
+    }
+
+    /** Undoes one AI's writes (author), or every AI's writes since sinceMs (author null). Returns how many. */
+    fun memoryRevoke(author: String?, sinceMs: Long?): Int {
+        val body = if (author != null) JSONObject().put("author", author) else JSONObject().put("all", true).put("since", sinceMs ?: 0L)
+        return request("POST", "memory/revoke", body).optInt("events")
+    }
 
     fun invite(): Invite {
         val json = request("POST", "invites")

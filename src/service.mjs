@@ -174,6 +174,8 @@ export async function runService() {
   } catch (err) {
     console.error(`shared memory is off: ${err.message}`);
   }
+  // The phone app manages the notes through the hub.
+  if (hub) hub.memory = memory;
   const server = createMcpServer({
     name: config.name,
     getToken,

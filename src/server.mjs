@@ -11,7 +11,7 @@ import { availableShells, defaultShell, findBash } from './shell.mjs';
 import { ALL_TOOLS, callTool, hasTool, summarizeArgs, TOOLS } from './tools.mjs';
 import { TRANSFER_TOOL } from './transfer.mjs';
 
-const VERSION = '0.6.1';
+const VERSION = '0.6.2';
 const SUPPORTED_PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const MAX_AUDIT_BYTES = 50 * 1024 * 1024;
@@ -211,10 +211,11 @@ async function callAndAudit(id, params, context) {
   }
   const started = Date.now();
   let finishActivity;
-  // Memory calls stay out of the phone's activity feed: they name no computer and are not actions on one.
-  if (context.hub && !memoryTool) {
+  // Memory writes and deletes show in the phone's activity feed, so the owner sees what AIs leave
+  // for each other; reads would only be noise.
+  if (context.hub && name !== 'memory_read') {
     const hub = context.hub;
-    const own = !hubTool && !transferTool;
+    const own = !hubTool && !transferTool && !memoryTool;
     const target = own && typeof args?.computer === 'string' ? hub.resolve(args.computer) : null;
     const localDefault = own && args?.computer === undefined && !hub.hasOthers();
     const computer = target?.self || localDefault ? hub.selfName || null : target?.computer?.name ?? null;

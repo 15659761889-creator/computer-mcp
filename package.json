@@ -1,6 +1,6 @@
 {
   "name": "@zhuangzihan/computer-mcp",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Remote computer control MCP server with Cloudflare Quick Tunnels or fixed domains; bash, file and desktop control tools.",
   "type": "module",
   "bin": {
