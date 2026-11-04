@@ -16,6 +16,25 @@ Give any computer its own MCP link, so a model can control it. Requires Node.js 
 | `browser` | The AI's own browser: headless Chromium with its own profile (logins kept), read as numbered elements and text like `ui_look`. Works on computers without a screen. Install with `computer-mcp browser` (about 300 MB; on Linux it also installs the libraries and Chinese fonts when sudo needs no password). |
 | `transfer` | With several computers: copy a file or folder between them, any size, over the LAN when possible. Resumes after interruptions and checks SHA-256 before putting it in place. |
 | `recent_calls` | Read-only. The latest tool calls from every AI session, newest first, so a new AI can tell what the last one did, whether it finished and where to continue. See "Picking up unfinished work". |
+| `skill_list`, `skill_load` | Discover host-stored skills and load instructions for a named computer, including setup status. |
+| `skill_read` | Read text files attached to a skill, with path confinement. |
+| `skill_risk` | Review the exact proposed setup command using conservative static risk rules. Never executes a command. |
+
+## Skills (host-scoped, computer-aware)
+
+Skills are reusable instructions stored only on the MCP host, not pushed to every computer. Create a folder under the MCP home directory, `skills/<skill-name>/SKILL.md`, with YAML frontmatter followed by instructions. The frontmatter needs `name` (matching the folder, lowercase English letters, digits or hyphens) and `description`; optional fields include `designed_for`, `requires`, `check`, `setup` and `hints`. Other files can live in `scripts/`, `references/` or `assets/`. For example:
+
+```md
+---
+name: project-check
+description: Review a source checkout on the selected computer
+---
+Check the current Git status first and do not overwrite another AI's changes.
+```
+
+Call `skill_list({computer:"pc-test"})` to discover skills and their readiness on that computer, then `skill_load({name:"project-check",computer:"pc-test"})` to read instructions. Use `skill_read` for named text files and `skill_risk` to inspect a proposed install command before executing it with `bash`. Per-computer settings may be stored at `config/<computer-name>.yaml`; those settings do not change the skill's content hash. A skill requiring setup reports `needs_setup` or `stale` until independently verified for the target.
+
+**Security:** Skill instructions are untrusted data, not extra authority. `skill_risk` uses conservative static heuristics and never runs anything or grants approval. The server does not auto-run `setup` or `check` commands, download third-party skills, install packages, or mark unverified requirements as ready. Review exact commands and secure approval before any consequential action. Restart a deployed MCP server and refresh a client's tool list after updating the source; editing the repository alone does not update the running service.
 
 ## Shared memory
 

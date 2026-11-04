@@ -8,6 +8,7 @@ import { HandoffManager, HANDOFF_TOOLS } from './handoff.mjs';
 import { SECRET_TOOL } from './hub.mjs';
 import { HISTORY_TOOL, latestHandoff, renderRecentCalls } from './history.mjs';
 import { MEMORY_TOOLS, MEMORY_TOOL_NAMES } from './memory.mjs';
+import { SkillStore, SKILL_TOOLS, SKILL_TOOL_NAMES, SKILL_GUIDE } from './skills.mjs';
 import { availableShells, defaultShell, findBash } from './shell.mjs';
 import { ALL_TOOLS, callTool, hasTool, summarizeArgs, TOOLS } from './tools.mjs';
 import { TRANSFER_TOOL } from './transfer.mjs';
@@ -66,7 +67,7 @@ function soloComputers(name) {
 
 // Every tool gains a required computer parameter, so a call can never land on a default machine by accident.
 // Memory tools take no required computer, so they sit beside list_computers and transfer, not inside the wrapper.
-function hubTools(hub, memory, auditFile) {
+function hubTools(hub, memory, auditFile, skills) {
   const withComputer = (tool) => ({
     ...tool,
     inputSchema: {
@@ -78,7 +79,7 @@ function hubTools(hub, memory, auditFile) {
       required: ['computer', ...(tool.inputSchema.required || [])],
     },
   });
-  return [listComputersTool(memory), ...(hub?.transfers ? [TRANSFER_TOOL] : []), ...(memory ? MEMORY_TOOLS : []), ...(auditFile ? [HISTORY_TOOL] : []), ...[...ALL_TOOLS, SECRET_TOOL, ...HANDOFF_TOOLS].map(withComputer)];
+  return [listComputersTool(memory), ...(hub?.transfers ? [TRANSFER_TOOL] : []), ...(memory ? MEMORY_TOOLS : []), ...(auditFile ? [HISTORY_TOOL] : []), ...(skills ? SKILL_TOOLS : []), ...[...ALL_TOOLS, SECRET_TOOL, ...HANDOFF_TOOLS].map(withComputer)];
 }
 
 function instructions(name) {
@@ -136,14 +137,14 @@ async function handleRpc(message, context) {
         protocolVersion: SUPPORTED_PROTOCOLS.includes(requested) ? requested : SUPPORTED_PROTOCOLS[0],
         capabilities: { tools: {} },
         serverInfo: { name: `computer-mcp-${context.name}`, version: VERSION },
-        instructions: resume,
+        instructions: context.skills ? `${resume}\n\n${SKILL_GUIDE}` : resume,
       });
     }
     case 'ping':
       return rpcResult(id, {});
     case 'tools/list':
-      if (context.hub) return rpcResult(id, { tools: hubTools(context.hub, context.memory, context.auditFile) });
-      return rpcResult(id, { tools: [...(context.memory ? [listComputersTool(context.memory)] : []), ...(desktopSupported ? [...TOOLS, ...HANDOFF_TOOLS] : TOOLS), ...(context.memory ? MEMORY_TOOLS : []), ...(context.auditFile ? [HISTORY_TOOL] : [])] });
+      if (context.hub) return rpcResult(id, { tools: hubTools(context.hub, context.memory, context.auditFile, context.skills) });
+      return rpcResult(id, { tools: [...(context.memory ? [listComputersTool(context.memory)] : []), ...(desktopSupported ? [...TOOLS, ...HANDOFF_TOOLS] : TOOLS), ...(context.memory ? MEMORY_TOOLS : []), ...(context.auditFile ? [HISTORY_TOOL] : []), ...(context.skills ? SKILL_TOOLS : [])] });
     case 'tools/call':
       return callAndAudit(id, params, context);
     default:
@@ -210,8 +211,9 @@ async function callAndAudit(id, params, context) {
   const transferTool = Boolean(context.hub?.transfers) && name === TRANSFER_TOOL.name;
   const memoryTool = Boolean(context.memory) && MEMORY_TOOL_NAMES.has(name);
   const historyTool = Boolean(context.auditFile) && name === HISTORY_TOOL.name;
+  const skillTool = Boolean(context.skills) && SKILL_TOOL_NAMES.has(name);
   const known = hasTool(name) || (context.hub && (name === SECRET_TOOL.name || ALL_TOOLS.some((tool) => tool.name === name)));
-  if (typeof name !== 'string' || (!known && !handoffTool && !hubTool && !transferTool && !memoryTool && !historyTool)) return rpcError(id, -32602, `unknown tool: ${name}`);
+  if (typeof name !== 'string' || (!known && !handoffTool && !hubTool && !transferTool && !memoryTool && !historyTool && !skillTool)) return rpcError(id, -32602, `unknown tool: ${name}`);
   const args = params.arguments;
   if (args !== undefined && (typeof args !== 'object' || args === null || Array.isArray(args))) {
     return rpcError(id, -32602, 'arguments must be an object');
@@ -220,7 +222,7 @@ async function callAndAudit(id, params, context) {
   let finishActivity;
   // Memory writes and deletes show in the phone's activity feed, so the owner sees what AIs leave
   // for each other; reads (memory_read, recent_calls) would only be noise.
-  if (context.hub && name !== 'memory_read' && !historyTool) {
+  if (context.hub && name !== 'memory_read' && !historyTool && !skillTool) {
     const hub = context.hub;
     const own = !hubTool && !transferTool && !memoryTool;
     const target = own && typeof args?.computer === 'string' ? hub.resolve(args.computer) : null;
@@ -234,6 +236,8 @@ async function callAndAudit(id, params, context) {
       // Who it came from is recorded as seen from here; the author name in the call is only what the AI says.
       const via = [context.userAgent, context.clientIp].filter(Boolean).join(' @ ');
       outcome = context.memory.tool(name, args ?? {}, { via });
+    } else if (skillTool) {
+      outcome = context.skills.tool(name, args ?? {});
     } else if (hubTool) {
       const memory = context.memory ? { memory: context.memory.banner() } : {};
       const computers = context.hub ? context.hub.listComputers() : soloComputers(context.name);
@@ -368,9 +372,11 @@ export async function serveMcp(req, res, context, allowSse = true) {
   }
 }
 
-export function createMcpServer({ name, getToken, auditFile, allowSse = true, onShutdown, publicOrigin = () => null, hub = null, memory = null }) {
+export function createMcpServer({ name, getToken, auditFile, allowSse = true, onShutdown, publicOrigin = () => null, hub = null, memory = null, skillsStore = null }) {
   const audit = auditLogger(auditFile);
   const handoff = new HandoffManager(publicOrigin);
+  // Skills live once on this host. The computer argument selects a target, not a storage location.
+  const skills = skillsStore ?? new SkillStore({ computers: () => hub ? hub.listComputers().computers : soloComputers(name).computers });
 
   function authorized(req, pathname) {
     const pathToken = /^\/t\/([^/]+)\/mcp\/?$/.exec(pathname)?.[1];
@@ -419,7 +425,7 @@ export function createMcpServer({ name, getToken, auditFile, allowSse = true, on
         sendJson(res, 401, { error: 'unauthorized' }, { 'WWW-Authenticate': 'Bearer' });
         return;
       }
-      await serveMcp(req, res, { name, audit, auditFile: audit.file ?? null, handoff, hub, memory, clientIp: req.headers['cf-connecting-ip'] || req.socket.remoteAddress, userAgent: req.headers['user-agent'] }, allowSse);
+      await serveMcp(req, res, { name, audit, auditFile: audit.file ?? null, handoff, hub, memory, skills, clientIp: req.headers['cf-connecting-ip'] || req.socket.remoteAddress, userAgent: req.headers['user-agent'] }, allowSse);
     } catch (err) {
       if (!res.headersSent) sendJson(res, err.status || 500, { error: err.status ? err.message : 'internal error' });
       else res.end();

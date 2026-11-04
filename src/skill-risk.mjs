@@ -115,7 +115,9 @@ function flagValue(args, names) {
   return undefined;
 }
 const hasFlag = (args, names) => args.some((a) => names.some((n) => a.toLowerCase() === n || a.toLowerCase().startsWith(n + '=')));
-const nonFlags = (args) => args.filter((a) => !a.startsWith('-') && !a.startsWith('/'));
+// POSIX absolute paths start with '/'; never discard them as command flags.
+// On Windows, slash-prefixed switches (for example /S) remain excluded.
+const nonFlags = (args, ctx) => args.filter((a) => !a.startsWith('-') && !(ctx?.os === 'windows' && a.startsWith('/')));
 
 function placeOf(paths, ctx) {
   if (!paths.length) return 'outside';
@@ -149,7 +151,7 @@ const elevatedRule = (s) => {
 };
 
 const destructiveRule = (s, ctx) => {
-  if (DISK_KILL.has(s.cmd)) return [F('destructive', 'destructive.disk', `${s.cmd} rewrites disks or partitions`)];
+  if (DISK_KILL.has(s.cmd) || /^mkfs(?:\.[a-z0-9_-]+)?$/.test(s.cmd) || ['mke2fs', 'mkswap', 'wipefs', 'sgdisk'].includes(s.cmd)) return [F('destructive', 'destructive.disk', `${s.cmd} rewrites disks or partitions`)];
   if (s.cmd === 'dd') {
     const of = s.args.find((a) => a.startsWith('of='))?.slice(3);
     return of && inSkill(of, ctx)
@@ -157,17 +159,17 @@ const destructiveRule = (s, ctx) => {
       : [F('destructive', 'destructive.dd', 'dd writes outside the skill area')];
   }
   if (!DESTROY.has(s.cmd)) return [];
-  return placeOf(nonFlags(s.args), ctx) === 'isolated'
+  return placeOf(nonFlags(s.args, ctx), ctx) === 'isolated'
     ? [F('isolated', 'destructive.rm-in-skill', 'every delete target is inside the skill area')]
     : [F('destructive', 'destructive.rm', 'deletes or overwrites paths outside the skill area')];
 };
 
 const fileOpRule = (s, ctx) => {
   let targets;
-  if (ALL_ARGS_OPS.has(s.cmd)) targets = nonFlags(s.args);
+  if (ALL_ARGS_OPS.has(s.cmd)) targets = nonFlags(s.args, ctx);
   else if (DEST_OPS.has(s.cmd)) {
     const d = flagValue(s.args, ['-C', '-d', '-DestinationPath', '-Destination', '-t']);
-    const nf = nonFlags(s.args);
+    const nf = nonFlags(s.args, ctx);
     targets = d ? [d] : nf.length ? [nf[nf.length - 1]] : [];
   } else return [];
   const where = placeOf(targets, ctx);
@@ -216,7 +218,7 @@ const venvRule = (s, ctx) => {
   if (!PY.has(s.cmd)) return [];
   const i = s.args.indexOf('-m');
   if (i < 0 || !['venv', 'virtualenv'].includes(s.args[i + 1])) return [];
-  const dest = nonFlags(s.args.slice(i + 2))[0];
+  const dest = nonFlags(s.args.slice(i + 2), ctx)[0];
   if (dest && inSkill(dest, ctx)) return [F('isolated', 'venv.skill', 'creates a venv inside the skill area')];
   return [F(dest && inHome(dest, ctx) ? 'user-level' : 'system-wide', 'venv.other', 'creates a venv outside the skill area')];
 };
