@@ -269,8 +269,16 @@ test('a saved password is typed after the phone allows it, and the AI never sees
   assert.equal(typed[0][0], 'ui_act');
   assert.deepEqual(typed[0][1], { steps: [{ action: 'type', text: 'hunter2-秘密', target: 'Password', clear: true }, { action: 'key', keys: 'enter' }], observe: false });
 
-  // The same approval covers the username, with no second question.
-  const user = await call('type_secret', { computer: 'delta', secret: 'github', part: 'username' });
+  // Each fill needs its own approval, even for the same account.
+  const userWait = call('type_secret', { computer: 'delta', secret: 'github', part: 'username' });
+  let userRequest;
+  for (let i = 0; i < 50 && !userRequest; i += 1) {
+    userRequest = (await (await admin('status')).json()).secretRequests[0];
+    if (!userRequest) await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.ok(userRequest);
+  await fetch(`${base}/hub/api/secrets/${userRequest.id}`, { method: 'POST', headers: { Authorization: `Bearer ${adminKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ approve: true, label: 'GitHub 工作号', username: 'me@example.com' }) });
+  const user = await userWait;
   assert.doesNotMatch(JSON.stringify(user), /me@example\.com/);
   assert.equal(typed[1][1].steps[0].text, 'me@example.com');
   assert.deepEqual((await (await admin('status')).json()).secretRequests, []);
@@ -317,4 +325,61 @@ test('a phone action on a covered browser brings it back once and retries', asyn
   assert.equal((await post('input', { action: 'click', x: 0.5, y: 0.5 })).status, 200);
   assert.deepEqual(seen, ['_handoff_select', '_handoff_input', '_handoff_select', '_handoff_input']);
   await post('finish', {});
+});
+
+
+test('takeover rejects unknown IDs and does not overwrite a pending request', async () => {
+  const joined = await addComputer('takeover-review', async (tool) => tool === '_handoff_start' ? { text: 'selected', hwnd: 77, title: 'test' } : { text: 'ok' });
+  const first = await call('request_human_takeover', { computer: 'takeover-review' });
+  const id = /id: ([a-f0-9]+)/.exec(first.content[0].text)[1];
+  assert.equal((await call('check_human_takeover', { computer: 'takeover-review', id: 'wrong' })).isError, true);
+  assert.equal((await call('request_human_takeover', { computer: 'takeover-review' })).isError, true);
+  await admin(`computers/${joined.id}/browser/finish`, 'POST');
+  assert.match((await call('check_human_takeover', { computer: 'takeover-review', id })).content[0].text, /complete/);
+  const next = await call('request_human_takeover', { computer: 'takeover-review' });
+  const nextId = /id: ([a-f0-9]+)/.exec(next.content[0].text)[1];
+  assert.match((await call('check_human_takeover', { computer: 'takeover-review', id })).content[0].text, /complete/);
+  assert.match((await call('check_human_takeover', { computer: 'takeover-review', id: nextId })).content[0].text, /waiting/);
+  await admin(`computers/${joined.id}/browser/finish`, 'POST');
+});
+
+test('each password fill requires its own approval even after another fill', async () => {
+  const hub = new Hub({ state: { adminKey: 'a', computers: {}, invites: [] }, selfName: 'mock', origin: () => 'https://example.invalid', getToken: () => 'test' });
+  try {
+    const run = async () => ({ text: 'typed' });
+    const first = hub.typeSecret({ self: true }, { secret: 'GitHub', part: 'username', window: 'login' }, run);
+    hub.answerSecret([...hub.secretRequests.keys()][0], { approve: true, username: 'dummy', password: 'dummy' });
+    await first;
+    const second = hub.typeSecret({ self: true }, { secret: 'GitHub', part: 'password', window: 'other' }, run);
+    const request = [...hub.secretRequests.keys()][0];
+    assert.ok(request, 'second fill must require approval');
+    hub.answerSecret(request, { approve: false });
+    assert.equal((await second).isError, true);
+  } finally { hub.close(); }
+});
+
+
+test('starting takeover blocks other control and parallel requests', async () => {
+  const h = new Hub({ state: { adminKey: 'a', computers: {}, invites: [] }, selfName: 'mock', origin: () => 'https://example.invalid', getToken: () => 'test' });
+  let finish;
+  h.desktopOn = () => new Promise(resolve => { finish = resolve; });
+  try {
+    const first = h.takeover('request_human_takeover', { self: true });
+    assert.equal(h.browserLocked('self'), true);
+    assert.equal((await h.takeover('request_human_takeover', { self: true })).isError, true);
+    finish({ text: 'ok', hwnd: 12, title: 'test' });
+    await first;
+  } finally { h.close(); }
+});
+
+test('password approval is not executed after takeover begins', async () => {
+  const h = new Hub({ state: { adminKey: 'a', computers: {}, invites: [] }, selfName: 'mock', origin: () => 'https://example.invalid', getToken: () => 'test' });
+  try {
+    let called = false;
+    const pending = h.typeSecret({ self: true }, { secret: 'test', part: 'password' }, async () => { called = true; return { text: 'typed' }; });
+    h.browsers.set('self', { request: { state: 'waiting', created: Date.now() } });
+    h.answerSecret([...h.secretRequests.keys()][0], { approve: true, password: 'fake' });
+    assert.equal((await pending).isError, true);
+    assert.equal(called, false);
+  } finally { h.close(); }
 });

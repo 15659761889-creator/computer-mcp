@@ -185,7 +185,9 @@ export class Relay {
         const body = await readSmallJson(req);
         const account = this.config.shared ? this.signup(body.code) : null;
         if (account) sendJson(res, 200, { adminKey: account.adminKey });
-        else sendJson(res, 403, { error: '这个邀请已失效或已被使用，请向服务提供者重新要一个' });
+        else sendJson(res, 403, { error: String(req.headers['x-app-lang'] || '').toLowerCase().startsWith('en')
+          ? 'This invite has expired or was already used. Ask the service provider for a new one'
+          : '这个邀请已失效或已被使用，请向服务提供者重新要一个' });
         return;
       }
       if (pathname === '/hub/join' && req.method === 'POST') {

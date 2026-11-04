@@ -8,6 +8,7 @@ import { localHandoff } from './handoff-local.mjs';
 import { availableShells } from './shell.mjs';
 import { ROUTES, nodePsk } from './lan.mjs';
 import { MemoryError } from './memory.mjs';
+import { entryText } from './memory-context.mjs';
 
 const POLL_HOLD_MS = 25000;
 // A node polls again at once, so this much silence means it is gone.
@@ -28,13 +29,11 @@ export const BROWSER_METHODS = ['handoff_start', 'handoff_list', 'handoff_select
 // How long one call waits for the person to pick an account in the app.
 const SECRET_WAIT_MS = 120 * 1000;
 const SECRET_REQUEST_MS = 10 * 60 * 1000;
-// One approval covers the username and the password of a login for this long.
-const SECRET_GRANT_MS = 10 * 60 * 1000;
 const EVENT_HOLD_MS = 25000;
 
 export const SECRET_TOOL = {
   name: 'type_secret',
-  description: 'Type a saved username or password into the computer without ever seeing it. The owner keeps accounts in the Computer MCP phone app; the first use asks them on the phone to pick the account and allow it, which can take a minute. Click into the field first, or name it with target or element_id, then call this once for the username and once for the password. The reply never contains the value. Use this for logins instead of asking for passwords in chat, and only type into the login form the owner expects.',
+  description: 'Type a saved username or password into the computer without ever seeing it. The owner keeps accounts in the Computer MCP phone app; each use asks them on the phone to pick the account and allow it, which can take a minute. Click into the field first, or name it with target or element_id, then call this once for the username and once for the password. The reply never contains the value. Use this for logins instead of asking for passwords in chat, and only type into the login form the owner expects.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -69,21 +68,26 @@ export function machineInfo() {
   };
 }
 
+// The phone app says which language it shows in the X-App-Lang header; anything but "en" stays Chinese.
+export function langOf(req) {
+  return String(req?.headers?.['x-app-lang'] || '').toLowerCase().startsWith('en') ? 'en' : 'zh';
+}
+
 // What the phone shows when the browser view cannot work.
-function friendlyBrowserError(text) {
+function friendlyBrowserError(text, lang = 'zh') {
   const known = [
-    [/Open Chrome, Edge or Firefox/i, '这台电脑上没有打开浏览器。请先打开 Chrome、Edge 或 Firefox'],
-    [/lost focus|minimized/i, '浏览器被别的窗口挡住了，画面暂停；你一操作就会自动切回来'],
-    [/covering the browser/i, '有别的窗口挡住了浏览器'],
-    [/elevated/i, '浏览器以管理员身份运行，Windows 不允许这样操作'],
-    [/offline/i, '这台电脑不在线'],
-    [/locked|secure desktop|lock screen/i, '电脑锁屏了，或者正在弹出系统权限确认，需要在电脑上处理'],
-    [/AI browser is not installed/i, '这台电脑还没装 AI 浏览器（在电脑上运行 computer-mcp browser）'],
-    [/tab is no longer available/i, '这个浏览器标签页已经关了，请重新选择'],
-    [/no desktop control|not available on this computer/i, '这台电脑没有安装桌面控制'],
-    [/choose a browser|choose another/i, '请先选择要看的浏览器窗口'],
+    [/Open Chrome, Edge or Firefox/i, '这台电脑上没有打开浏览器。请先打开 Chrome、Edge 或 Firefox', 'No browser is open on this computer. Open Chrome, Edge or Firefox first'],
+    [/lost focus|minimized/i, '浏览器被别的窗口挡住了，画面暂停；你一操作就会自动切回来', 'The browser is covered by another window, so the picture is paused; it comes back as soon as you interact'],
+    [/covering the browser/i, '有别的窗口挡住了浏览器', 'Another window is covering the browser'],
+    [/elevated/i, '浏览器以管理员身份运行，Windows 不允许这样操作', 'The browser is running as administrator, and Windows does not allow this'],
+    [/offline/i, '这台电脑不在线', 'This computer is offline'],
+    [/locked|secure desktop|lock screen/i, '电脑锁屏了，或者正在弹出系统权限确认，需要在电脑上处理', 'The computer is locked or showing a system permission prompt; deal with it on the computer'],
+    [/AI browser is not installed/i, '这台电脑还没装 AI 浏览器（在电脑上运行 computer-mcp browser）', 'The AI browser is not installed on this computer (run computer-mcp browser on it)'],
+    [/tab is no longer available/i, '这个浏览器标签页已经关了，请重新选择', 'This browser tab has been closed; please choose again'],
+    [/no desktop control|not available on this computer/i, '这台电脑没有安装桌面控制', 'Desktop control is not installed on this computer'],
+    [/choose a browser|choose another/i, '请先选择要看的浏览器窗口', 'Choose a browser window to view first'],
   ];
-  for (const [pattern, message] of known) if (pattern.test(text)) return message;
+  for (const [pattern, zh, en] of known) if (pattern.test(text)) return lang === 'en' ? en : zh;
   return text;
 }
 
@@ -182,7 +186,8 @@ export class Hub {
     this.joinFailures = [];
     this.browsers = new Map();
     this.secretRequests = new Map();
-    this.grants = new Map();
+    this.takeoverStarting = new Set();
+    this.takeoverHistory = new Map();
     this.version = 0;
     this.eventWaiters = new Set();
     // Set by the service when this machine listens on the LAN: { port, addrs() }.
@@ -348,7 +353,6 @@ export class Hub {
 
   sweep() {
     const now = Date.now();
-    for (const [key, grant] of this.grants) if (grant.expires < now) this.grants.delete(key);
     for (const [id, request] of this.secretRequests) {
       if (request.created + SECRET_REQUEST_MS < now) {
         this.secretRequests.delete(id);
@@ -439,9 +443,9 @@ export class Hub {
 
   // The phone acts as the owner: its notes are locked unless it says otherwise, and its deletes and
   // undos wipe the text from the file, the same as `computer-mcp memory` on the computer.
-  handleMemory(action, method, body) {
+  handleMemory(action, method, body, lang = 'zh') {
     const memory = this.memory;
-    if (!memory) return { status: 404, body: { error: '这台主电脑没有开启共享记忆' } };
+    if (!memory) return { status: 404, body: { error: lang === 'en' ? 'Shared memory is not turned on on this main computer' : '这台主电脑没有开启共享记忆' } };
     const id = typeof body?.id === 'string' ? body.id : undefined;
     try {
       if (!action && method === 'GET') {
@@ -450,6 +454,9 @@ export class Hub {
           kind: e.kind,
           key: e.key ?? null,
           text: e.text,
+          display_text: entryText(e, memory.clock()),
+          project: e.project ?? null,
+          state: e.state ?? null,
           computer: e.computer ?? null,
           tags: e.tags ?? [],
           author: e.author,
@@ -470,6 +477,8 @@ export class Hub {
           text: body?.text,
           key: kind === 'fact' ? body?.key : undefined,
           computer: body?.computer || undefined,
+          project: body?.project,
+          state: body?.state,
           if_rev: found?.rev,
           by: 'owner',
           locked: body?.locked !== false,
@@ -486,7 +495,7 @@ export class Hub {
       }
       if (action === 'revoke') {
         const all = body?.all === true;
-        if (all && !Number.isFinite(body?.since)) return { status: 400, body: { error: '撤销所有 AI 的写入时要给出起始时间' } };
+        if (all && !Number.isFinite(body?.since)) return { status: 400, body: { error: lang === 'en' ? 'Undoing every AI’s writes needs a start time' : '撤销所有 AI 的写入时要给出起始时间' } };
         const { events } = memory.revoke({ author: all ? '*' : body?.author, since: body?.since });
         return { status: 200, body: { events } };
       }
@@ -647,7 +656,7 @@ export class Hub {
     const session = this.browsers.get(id);
     if (!session) return;
     session.humanAt = 0;
-    if (session.request?.state === 'waiting') session.request.state = 'complete';
+    if (this.pendingRequest(session)) session.request.state = 'complete';
     this.bump();
   }
 
@@ -660,18 +669,23 @@ export class Hub {
   // While the person is on a computer's browser, the AI must not move the same mouse.
   browserLocked(id) {
     const session = this.browsers.get(id);
-    return Boolean(this.pendingRequest(session)) || Date.now() - (session?.humanAt || 0) < HUMAN_HOLD_MS;
+    return this.takeoverStarting.has(id) || Boolean(this.pendingRequest(session)) || Date.now() - (session?.humanAt || 0) < HUMAN_HOLD_MS;
   }
 
   // The AI's takeover tools: the request shows up in the phone app instead of as a link.
-  async takeover(name, target) {
+  async takeover(name, target, args = {}) {
     const id = target.self ? 'self' : target.computer.id;
     const computerName = target.self ? this.selfName : target.computer.name;
     if (name === 'request_human_takeover') {
-      const started = await this.browserStart(id);
+      if (this.takeoverStarting.has(id) || this.pendingRequest(this.browsers.get(id))) return { text: 'A takeover is already pending for this computer.', isError: true };
+      this.takeoverStarting.add(id);
+      let started;
+      try { started = await this.browserStart(id); } finally { this.takeoverStarting.delete(id); }
       if (started.isError) return started;
-      const request = { id: randomBytes(6).toString('hex'), state: 'waiting', created: Date.now() };
+      const request = { id: randomBytes(6).toString('hex'), computerId: id, state: 'waiting', created: Date.now() };
       this.browsers.get(id).request = request;
+      this.takeoverHistory.set(request.id, request);
+      if (this.takeoverHistory.size > 1000) this.takeoverHistory.delete(this.takeoverHistory.keys().next().value);
       this.bump();
       return {
         text: `Asked the owner to take over the browser "${started.title}" on ${computerName} in the Computer MCP phone app.
@@ -680,7 +694,10 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
       };
     }
     if (name === 'check_human_takeover') {
-      return { text: `takeover on ${computerName}: ${this.pendingRequest(this.browsers.get(id)) ? 'waiting' : this.browsers.get(id)?.request?.state || 'none'}` };
+      const request = this.takeoverHistory.get(args.id);
+      if (!request || request.computerId !== id) return { text: 'unknown takeover session', isError: true };
+      this.pendingRequest({ request });
+      return { text: `takeover on ${computerName}: ${request.state}` };
     }
     const session = this.browsers.get(id);
     if (session?.request?.state === 'waiting') session.request.state = 'cancelled';
@@ -698,32 +715,24 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
     const hint = String(args.secret ?? '').trim().slice(0, 60);
     if (!hint) return { text: 'name the account in secret', isError: true };
     const part = args.part === 'username' ? 'username' : 'password';
-    const key = `${id}\n${hint.toLowerCase()}`;
-    let grant = this.grants.get(key);
-    if (grant && grant.expires < Date.now()) {
-      this.grants.delete(key);
-      grant = null;
-    }
-    if (!grant) {
-      let request = [...this.secretRequests.values()].find((r) => r.key === key);
-      if (!request) {
-        const where = [args.window && `window "${args.window}"`, args.target && `field "${args.target}"`, args.element_id !== undefined && `element ${args.element_id}`]
-          .filter(Boolean).join(', ');
-        request = {
-          id: randomBytes(6).toString('hex'), key, computerId: id, computer: computerName, hint, part,
-          reason: String(args.reason ?? '').slice(0, 200), where, created: Date.now(), waiters: [],
-        };
-        this.secretRequests.set(request.id, request);
-        this.bump();
-      }
-      const answer = await new Promise((resolve) => {
-        request.waiters.push(resolve);
-        setTimeout(() => resolve(null), SECRET_WAIT_MS).unref();
-      });
-      if (answer === 'denied') return { text: `The owner declined to use "${hint}" on ${computerName}. Do not ask again unless they tell you to.`, isError: true };
-      grant = this.grants.get(key);
-      if (!grant) return { text: `The owner has not picked an account for "${hint}" yet. Ask them to open the Computer MCP app, then call type_secret again.`, isError: true };
-    }
+    const where = [args.window && `window "${args.window}"`, args.target && `field "${args.target}"`, args.element_id !== undefined && `element ${args.element_id}`]
+      .filter(Boolean).join(', ');
+    const request = {
+      id: randomBytes(6).toString('hex'), computerId: id, computer: computerName, hint, part,
+      reason: String(args.reason ?? '').slice(0, 200), where, created: Date.now(), waiters: [],
+    };
+    this.secretRequests.set(request.id, request);
+    this.bump();
+    const grant = await new Promise((resolve) => {
+      request.waiters.push(resolve);
+      setTimeout(() => {
+        if (this.secretRequests.delete(request.id)) this.bump();
+        resolve(null);
+      }, SECRET_WAIT_MS).unref();
+    });
+    if (grant === 'denied') return { text: `The owner declined to use "${hint}" on ${computerName}. Do not ask again unless they tell you to.`, isError: true };
+    if (!grant) return { text: `The owner has not picked an account for "${hint}" yet. Ask them to open the Computer MCP app, then call type_secret again.`, isError: true };
+    if (this.browserLocked(id)) return { text: 'The owner is using this computer’s browser; the approved fill was not performed. Request approval again after takeover ends.', isError: true };
     const value = grant[part];
     if (!value) return { text: `The saved account "${grant.label}" has no ${part}.`, isError: true };
     const first = { action: 'type', text: value };
@@ -745,13 +754,12 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
     if (!request) return false;
     this.secretRequests.delete(requestId);
     if (body.approve === true && (typeof body.username === 'string' || typeof body.password === 'string')) {
-      this.grants.set(request.key, {
+      const grant = {
         label: String(body.label || request.hint).slice(0, 60),
         username: typeof body.username === 'string' ? body.username : '',
         password: typeof body.password === 'string' ? body.password : '',
-        expires: Date.now() + SECRET_GRANT_MS,
-      });
-      for (const wake of request.waiters) wake('approved');
+      };
+      for (const wake of request.waiters) wake(grant);
     } else {
       for (const wake of request.waiters) wake('denied');
     }
@@ -889,7 +897,7 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
       this.browserFinish(id);
       result = { text: 'returned to AI' };
     }
-    if (result.isError) reply(res, 409, { error: friendlyBrowserError(result.text), pick: result.pick === true });
+    if (result.isError) reply(res, 409, { error: friendlyBrowserError(result.text, langOf(req)), pick: result.pick === true });
     else reply(res, 200, { ok: true, title: this.browsers.get(id)?.title || '' });
   }
 
@@ -974,7 +982,7 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
         }
         const memoryAction = /^memory(?:\/(add|forget|lock|revoke))?$/.exec(action);
         if (memoryAction) {
-          const done = this.handleMemory(memoryAction[1], req.method, memoryAction[1] ? await readJson(req) : null);
+          const done = this.handleMemory(memoryAction[1], req.method, memoryAction[1] ? await readJson(req) : null, langOf(req));
           reply(res, done.status, done.body);
           return true;
         }

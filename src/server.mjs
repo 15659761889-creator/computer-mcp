@@ -12,7 +12,7 @@ import { availableShells, defaultShell, findBash } from './shell.mjs';
 import { ALL_TOOLS, callTool, hasTool, summarizeArgs, TOOLS } from './tools.mjs';
 import { TRANSFER_TOOL } from './transfer.mjs';
 
-const VERSION = '0.6.3';
+const VERSION = '0.6.4';
 const SUPPORTED_PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const MAX_AUDIT_BYTES = 50 * 1024 * 1024;
@@ -44,7 +44,7 @@ function listComputersTool(memory) {
   if (!memory) return LIST_COMPUTERS_TOOL;
   return {
     ...LIST_COMPUTERS_TOOL,
-    description: `${LIST_COMPUTERS_TOOL.description} Call it at the start of every task: it also reports the shared memory, the notes the owner and other AI sessions left for each other (read them with memory_read).`,
+    description: `${LIST_COMPUTERS_TOOL.description} Call it at the start of every task: it includes a bounded memory summary with owner notes and reported project states. Read complete evidence with memory_read (project, id or key), then check the actual computer.`,
   };
 }
 
@@ -164,13 +164,13 @@ async function runLocal(name, args, context, handoffTool) {
 // using its cached tool list can leave computer out, because there is only one place to run.
 async function runThroughHub(name, args, context, handoffTool) {
   const { computer, ...rest } = args ?? {};
-  if (computer === undefined && context.hub.selfName && !context.hub.hasOthers()) return runLocal(name, rest, context, handoffTool);
+  if (computer === undefined && context.hub.selfName && !context.hub.hasOthers()) return runThroughHub(name, { ...rest, computer: context.hub.selfName }, context, handoffTool);
   if (!context.hub.names()) return { text: 'No computer is connected yet, so nothing was run. Add one in the Computer MCP phone app.', isError: true };
   if (computer === undefined) return { text: `Name the computer in the computer parameter. Available: ${context.hub.names()}. If your tool list has no such parameter, refresh this connector.`, isError: true };
   const target = context.hub.resolve(computer);
   if (!target) return { text: `There is no computer named "${computer}", so nothing was run. Available: ${context.hub.names()}.`, isError: true };
   // Takeover goes to the phone app on every computer, the main one included.
-  if (handoffTool) return context.hub.takeover(name, target);
+  if (handoffTool) return context.hub.takeover(name, target, rest);
   const targetId = target.self ? 'self' : target.computer.id;
   if ((name === 'ui_act' || name === 'browser' || name === SECRET_TOOL.name) && context.hub.browserLocked(targetId)) {
     return { text: 'The owner is using this computer\'s browser from the phone app right now, so nothing was done. Wait, or check with check_human_takeover.', isError: true };

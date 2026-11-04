@@ -30,11 +30,12 @@ class PushService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Lang.init(this)
         channels(this)
         val ongoing = NotificationCompat.Builder(this, CHANNEL_WAITING)
             .setSmallIcon(R.drawable.ic_fg)
             .setContentTitle("Computer MCP")
-            .setContentText("正在等待 AI 的请求")
+            .setContentText(tr("正在等待 AI 的请求", "Waiting for the AI’s requests"))
             .setOngoing(true)
             .setContentIntent(openApp(this, 0))
             .build()
@@ -73,13 +74,13 @@ class PushService : Service() {
                     val title = computer.takeover ?: continue
                     val key = "t:${computer.id}"
                     now += key
-                    if (key !in shown) alert(key, "AI 请你接管 ${computer.name} 的浏览器", "可能要过人机验证或扫码登录：$title")
+                    if (key !in shown) alert(key, tr("AI 请你接管 ${computer.name} 的浏览器", "The AI asks you to take over the browser on ${computer.name}"), tr("可能要过人机验证或扫码登录：$title", "May need a human check or QR login: $title"))
                 }
                 for (request in status.secretRequests) {
                     val key = "s:${request.id}"
                     now += key
-                    val part = if (request.part == "username") "账号" else "密码"
-                    if (key !in shown) alert(key, "AI 想在 ${request.computer} 上填写「${request.hint}」的$part", request.reason.ifEmpty { "点开选择要用的账号" })
+                    val part = if (request.part == "username") tr("账号", "username") else tr("密码", "password")
+                    if (key !in shown) alert(key, tr("AI 想在 ${request.computer} 上填写「${request.hint}」的$part", "The AI wants to fill in the $part for “${request.hint}” on ${request.computer}"), request.reason.ifEmpty { tr("点开选择要用的账号", "Tap to choose the account to use") })
                 }
                 // Requests that were handled elsewhere no longer need their notification.
                 for (gone in shown - now) NotificationManagerCompat.from(this).cancel(gone.hashCode())
@@ -145,11 +146,11 @@ class PushService : Service() {
         fun channels(context: Context) {
             if (Build.VERSION.SDK_INT < 26) return
             val manager = context.getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(NotificationChannel(CHANNEL_WAITING, "后台等待", NotificationManager.IMPORTANCE_MIN).apply {
-                description = "保持连接，以便及时收到 AI 的请求"
+            manager.createNotificationChannel(NotificationChannel(CHANNEL_WAITING, tr("后台等待", "Background waiting"), NotificationManager.IMPORTANCE_MIN).apply {
+                description = tr("保持连接，以便及时收到 AI 的请求", "Keeps the connection open so you get the AI’s requests promptly")
             })
-            manager.createNotificationChannel(NotificationChannel(CHANNEL_ALERTS, "AI 请求", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "AI 需要你接管浏览器或允许使用保存的账号"
+            manager.createNotificationChannel(NotificationChannel(CHANNEL_ALERTS, tr("AI 请求", "AI requests"), NotificationManager.IMPORTANCE_HIGH).apply {
+                description = tr("AI 需要你接管浏览器或允许使用保存的账号", "The AI needs you to take over the browser or allow a saved account")
             })
         }
 

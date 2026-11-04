@@ -30,7 +30,41 @@ AI sessions that use this server can leave notes for each other and for you: `me
 - **Shared file.** The owner's CLI and the running service use the same file; changes take a lock file (`memory.jsonl.lock`, taken over after 15 s if a process crashed), and a process notices when another rewrote the file.
 - **Memory off.** If the notes file cannot be opened, the server starts without memory.
 
-Not built yet: a view of the notes in the phone app, a phone notification for each new note, and an approval queue for notes before other AIs can see them.
+The phone app can list and manage notes. Per-note push notifications and an approval queue for AI notes are not implemented.
+
+## Project context and state (0.6.4)
+
+`list_computers` now includes `memory.context`: up to eight owner notes, three project status cards, and two recent handoffs, within 6000 serialized characters. `omitted` counts live notes not included; read the rest with `memory_read`. The summary labels notes as background data and never claims the client actually read them. AI-authored notes still do not enter the server's initialization instructions.
+
+Add an optional lowercase `project` id (1–40 letters, digits, dots, underscores or dashes) to facts and handoffs. `memory_read({project: "computer-mcp"})` returns that project's notes plus global owner notes; combine with `computer`, `kind` or `query` to narrow further. Old untagged AI notes are not silently assigned to a project: find them with `query` or read by id. This does not register active sessions or lock files.
+
+Keep one current state card per project as a fact under `project.<project>.status`. If one repository has independent deployments, use distinct project ids. Read the card first, then use its `if_rev` for updates. Historical handoffs stay separate and remain searchable. Example (replace timestamps, revisions and evidence with the actual observed values):
+
+```json
+{
+  "kind": "fact",
+  "key": "project.computer-mcp.status",
+  "project": "computer-mcp",
+  "author": "codex",
+  "text": "Memory context implemented; deployment remains pending.",
+  "state": {
+    "source": {"status": "changed", "revision": "working-tree-fingerprint", "checked_at": "2026-11-04T15:00:00Z"},
+    "tests": {"status": "passed", "revision": "working-tree-fingerprint", "checked_at": "2026-11-04T15:00:00Z", "evidence": "npm test: all selected tests passed"},
+    "build": {"status": "not_built"},
+    "deployment": {"status": "not_deployed"},
+    "next_step": "Build, verify artifacts and arrange the service update."
+  }
+}
+```
+
+- Stages are independent. Source: `unknown`, `clean`, `changed`; tests: `unknown`, `not_run`, `passed`, `failed`; build: `unknown`, `not_built`, `built`, `failed`; deployment: `unknown`, `not_deployed`, `deployed`, `failed`.
+- Every missing stage starts at `unknown`. An update that omits a stage retains its old evidence. Supplying a stage replaces that stage completely. Legacy clients that update only the text retain the structured state.
+- `passed`, `built` and `deployed` require a source revision, UTC `checked_at` and short evidence. Use a fingerprint covering uncommitted changes when the tree is dirty; a Git commit alone would not identify the tested source.
+- Reports are not verified by the memory service. A different current source revision or evidence older than 24 hours causes a recheck warning. Missing revisions or check times also show as unverified. No command runs automatically, and a successful build never implies deployment.
+- Text keeps its 1500-character limit. State has an additional 1800-character serialized limit (revision 80, evidence 200 and next step 200); project/state metadata count toward the existing 60000-character global quota and pass the same secret filter. Version checks, locking, undo and compaction apply to the entire card.
+- The phone shows the status summary and reported evidence. Its original note text is kept separate from generated display text; older apps keep reading the original text. The new app remains compatible with servers without these fields.
+
+Verification: `npm test`, `powershell -File installer/test-manager-timeout.ps1`, and the Android debug build. Tests use temporary memory files. Install the new server code before expecting these tools to expose the new arguments. Reconnect clients that cache schemas. Do not run an older server against a newly edited state card: old writers do not know how to preserve new metadata. Keep a memory-file backup for rollback.
 
 ## Picking up unfinished work
 

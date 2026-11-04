@@ -51,16 +51,17 @@ data class Connection(val host: String, val key: String) {
                     readTimeout = 15000
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("X-App-Lang", Lang.code)
                     outputStream.use { it.write(JSONObject().put("code", code).toString().toByteArray()) }
                 }
             } catch (_: IOException) {
-                throw HubException("连不上服务器，请检查手机网络")
+                throw HubException(tr("连不上服务器，请检查手机网络", "Can’t reach the server. Check your phone’s network"))
             }
             try {
                 val status = try {
                     http.responseCode
                 } catch (_: IOException) {
-                    throw HubException("连不上服务器，请检查手机网络")
+                    throw HubException(tr("连不上服务器，请检查手机网络", "Can’t reach the server. Check your phone’s network"))
                 }
                 val stream = if (status in 200..299) http.inputStream else http.errorStream
                 val json = try {
@@ -68,7 +69,7 @@ data class Connection(val host: String, val key: String) {
                 } catch (_: Exception) {
                     JSONObject()
                 }
-                if (status !in 200..299) throw HubException(json.optString("error", "邀请无效（$status）"))
+                if (status !in 200..299) throw HubException(json.optString("error", tr("邀请无效（$status）", "Invalid invite ($status)")))
                 return Connection(host, json.getString("adminKey"))
             } finally {
                 http.disconnect()
@@ -174,6 +175,8 @@ data class Invite(val pair: String, val minutes: Int)
 
 /** One note in the shared memory. owner: the owner wrote its latest version. */
 data class MemoryNote(
+    val displayText: String,
+    val stateEvidence: String?,
     val id: String,
     val kind: String,
     val key: String?,
@@ -200,6 +203,7 @@ class HubClient(private val connection: Connection) {
                 connectTimeout = 15000
                 readTimeout = readTimeoutMs
                 setRequestProperty("Authorization", "Bearer ${connection.key}")
+                setRequestProperty("X-App-Lang", Lang.code)
                 setRequestProperty("Content-Type", "application/json")
                 if (body != null) {
                     doOutput = true
@@ -215,9 +219,9 @@ class HubClient(private val connection: Connection) {
             } catch (_: IOException) {
                 throw HubException(UNREACHABLE)
             }
-            if (status == 401) throw HubException("连接已失效，请重新扫描主电脑上的二维码", unauthorized = true)
+            if (status == 401) throw HubException(tr("连接已失效，请重新扫描主电脑上的二维码", "The connection has expired. Scan the QR code on the main computer again"), unauthorized = true)
             // Without the hub the address answers 404, and a stopped tunnel answers 5xx.
-            if (status == 404 && path == "status") throw HubException("这个地址还不是主电脑，请在电脑上重新生成二维码")
+            if (status == 404 && path == "status") throw HubException(tr("这个地址还不是主电脑，请在电脑上重新生成二维码", "This address isn’t a main computer yet. Generate the QR code again on the computer"))
             if (status >= 500) throw HubException(UNREACHABLE)
             val stream = if (status in 200..299) http.inputStream else http.errorStream
             val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
@@ -226,7 +230,7 @@ class HubClient(private val connection: Connection) {
             } catch (_: Exception) {
                 throw HubException(UNREACHABLE)
             }
-            if (status !in 200..299) throw HubException(json.optString("error", "主电脑返回了错误（$status）"))
+            if (status !in 200..299) throw HubException(json.optString("error", tr("主电脑返回了错误（$status）", "The main computer returned an error ($status)")))
             return json
         } finally {
             http.disconnect()
@@ -273,7 +277,7 @@ class HubClient(private val connection: Connection) {
         val json = try {
             request("GET", "memory")
         } catch (error: HubException) {
-            if (error.message == "not found") throw HubException("主电脑的 Computer MCP 版本太旧，还没有共享记忆，请先升级")
+            if (error.message == "not found") throw HubException(tr("主电脑的 Computer MCP 版本太旧，还没有共享记忆，请先升级", "The main computer’s Computer MCP is too old and has no shared memory yet. Please upgrade it first"))
             throw error
         }
         val notes = json.getJSONArray("notes")
@@ -283,6 +287,8 @@ class HubClient(private val connection: Connection) {
             notes = List(notes.length()) { index ->
                 val n = notes.getJSONObject(index)
                 MemoryNote(
+                    displayText = n.optString("display_text", n.optString("text")),
+                    stateEvidence = n.optJSONObject("state")?.toString(2),
                     id = n.getString("id"),
                     kind = n.optString("kind"),
                     key = n.text("key"),
@@ -352,6 +358,7 @@ class HubClient(private val connection: Connection) {
                 connectTimeout = 15000
                 readTimeout = 30000
                 setRequestProperty("Authorization", "Bearer ${connection.key}")
+                setRequestProperty("X-App-Lang", Lang.code)
             }
         } catch (_: IOException) {
             throw HubException(UNREACHABLE)
@@ -362,11 +369,11 @@ class HubClient(private val connection: Connection) {
             } catch (_: IOException) {
                 throw HubException(UNREACHABLE)
             }
-            if (status == 401) throw HubException("连接已失效，请重新扫码", unauthorized = true)
+            if (status == 401) throw HubException(tr("连接已失效，请重新扫码", "The connection has expired. Please scan again"), unauthorized = true)
             if (status != 200) {
                 val text = http.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
                 val json = try { JSONObject(text) } catch (_: Exception) { JSONObject() }
-                throw HubException(json.optString("error").ifEmpty { "取不到画面（$status）" }, needsPick = json.optBoolean("pick"))
+                throw HubException(json.optString("error").ifEmpty { tr("取不到画面（$status）", "Couldn’t get the picture ($status)") }, needsPick = json.optBoolean("pick"))
             }
             val title = Uri.decode(http.getHeaderField("X-Window-Title").orEmpty())
             return BrowserFrame(http.inputStream.use { it.readBytes() }, title)
@@ -415,6 +422,6 @@ class HubClient(private val connection: Connection) {
     }
 
     private companion object {
-        const val UNREACHABLE = "连不上主电脑。请确认主电脑已开机联网，手机网络正常"
+        val UNREACHABLE: String get() = tr("连不上主电脑。请确认主电脑已开机联网，手机网络正常", "Can’t reach the main computer. Make sure it is on and online, and your phone’s network is working")
     }
 }
