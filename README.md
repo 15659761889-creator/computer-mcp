@@ -36,6 +36,22 @@ Call `skill_list({computer:"pc-test"})` to discover skills and their readiness o
 
 **Security:** Skill instructions are untrusted data, not extra authority. `skill_risk` uses conservative static heuristics and never runs anything or grants approval. The server does not auto-run `setup` or `check` commands, download third-party skills, install packages, or mark unverified requirements as ready. Review exact commands and secure approval before any consequential action. Restart a deployed MCP server and refresh a client's tool list after updating the source; editing the repository alone does not update the running service.
 
+## Multi-AI durable tasks and quota-loss recovery (0.6.6)
+
+The server stores durable task records in `<MCP home>/tasks/t_<id>.json`. They do **not** depend on the original AI conversation, its context window or a final handoff message. The central hub owns the records for all joined computers. This complements `memory_read` and `recent_calls`, rather than replacing them.
+
+**Required workflow for long work:**
+1. Call `list_computers` and `task_list` first. `list_computers` also shows a short index of unfinished tasks automatically.
+2. If the work already exists, `task_get(id)` shows the original goal, milestones, last verified checkpoint, saved paths and recent linked actions. Do not create another task.
+3. Otherwise use `task_create({project, computer, goal, steps, next})` **before** executing. The full goal should include success criteria, not a vague title.
+4. `task_claim({id, actor: "gpt-6:chat-xyz"})` returns a private `lease_token`. Do not put the token in notes, files or chat messages. A task cannot be claimed by two active AI sessions at once.
+5. After **each** substantive change, call `task_update({id, lease_token, step_index, step_status, evidence, summary, next, files})`. Include the exact next action and short verification, not just "working on it". For ordinary computer actions, pass `task_id` and `task_lease` to add a content-free audit breadcrumb and renew the lease.
+6. When finished use `task_update({id, lease_token, status: "done", summary: "..."})`. If giving up or waiting on something, use `status: "paused"` or `"blocked"` to release the lease immediately.
+
+**When an AI runs out of quota:** The next AI uses `task_list` and `task_get` and verifies the actual Git state, files, jobs and test output. The latest checkpoint is already durable, even if the previous AI never wrote a final message. For abrupt interruption, the exclusive lease expires **15 minutes after the last linked action or update**; it is then reclaimable. An unexpired lease is deliberately not bypassable by another AI because the first AI may still be executing. If an action was not linked with `task_id`, it may still be visible in `recent_calls`, but cannot be automatically attributed to a task.
+
+**Boundaries:** This does not record prompts, assistant thoughts, typed passwords, raw command output or conversation transcripts; it stores the user goal and explicit checkpoints. Each record includes revision, recent action names/statuses/timestamps and a hashed lease token. It is a cooperative protocol, not a per-AI identity/security boundary: all MCP clients sharing the same credential can read task records, and the model must voluntarily register/checkpoint work. Task file writes are atomic and guarded by per-task process locks. Back up the MCP home before restoring or moving a hub. Phone task dashboards, notifications and named-agent chat are future additions.
+
 ## Shared memory
 
 AI sessions that use this server can leave notes for each other and for you: `memory_read`, `memory_write` and `memory_forget`. The notes live in `memory.jsonl` next to the settings (an append-only log, one event per line), and the server is the only thing the AIs write through.

@@ -9,11 +9,12 @@ import { SECRET_TOOL } from './hub.mjs';
 import { HISTORY_TOOL, latestHandoff, renderRecentCalls } from './history.mjs';
 import { MEMORY_TOOLS, MEMORY_TOOL_NAMES } from './memory.mjs';
 import { SkillStore, SKILL_TOOLS, SKILL_TOOL_NAMES, SKILL_GUIDE } from './skills.mjs';
+import { TaskStore, TASK_TOOLS, TASK_NAMES } from './tasks.mjs';
 import { availableShells, defaultShell, findBash } from './shell.mjs';
 import { ALL_TOOLS, callTool, hasTool, summarizeArgs, TOOLS } from './tools.mjs';
 import { TRANSFER_TOOL } from './transfer.mjs';
 
-const VERSION = '0.6.5';
+const VERSION = '0.6.6';
 const SUPPORTED_PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const MAX_AUDIT_BYTES = 50 * 1024 * 1024;
@@ -67,7 +68,19 @@ function soloComputers(name) {
 
 // Every tool gains a required computer parameter, so a call can never land on a default machine by accident.
 // Memory tools take no required computer, so they sit beside list_computers and transfer, not inside the wrapper.
-function hubTools(hub, memory, auditFile, skills) {
+// AI sessions can attach a private task lease to a computer action. The router strips
+// the metadata before forwarding it and records a content-free action event afterwards.
+function taskTagged(tool) {
+  return { ...tool,
+    description: `${tool.description} For tracked long tasks, include task_id and task_lease from task_claim to associate this action with its durable task and renew the lease.`,
+    inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties,
+      task_id: { type: 'string', description: 'Optional durable task id from task_claim.' },
+      task_lease: { type: 'string', description: 'Private task lease token; use only with task_id.' },
+    } },
+  };
+}
+
+function hubTools(hub, memory, auditFile, skills, tasks) {
   const withComputer = (tool) => ({
     ...tool,
     inputSchema: {
@@ -79,7 +92,7 @@ function hubTools(hub, memory, auditFile, skills) {
       required: ['computer', ...(tool.inputSchema.required || [])],
     },
   });
-  return [listComputersTool(memory), ...(hub?.transfers ? [TRANSFER_TOOL] : []), ...(memory ? MEMORY_TOOLS : []), ...(auditFile ? [HISTORY_TOOL] : []), ...(skills ? SKILL_TOOLS : []), ...[...ALL_TOOLS, SECRET_TOOL, ...HANDOFF_TOOLS].map(withComputer)];
+  return [listComputersTool(memory), ...(hub?.transfers ? [taskTagged(TRANSFER_TOOL)] : []), ...(memory ? MEMORY_TOOLS : []), ...(auditFile ? [HISTORY_TOOL] : []), ...(skills ? SKILL_TOOLS : []), ...(tasks ? TASK_TOOLS : []), ...[...ALL_TOOLS, SECRET_TOOL, ...HANDOFF_TOOLS].map(taskTagged).map(withComputer)];
 }
 
 function instructions(name) {
@@ -133,18 +146,19 @@ async function handleRpc(message, context) {
         : `${instructions(context.name)}${context.memory ? ' Call list_computers at the start of every task: it names this computer and reports the shared memory.' : ''}`;
       const withMemory = context.memory ? `${base}\n\n${context.memory.instructionsBlock()}` : base;
       const resume = context.auditFile ? `${withMemory}\n\nTo continue work another AI left unfinished, call recent_calls: it lists the latest tool calls, whether each worked, and whether calls came after the last handoff note. It does not record outputs, so check the real state before you continue.` : withMemory;
+      const coordinated = context.tasks ? `${resume}\n\nDURABLE TASKS: At the start of ANY multi-step job, call task_list; resume an existing task with task_get and task_claim, or task_create then task_claim. Persist a task_update checkpoint after each meaningful milestone with verified evidence and an exact next action, not just before the end. Include task_id and task_lease on computer actions for safe activity breadcrumbs and lease renewal. Never copy credentials into task notes. On interruption, other AIs use task_list/get after a 15-minute lease expires; they must check real files and processes before continuing. End with task_update status done/paused/blocked.` : resume;
       return rpcResult(id, {
         protocolVersion: SUPPORTED_PROTOCOLS.includes(requested) ? requested : SUPPORTED_PROTOCOLS[0],
         capabilities: { tools: {} },
         serverInfo: { name: `computer-mcp-${context.name}`, version: VERSION },
-        instructions: context.skills ? `${resume}\n\n${SKILL_GUIDE}` : resume,
+        instructions: context.skills ? `${coordinated}\n\n${SKILL_GUIDE}` : coordinated,
       });
     }
     case 'ping':
       return rpcResult(id, {});
     case 'tools/list':
-      if (context.hub) return rpcResult(id, { tools: hubTools(context.hub, context.memory, context.auditFile, context.skills) });
-      return rpcResult(id, { tools: [...(context.memory ? [listComputersTool(context.memory)] : []), ...(desktopSupported ? [...TOOLS, ...HANDOFF_TOOLS] : TOOLS), ...(context.memory ? MEMORY_TOOLS : []), ...(context.auditFile ? [HISTORY_TOOL] : []), ...(context.skills ? SKILL_TOOLS : [])] });
+      if (context.hub) return rpcResult(id, { tools: hubTools(context.hub, context.memory, context.auditFile, context.skills, context.tasks) });
+      return rpcResult(id, { tools: [...(context.memory ? [listComputersTool(context.memory)] : []), ...(desktopSupported ? [...TOOLS, ...HANDOFF_TOOLS] : TOOLS).map(taskTagged), ...(context.memory ? MEMORY_TOOLS : []), ...(context.auditFile ? [HISTORY_TOOL] : []), ...(context.skills ? SKILL_TOOLS : []), ...(context.tasks ? TASK_TOOLS : [])] });
     case 'tools/call':
       return callAndAudit(id, params, context);
     default:
@@ -212,17 +226,22 @@ async function callAndAudit(id, params, context) {
   const memoryTool = Boolean(context.memory) && MEMORY_TOOL_NAMES.has(name);
   const historyTool = Boolean(context.auditFile) && name === HISTORY_TOOL.name;
   const skillTool = Boolean(context.skills) && SKILL_TOOL_NAMES.has(name);
+  const taskTool = Boolean(context.tasks) && TASK_NAMES.has(name);
   const known = hasTool(name) || (context.hub && (name === SECRET_TOOL.name || ALL_TOOLS.some((tool) => tool.name === name)));
-  if (typeof name !== 'string' || (!known && !handoffTool && !hubTool && !transferTool && !memoryTool && !historyTool && !skillTool)) return rpcError(id, -32602, `unknown tool: ${name}`);
+  if (typeof name !== 'string' || (!known && !handoffTool && !hubTool && !transferTool && !memoryTool && !historyTool && !skillTool && !taskTool)) return rpcError(id, -32602, `unknown tool: ${name}`);
   const args = params.arguments;
   if (args !== undefined && (typeof args !== 'object' || args === null || Array.isArray(args))) {
     return rpcError(id, -32602, 'arguments must be an object');
   }
   const started = Date.now();
+  const taskLinked = !taskTool && (args?.task_id !== undefined || args?.task_lease !== undefined);
+  const actionArgs = taskLinked ? { ...args } : args;
+  if (taskLinked) { delete actionArgs.task_id; delete actionArgs.task_lease; }
+  let linkedTask = null;
   let finishActivity;
   // Memory writes and deletes show in the phone's activity feed, so the owner sees what AIs leave
   // for each other; reads (memory_read, recent_calls) would only be noise.
-  if (context.hub && name !== 'memory_read' && !historyTool && !skillTool) {
+  if (context.hub && name !== 'memory_read' && name !== 'task_list' && name !== 'task_get' && !historyTool && !skillTool) {
     const hub = context.hub;
     const own = !hubTool && !transferTool && !memoryTool;
     const target = own && typeof args?.computer === 'string' ? hub.resolve(args.computer) : null;
@@ -232,7 +251,17 @@ async function callAndAudit(id, params, context) {
   }
   let outcome;
   try {
-    if (memoryTool) {
+    if (taskLinked) {
+      if (![...ALL_TOOLS.map(t => t.name), SECRET_TOOL.name, ...HANDOFF_TOOLS.map(t => t.name), TRANSFER_TOOL.name].includes(name))
+        throw new Error('Task links are only supported on computer actions.');
+      if (typeof args.task_id !== 'string' || typeof args.task_lease !== 'string')
+        throw new Error('Specify both task_id and task_lease to run a tracked action.');
+      context.tasks.verify(args.task_id, args.task_lease);
+      linkedTask = { id: args.task_id, token: args.task_lease };
+    }
+    if (taskTool) {
+      outcome = context.tasks.tool(name, args ?? {});
+    } else if (memoryTool) {
       // Who it came from is recorded as seen from here; the author name in the call is only what the AI says.
       const via = [context.userAgent, context.clientIp].filter(Boolean).join(' @ ');
       outcome = context.memory.tool(name, args ?? {}, { via });
@@ -241,29 +270,48 @@ async function callAndAudit(id, params, context) {
     } else if (hubTool) {
       const memory = context.memory ? { memory: context.memory.banner() } : {};
       const computers = context.hub ? context.hub.listComputers() : soloComputers(context.name);
-      outcome = { text: JSON.stringify({ ...computers, ...memory }, null, 2) };
+      // On standard task entrypoints, expose a small durable work index even before an AI
+      // calls task_list. This is also useful to clients with cached tool descriptions.
+      const pending = context.tasks ? context.tasks.list({ limit: 40 }).tasks
+        .filter(t => t.status !== 'done').slice(0, 6).map(t => ({
+          id: t.id, project: t.project, computer: t.computer, status: t.status,
+          goal: t.goal.slice(0, 180), next: t.next.slice(0, 180),
+          updated_at: t.updated_at, recoverable: t.recoverable, lease: t.lease,
+        })) : [];
+      outcome = { text: JSON.stringify({ ...computers, ...memory, tasks: {
+        active: pending, note: 'Durable work exists on this hub. Call task_list and task_get before creating a duplicate task; verify actual state before continuing.'
+      } }, null, 2) };
     } else if (transferTool) {
-      outcome = await context.hub.transfers.tool(args);
+      outcome = await context.hub.transfers.tool(actionArgs);
     } else if (historyTool) {
       // Calls the hub is running right now, plus the newest handoff note, tell the reader whether the
       // last session is still working or stopped.
       const active = context.hub ? [...context.hub.activeCalls.values()] : [];
       outcome = { text: renderRecentCalls({ file: context.auditFile, args: args ?? {}, active, handoff: context.memory ? latestHandoff(context.memory) : null }) };
     } else if (context.hub) {
-      outcome = await runThroughHub(name, args, context, handoffTool);
+      outcome = await runThroughHub(name, actionArgs, context, handoffTool);
     } else if (name === 'ui_act' && context.handoff.locked()) {
       outcome = { text: 'Human has temporary control of the browser; wait for check_human_takeover to report complete.', isError: true };
     } else {
-      outcome = handoffTool ? await context.handoff.invoke(name, args) : await callTool(name, args);
+      outcome = handoffTool ? await context.handoff.invoke(name, actionArgs) : await callTool(name, actionArgs);
     }
   } catch (err) {
     outcome = { text: `tool failed: ${err.message}`, isError: true };
+  }
+  if (linkedTask) {
+    try { context.tasks.recordAction(linkedTask.id, linkedTask.token, {
+      tool: name, computer: actionArgs?.computer,
+      status: activityStatus(name, outcome), duration_ms: Date.now() - started,
+    }); } catch (err) {
+      outcome = { ...outcome, text: `${outcome.text}\nWARNING: The action finished but its durable task event could not be recorded: ${err.message}` };
+    }
   }
   if (finishActivity) finishActivity(activityStatus(name, outcome));
   context.audit({
     tool: name,
     computer: args?.computer,
-    args: name === SECRET_TOOL.name ? { secret: args?.secret, part: args?.part } : summarizeArgs(name, args),
+    args: taskTool ? { id: args?.id, project: args?.project, actor: args?.actor, step_index: args?.step_index, status: args?.status } : name === SECRET_TOOL.name ? { secret: args?.secret, part: args?.part } : summarizeArgs(name, actionArgs),
+    task: linkedTask?.id,
     ms: Date.now() - started,
     error: outcome.isError ? outcome.text.slice(0, 500) : undefined,
     ...outcome.meta,
@@ -372,11 +420,12 @@ export async function serveMcp(req, res, context, allowSse = true) {
   }
 }
 
-export function createMcpServer({ name, getToken, auditFile, allowSse = true, onShutdown, publicOrigin = () => null, hub = null, memory = null, skillsStore = null }) {
+export function createMcpServer({ name, getToken, auditFile, allowSse = true, onShutdown, publicOrigin = () => null, hub = null, memory = null, skillsStore = null, tasksStore = null }) {
   const audit = auditLogger(auditFile);
   const handoff = new HandoffManager(publicOrigin);
   // Skills live once on this host. The computer argument selects a target, not a storage location.
   const skills = skillsStore ?? new SkillStore({ computers: () => hub ? hub.listComputers().computers : soloComputers(name).computers });
+  const tasks = tasksStore ?? new TaskStore();
 
   function authorized(req, pathname) {
     const pathToken = /^\/t\/([^/]+)\/mcp\/?$/.exec(pathname)?.[1];
@@ -425,7 +474,7 @@ export function createMcpServer({ name, getToken, auditFile, allowSse = true, on
         sendJson(res, 401, { error: 'unauthorized' }, { 'WWW-Authenticate': 'Bearer' });
         return;
       }
-      await serveMcp(req, res, { name, audit, auditFile: audit.file ?? null, handoff, hub, memory, skills, clientIp: req.headers['cf-connecting-ip'] || req.socket.remoteAddress, userAgent: req.headers['user-agent'] }, allowSse);
+      await serveMcp(req, res, { name, audit, auditFile: audit.file ?? null, handoff, hub, memory, skills, tasks, clientIp: req.headers['cf-connecting-ip'] || req.socket.remoteAddress, userAgent: req.headers['user-agent'] }, allowSse);
     } catch (err) {
       if (!res.headersSent) sendJson(res, err.status || 500, { error: err.status ? err.message : 'internal error' });
       else res.end();

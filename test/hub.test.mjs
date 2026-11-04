@@ -172,7 +172,7 @@ test('the AI and the phone both see the computers', async () => {
   assert.equal(status.computers.length, 3);
 });
 
-test('tools list requires a computer on everything but list_computers', async () => {
+test('tools list requires a computer on device tools, not hub-level coordination tools', async () => {
   const res = await fetch(`${base}/t/${TOKEN}/mcp`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -180,7 +180,7 @@ test('tools list requires a computer on everything but list_computers', async ()
   });
   const { tools } = (await res.json()).result;
   for (const tool of tools) {
-    if (['list_computers', 'transfer', 'skill_list', 'skill_read'].includes(tool.name)) continue;
+    if (['list_computers', 'transfer', 'skill_list', 'skill_load', 'skill_read', 'skill_risk', 'task_create', 'task_list', 'task_get', 'task_claim', 'task_update'].includes(tool.name)) continue;
     assert.ok(tool.inputSchema.required.includes('computer'), tool.name);
   }
   assert.ok(tools.some((tool) => tool.name === 'ui_act'));
