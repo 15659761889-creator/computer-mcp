@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { homeDir } from './config.mjs';
+import { classifyStep, RISK_TAGS } from './skill-risk.mjs';
 
 export const SKILL_LIMITS = {
   skillMd: 64 * 1024,
@@ -24,7 +25,7 @@ export const SKILL_LIMITS = {
   config: 16 * 1024,
   listedFiles: 100,
 };
-export const SKILL_TOOL_NAMES = new Set(['skill_list', 'skill_load', 'skill_read']);
+export const SKILL_TOOL_NAMES = new Set(['skill_list', 'skill_load', 'skill_read', 'skill_risk']);
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const OS_NAMES = ['windows', 'linux', 'macos'];
 const CONFIG_EXTENSIONS = ['yaml', 'yml', 'json', 'md', 'txt'];
@@ -375,8 +376,9 @@ export class SkillStore {
       const root = path.join(this.dir, entry.name);
       try {
         const md = path.join(root, 'SKILL.md');
-        const stat = fs.statSync(md, { throwIfNoEntry: false });
+        const stat = fs.lstatSync(md, { throwIfNoEntry: false });
         if (!stat) throw new SkillError('there is no SKILL.md in this folder.');
+        if (!stat.isFile()) throw new SkillError('SKILL.md must be a regular file, not a link.');
         if (stat.size > SKILL_LIMITS.skillMd) throw new SkillError(`SKILL.md is larger than ${SKILL_LIMITS.skillMd} bytes.`);
         const { data, body } = parseSkillFile(fs.readFileSync(md, 'utf8'));
         const meta = normalizeMeta(data, entry.name);
@@ -523,11 +525,26 @@ export class SkillStore {
     return { text: `${head}\n${text}`, meta: { skill: skill.ref } };
   }
 
+  risk(args = {}) {
+    if (typeof args.command !== 'string' || !args.command.trim() || args.command.length > 4096 || args.command.includes('\0')) {
+      throw new SkillError('command must be nonempty plain text of at most 4096 characters.');
+    }
+    if (typeof args.computer !== 'string') throw new SkillError('computer is required: use a name from list_computers.');
+    const [target] = this.targets(args.computer);
+    const ctx = { os: osOf(target.os), homeDir: target.home || '', cwd: target.home || '', vars: {}, skillDirs: [] };
+    const findings = classifyStep(args.command, ctx);
+    const highest = findings.reduce((n, f) => Math.max(n, RISK_TAGS.indexOf(f.tag)), 0);
+    return { text: JSON.stringify({ computer: target.name, os: ctx.os, command: args.command,
+      risk: RISK_TAGS[highest], findings,
+      warning: 'Static heuristic only: no command was run. This does not grant permission or guarantee safety. Review the exact command and obtain any required human approval before executing.' }, null, 2) };
+  }
+
   tool(name, args = {}) {
     try {
       if (name === 'skill_list') return this.list(args);
       if (name === 'skill_load') return this.load(args);
       if (name === 'skill_read') return this.read(args);
+      if (name === 'skill_risk') return this.risk(args);
       return { text: `unknown skill tool: ${name}`, isError: true };
     } catch (err) {
       if (err instanceof SkillError) return { text: err.message, isError: true };
@@ -568,6 +585,20 @@ export const SKILL_TOOLS = [
       additionalProperties: false,
     },
     annotations: { title: 'Open a skill', readOnlyHint: true, openWorldHint: false },
+  },
+  {
+    name: 'skill_risk',
+    description: 'READ ONLY: statically annotate risks of an exact proposed skill setup command on a named computer; does not execute or approve it. Unrecognised commands are treated conservatively. The owner must still approve risky changes before they are run.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        computer: { type: 'string', description: 'Target computer name from list_computers.' },
+        command: { type: 'string', description: 'Exact command to review, maximum 4096 characters. Nothing is executed.' },
+      },
+      required: ['computer', 'command'],
+      additionalProperties: false,
+    },
+    annotations: { title: 'Review skill command risk', readOnlyHint: true, openWorldHint: false },
   },
   {
     name: 'skill_read',
