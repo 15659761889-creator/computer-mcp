@@ -39,6 +39,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式:"; Flags: unchecked
+Name: "gitbash"; Description: "给 AI 下载 Bash 命令行（约 60 MB，需要联网；不勾选则用 PowerShell，之后可在管理器里切换）"; GroupDescription: "AI 命令行"; Flags: unchecked
 
 [Files]
 Source: "..\build\windows\stage\ComputerMCP.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -51,6 +52,7 @@ Name: "{autoprograms}\Computer MCP"; Filename: "{app}\ComputerMCP.exe"; WorkingD
 Name: "{autodesktop}\Computer MCP"; Filename: "{app}\ComputerMCP.exe"; Tasks: desktopicon; WorkingDir: "{app}"
 
 [Run]
+Filename: "{app}\runtime\node.exe"; Parameters: """{app}\app\bin\computer-mcp.mjs"" shell bash"; WorkingDir: "{app}"; StatusMsg: "正在下载 Bash 命令行..."; Tasks: gitbash; Flags: runhidden waituntilterminated
 Filename: "{app}\ComputerMCP.exe"; Description: "打开 Computer MCP 管理器"; Flags: nowait postinstall skipifsilent
 
 [Code]

@@ -12,7 +12,8 @@ import {
 } from './service.mjs';
 import { desktopInstalled, desktopSupported, installDesktop } from './desktop.mjs';
 import { connectionParts, copyToClipboard, getQuickLink } from './link.mjs';
-import { findBash } from './shell.mjs';
+import { defaultShell, findBash, saveShellChoice, shellChoice } from './shell.mjs';
+import { installBash } from './bash-install.mjs';
 import { hubPath, loadHubState, parsePair } from './hub.mjs';
 import { joinHub } from './node-link.mjs';
 import {
@@ -68,6 +69,9 @@ const HELP = `computer-mcp: give this computer its own fixed MCP link
   computer-mcp status         show whether the service and the link work
   computer-mcp rotate         replace the secret; the old link stops working at once
   computer-mcp desktop        install desktop control (ui_look, ui_act); setup does this too
+  computer-mcp shell [powershell|bash|auto]   choose the AI's default shell; bash downloads
+                              Git Bash first when it is missing (Windows, about 60 MB)
+      --proxy <url>           proxy for the download
   computer-mcp update         make the service run this installed version
   computer-mcp start | stop   start or stop the service
   computer-mcp run            run in the foreground (what the startup task calls)
@@ -176,7 +180,7 @@ async function setup({ flags, positional }) {
     if (autostart.level !== 'Highest') {
       if (!flags.limited) console.log('Note: administrator rights were not granted, so windows running as administrator cannot be controlled. Run setup again and allow the prompt to change that.');
     }
-    if (!findBash()) console.log('Note: Git Bash was not found. Install Git for Windows, or models must use shell: "powershell".');
+    if (!findBash()) console.log('Note: Git Bash was not found, so the AI uses PowerShell. To give it Bash, run: computer-mcp shell bash');
     if (!await waitFor(() => localHealthy(port), 30)) {
       throw new Error(`the service did not start on port ${port}; try computer-mcp run to see why`);
     }
@@ -467,11 +471,34 @@ async function status() {
   console.log(`local:       ${local ? 'running' : 'NOT running'} on 127.0.0.1:${config.port}`);
   console.log(`public:      ${remote ? 'reachable' : 'NOT reachable'}`);
   console.log(`autostart:   ${autostartState()}`);
-  console.log(`bash:        ${findBash() || 'not found, PowerShell only'}`);
+  console.log(`shell:       ${shellLine()}`);
   if (desktopSupported) console.log(`desktop:     ${desktopInstalled() ? 'installed' : 'not installed; run computer-mcp desktop'}`);
   console.log(`audit log:   ${path.join(logDir(), 'audit.jsonl')}`);
   console.log(`tunnel log:  ${tunnelLogPath()}`);
   if (!local || !remote) process.exitCode = 1;
+}
+
+function shellLine() {
+  const bash = findBash();
+  if (process.platform !== 'win32') return bash || 'sh';
+  const choice = shellChoice() === 'auto' ? 'automatic' : 'chosen';
+  return `${defaultShell() === 'bash' ? 'Git Bash' : 'PowerShell'} (${choice})${bash ? `, Git Bash at ${bash}` : ', Git Bash not installed'}`;
+}
+
+async function shellCommand({ positional, flags }) {
+  const wanted = positional[0];
+  if (!wanted) {
+    console.log(`The AI's default shell: ${shellLine()}`);
+    return;
+  }
+  if (!['powershell', 'bash', 'auto'].includes(wanted)) throw new Error('choose powershell, bash or auto');
+  if (process.platform !== 'win32') throw new Error('only Windows has a shell choice; elsewhere the AI uses bash');
+  if (wanted === 'bash' && !findBash()) {
+    const bash = await installBash({ proxy: flags.proxy === true ? undefined : flags.proxy || loadConfig()?.proxy });
+    console.log(`Git Bash is installed at ${bash}`);
+  }
+  saveShellChoice(wanted);
+  console.log(`The AI's default shell is now ${defaultShell() === 'bash' ? 'Git Bash' : 'PowerShell'}. It applies to the next command; AI chats already open learn it when they reconnect.`);
 }
 
 async function uninstall({ flags }) {
@@ -527,6 +554,8 @@ export async function main(argv) {
       console.log('Secret replaced; the old link no longer works. Get the new one with: computer-mcp link');
       return undefined;
     }
+    case 'shell':
+      return shellCommand(parsed);
     case 'desktop':
       installDesktop({ proxy: parsed.flags.proxy === true ? undefined : parsed.flags.proxy || loadConfig()?.proxy });
       return undefined;

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { callDesktop, desktopSupported } from './desktop.mjs';
 import { describeJob, findJob, jobOutput, killJob, listJobs, logPathOf, startJob, waitForJob } from './jobs.mjs';
-import { DEFAULT_TIMEOUT_SECS, DEFAULT_WAIT_SECS, MAX_TIMEOUT_SECS, findBash } from './shell.mjs';
+import { DEFAULT_TIMEOUT_SECS, DEFAULT_WAIT_SECS, MAX_TIMEOUT_SECS, defaultShell } from './shell.mjs';
 import { decodeFile, encodeFile, looksBinary } from './text.mjs';
 
 const MAX_FILE_BYTES = 256 * 1024 * 1024;
@@ -74,7 +74,7 @@ const DESKTOP_TOOLS = [
 const BASE_TOOLS = [
   {
     name: 'bash',
-    description: 'Run a shell command on this computer. By default uses Git Bash when installed, otherwise Windows PowerShell; set shell explicitly to select one. Each call starts fresh: cd and environment variables do not carry over, so use cwd. Stdin is closed. A command still running after wait seconds keeps running as a job: the reply gives its job id, and the job tool fetches the result. For servers use background: true.',
+    description: 'Run a shell command on this computer. The default shell is named in the server instructions (Git Bash or Windows PowerShell, as the owner chose); set shell explicitly to select one. Each call starts fresh: cd and environment variables do not carry over, so use cwd. Stdin is closed. A command still running after wait seconds keeps running as a job: the reply gives its job id, and the job tool fetches the result. For servers use background: true.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -83,7 +83,7 @@ const BASE_TOOLS = [
         timeout: { type: 'number', description: `Seconds before the process tree is killed. Default ${DEFAULT_TIMEOUT_SECS}, max ${MAX_TIMEOUT_SECS}.` },
         wait: { type: 'number', description: `Seconds to wait for the result before replying with a job id. Default ${DEFAULT_WAIT_SECS}. The command keeps running until timeout.` },
         background: { type: 'boolean', description: 'Start without waiting and with no default time limit; returns the job id, PID and a log path.' },
-        shell: { type: 'string', enum: ['bash', 'powershell'], description: 'Default Git Bash when installed, otherwise PowerShell on Windows. Use powershell for Windows-specific work.' },
+        shell: { type: 'string', enum: ['bash', 'powershell'], description: 'Default: the shell named in the server instructions. Use powershell for Windows-specific work.' },
         as_user: { type: 'boolean', description: 'Run without administrator rights, for programs that misbehave when elevated, such as drag and drop in a browser. Takes about 2 seconds to start.' },
       },
       required: ['command'],
@@ -201,7 +201,7 @@ function formatResult(state, dir) {
 
 async function bash(args) {
   const command = needString(args, 'command');
-  const shell = args.shell ?? (process.platform === 'win32' && !findBash() ? 'powershell' : 'bash');
+  const shell = args.shell ?? defaultShell();
   if (shell !== 'bash' && shell !== 'powershell') throw new ToolError('shell must be bash or powershell');
   const cwd = args.cwd === undefined ? os.homedir() : resolvePath(needString(args, 'cwd'));
   const stat = await fs.stat(cwd).catch(() => null);

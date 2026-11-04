@@ -8,7 +8,7 @@
 4. Click **启动临时连接 / Start Temporary Connection**. The first connection requires internet access to reach Cloudflare's public Quick Tunnel service.
 5. When the status says the temporary tunnel is connected, choose **复制完整链接 / Copy complete link**. Paste the entire URL into an AI client's remote MCP server URL field.
 6. Alternatively click **复制 MCP 地址** and **复制密钥** to use separate MCP endpoint + **Bearer Token** fields if the client supports those.
-7. This app runs its own bundled Node.js and cloudflared binaries. You do **not** need to install npm, Node.js, Git or cloudflared system-wide for basic connectivity. If Git for Windows is missing, the AI can run PowerShell via the `bash` tool with `shell: "powershell"`.
+7. This app runs its own bundled Node.js and cloudflared binaries. You do **not** need to install npm, Node.js, Git or cloudflared system-wide for basic connectivity. Without Git for Windows the AI's commands run in PowerShell. To give it Bash, tick the optional box during installation or click the manager's download-and-use Bash button (Portable Git, about 60 MB, from the npmmirror China mirror with GitHub as fallback, checked against its published SHA-256).
 
 ## Optional desktop control
 

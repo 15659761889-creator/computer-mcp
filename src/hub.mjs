@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { callDesktop, desktopSupported } from './desktop.mjs';
-import { findBash } from './shell.mjs';
+import { availableShells } from './shell.mjs';
 import { OWNER, PoolError, PublicPool, poolFile } from './public-pool.mjs';
 
 const POLL_HOLD_MS = 25000;
@@ -60,7 +60,7 @@ export function machineInfo() {
     arch: os.arch(),
     user: os.userInfo().username,
     home: os.homedir(),
-    shells: findBash() ? ['bash', 'powershell'] : [process.platform === 'win32' ? 'powershell' : 'sh'],
+    shells: availableShells(),
     desktop: desktopSupported,
   };
 }
@@ -164,6 +164,9 @@ export class Hub {
     this.state = state || loadHubState(file);
     this.live = new Map();
     this.nextCall = 1;
+    this.nextActivity = 1;
+    this.activeCalls = new Map();
+    this.recentCalls = [];
     this.joinFailures = [];
     this.browsers = new Map();
     this.secretRequests = new Map();
@@ -206,6 +209,18 @@ export class Hub {
   isOnline(id) {
     const live = this.live.get(id);
     return Boolean(live) && Date.now() - live.lastSeen < OFFLINE_MS;
+  }
+
+  // The phone feed stays in memory and never stores tool arguments or results.
+  startActivity(action, computer) {
+    const entry = { id: this.nextActivity++, action, computer, startedAt: Date.now() };
+    const start = performance.now();
+    this.activeCalls.set(entry.id, entry);
+    return (status) => {
+      this.activeCalls.delete(entry.id);
+      this.recentCalls.unshift({ ...entry, status, durationMs: Math.round(performance.now() - start) });
+      if (this.recentCalls.length > 80) this.recentCalls.pop();
+    };
   }
 
   // ---- What the AI sees ----
@@ -847,6 +862,11 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
         const action = pathname.slice('/hub/api/'.length);
         if (action === 'pool' || action.startsWith('pool/')) {
           await this.handlePool(action, req, res);
+          return true;
+        }
+        if (action === 'activity' && req.method === 'GET') {
+          res.setHeader('Cache-Control', 'no-store');
+          reply(res, 200, { active: [...this.activeCalls.values()].reverse(), recent: this.recentCalls });
           return true;
         }
         if (action === 'status' && req.method === 'GET') {

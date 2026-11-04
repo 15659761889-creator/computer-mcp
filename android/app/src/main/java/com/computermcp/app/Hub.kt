@@ -246,6 +246,8 @@ class HubClient(private val connection: Connection) {
         )
     }
 
+    fun activityFeed(): JSONObject = request("GET", "activity")
+
     /** Read the one shared AI message pool through the existing admin-authenticated API. */
     fun poolFeed(): JSONObject = request("GET", "pool?limit=60")
 

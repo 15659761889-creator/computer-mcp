@@ -1,6 +1,6 @@
 # Computer MCP
 
-Give any computer its own MCP link, so a model can control it. Requires Node.js >=20. On Windows, also install Git for Windows for Bash, and Python 3.10-3.13 for desktop control.
+Give any computer its own MCP link, so a model can control it. Requires Node.js >=20. On Windows, Python 3.10-3.13 is needed for desktop control. Bash is optional: without Git for Windows the AI uses PowerShell, and `computer-mcp shell bash` downloads Portable Git (about 60 MB, no administrator rights).
 
 ## Tools
 
@@ -82,7 +82,7 @@ For non-developers on **64-bit Windows 10/11**, install `ComputerMCP-Setup-0.3.0
 - A permanent tunnel requires the user's **own Cloudflare-managed domain**; the manager offers an optional fixed-domain setup.
 - The installer is **per-user**; it does not intentionally stop, restart, or overwrite existing MCP tunnels. On the first connection, the user must approve remote-control access.
 - For `ui_look` and `ui_act`, click **安装桌面控制 / OCR** (Install desktop controls/OCR). This optional step downloads Python 3.12 via `winget` if necessary, plus Python packages and OCR models. A working Internet connection, available Windows package manager, and several hundred MB of disk space may be needed. Until installed, file and shell tools still work.
-- If Git for Windows is not installed, the `bash` tool automatically uses Windows PowerShell for commands without an explicitly selected shell.
+- The AI's default shell is a choice: the installer has an optional "download Bash" box, and the manager has two buttons, PowerShell or download-and-use Bash. The command line equivalent is `computer-mcp shell powershell|bash|auto`. Without Bash, the `bash` tool runs Windows PowerShell.
 - This build depends on Windows .NET Framework 4.x, which is included/enabled on typical Windows 10/11 systems.
 - This EXE is currently **unsigned**. Windows SmartScreen may warn when it is first used; for public distribution, a proper publisher code-signing certificate is recommended.
 - Be careful with the MCP URL and secret. They authorize access to the computer; never share them publicly.

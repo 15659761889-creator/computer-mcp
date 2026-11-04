@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { homeDir } from './config.mjs';
 
 const IS_WINDOWS = process.platform === 'win32';
 const OLD_JOB_MS = 7 * 24 * 3600 * 1000;
@@ -45,11 +46,52 @@ export function cleanWorkDir(maxAgeMs = OLD_JOB_MS) {
 }
 
 let cachedBash;
+let missingSince = 0;
 
+// A miss is re-checked after a while, so a Bash downloaded by `computer-mcp shell bash`
+// is found without restarting the service.
 export function findBash() {
-  if (cachedBash !== undefined) return cachedBash;
+  if (cachedBash || (cachedBash === null && Date.now() - missingSince < 15000)) return cachedBash;
   cachedBash = locateBash();
+  if (!cachedBash) missingSince = Date.now();
   return cachedBash;
+}
+
+// Where `computer-mcp shell bash` unpacks Portable Git.
+export const portableGitDir = () => path.join(homeDir(), 'git');
+
+// Kept apart from config.json, which means "set up" to the rest of the program.
+const shellFile = () => path.join(homeDir(), 'shell.json');
+
+// The owner's choice: "powershell", "bash", or "auto" for Bash when present.
+export function shellChoice() {
+  let choice;
+  try {
+    choice = JSON.parse(fs.readFileSync(shellFile(), 'utf8')).shell;
+  } catch {
+    // Missing or broken: the automatic choice.
+  }
+  return choice === 'bash' || choice === 'powershell' ? choice : 'auto';
+}
+
+export function saveShellChoice(choice) {
+  if (choice === 'auto') {
+    fs.rmSync(shellFile(), { force: true });
+    return;
+  }
+  fs.mkdirSync(homeDir(), { recursive: true });
+  fs.writeFileSync(shellFile(), `${JSON.stringify({ shell: choice })}\n`);
+}
+
+export function defaultShell() {
+  if (!IS_WINDOWS) return 'bash';
+  return shellChoice() !== 'powershell' && findBash() ? 'bash' : 'powershell';
+}
+
+export function availableShells() {
+  if (!IS_WINDOWS) return findBash() ? ['bash'] : ['sh'];
+  if (!findBash()) return ['powershell'];
+  return defaultShell() === 'bash' ? ['bash', 'powershell'] : ['powershell', 'bash'];
 }
 
 function locateBash() {
@@ -60,6 +102,7 @@ function locateBash() {
     process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'Git', 'bin', 'bash.exe'),
     process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)'], 'Git', 'bin', 'bash.exe'),
     process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe'),
+    path.join(portableGitDir(), 'bin', 'bash.exe'),
   ].filter(Boolean);
   const where = spawnSync('where.exe', ['git'], { encoding: 'utf8', windowsHide: true });
   for (const line of (where.stdout || '').split(/\r?\n/).filter(Boolean)) {
@@ -89,9 +132,11 @@ function realBash(bash, env) {
   const root = path.dirname(path.dirname(bash));
   const real = path.join(root, 'usr', 'bin', 'bash.exe');
   if (path.basename(path.dirname(bash)).toLowerCase() !== 'bin' || !fs.existsSync(real)) return bash;
+  // Git for Windows moved from mingw64 to ucrt64; git.exe lives there.
+  const msys = fs.existsSync(path.join(root, 'ucrt64', 'bin')) ? 'ucrt64' : 'mingw64';
   const pathKey = Object.keys(env).find((key) => key.toUpperCase() === 'PATH') || 'PATH';
-  env[pathKey] = [path.join(root, 'mingw64', 'bin'), path.join(root, 'usr', 'bin'), env[pathKey]].join(';');
-  env.MSYSTEM = 'MINGW64';
+  env[pathKey] = [path.join(root, msys, 'bin'), path.join(root, 'usr', 'bin'), env[pathKey]].join(';');
+  env.MSYSTEM = msys.toUpperCase();
   return real;
 }
 
@@ -119,7 +164,7 @@ export function buildInvocation(shell, command, dir) {
   const bash = findBash();
   if (!bash) {
     throw new Error(IS_WINDOWS
-      ? 'Git Bash is not installed on this computer; pass shell: "powershell" or install Git for Windows'
+      ? 'Git Bash is not installed on this computer; pass shell: "powershell", or the owner can run: computer-mcp shell bash'
       : 'bash is not installed on this computer');
   }
   const script = path.join(dir, 'command.sh');

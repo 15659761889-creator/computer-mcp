@@ -107,6 +107,18 @@ test('people are kept apart: names, keys and computers', async () => {
   assert.equal((await call(bob.token, 'bash', { computer: 'desk', command: 'x' })).content[0].text, 'bob desk');
 });
 
+test('each relay account sees only its own tool activity', async () => {
+  const alice = await signUp();
+  const bob = await signUp();
+  const feed = async (key) => (await fetch(`${base}/hub/api/activity`, {
+    headers: { Authorization: `Bearer ${key}` },
+  })).json();
+
+  await call(alice.token, 'list_computers', {});
+  assert.equal((await feed(alice.adminKey)).recent[0].action, 'list_computers');
+  assert.deepEqual(await feed(bob.adminKey), { active: [], recent: [] });
+});
+
 test('wrong tokens and keys get nothing', async () => {
   assert.equal((await post('/t/not-a-real-token-123456/mcp', {})).status, 404);
   assert.equal((await post('/mcp', {}, 'wrong')).status, 401);

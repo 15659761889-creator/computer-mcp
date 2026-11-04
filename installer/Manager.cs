@@ -95,15 +95,19 @@ namespace ComputerMCPWindows {
       fixedButton.Click += (s, e) => SetupFixed();
       var desktopButton = AddButton(area, "安装桌面控制 / OCR（需要额外下载）", 15, 495, 600, Color.FromArgb(94, 109, 127));
       desktopButton.Click += (s, e) => InstallDesktop();
-      AddLabel(area, "多台电脑（一个 MCP 地址控制所有电脑）", 15, 548, true);
-      var appButton = AddButton(area, "这台是主电脑：连接手机 App（显示二维码）", 15, 582, 600, Color.FromArgb(37, 99, 235));
+      var psButton = AddButton(area, "AI 命令行：用 PowerShell", 15, 541, 293, Color.FromArgb(94, 109, 127));
+      psButton.Click += (s, e) => StartCliTask("shell powershell", "切换到 PowerShell");
+      var bashButton = AddButton(area, "AI 命令行：下载并用 Bash（约 60 MB）", 322, 541, 293, Color.FromArgb(94, 109, 127));
+      bashButton.Click += (s, e) => UseBash();
+      AddLabel(area, "多台电脑（一个 MCP 地址控制所有电脑）", 15, 598, true);
+      var appButton = AddButton(area, "这台是主电脑：连接手机 App（显示二维码）", 15, 632, 600, Color.FromArgb(37, 99, 235));
       appButton.Click += (s, e) => ShowAppQr();
-      AddLabel(area, "这台是新电脑：粘贴手机 App 给的配对码", 15, 628, false);
-      pairCode = new TextBox { Location = new Point(15, 660), Width = 430, Height = 29 };
+      AddLabel(area, "这台是新电脑：粘贴手机 App 给的配对码", 15, 678, false);
+      pairCode = new TextBox { Location = new Point(15, 710), Width = 430, Height = 29 };
       area.Controls.Add(pairCode);
-      var joinButton = AddButton(area, "加入主电脑", 456, 656, 160, Color.FromArgb(37, 99, 235));
+      var joinButton = AddButton(area, "加入主电脑", 456, 706, 160, Color.FromArgb(37, 99, 235));
       joinButton.Click += (s, e) => JoinHub();
-      area.AutoScrollMinSize = new Size(0, 715);
+      area.AutoScrollMinSize = new Size(0, 765);
 
       ticker = new System.Windows.Forms.Timer { Interval = 3500 };
       ticker.Tick += (s, e) => RefreshStatus();
@@ -302,6 +306,11 @@ namespace ComputerMCPWindows {
         if (!string.IsNullOrWhiteSpace(proxy.Text)) args += " --proxy " + Q(proxy.Text.Trim());
         StartCliTask(args, "加入主电脑");
       } catch (Exception ex) { MessageBox.Show(ex.Message, "加入失败"); }
+    }
+    private void UseBash() {
+      var args = "shell bash";
+      if (!string.IsNullOrWhiteSpace(proxy.Text)) args += " --proxy " + Q(proxy.Text.Trim());
+      StartCliTask(args, "切换到 Bash");
     }
     private void InstallDesktop() {
       var answer = MessageBox.Show("完整 OCR / 鼠标键盘控制需要 Python 3.10–3.13 及模型（约 500 MB 或更多）。\n\n如果没有 Python，会先尝试使用 winget 安装 Python 3.12。安装过程需要联网。\n继续？", "安装桌面控制", MessageBoxButtons.YesNo, MessageBoxIcon.Question);

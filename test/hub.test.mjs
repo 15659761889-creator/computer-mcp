@@ -99,6 +99,62 @@ test('calls reach only the named computer, at the same time', async () => {
   assert.deepEqual(seen.find((entry) => entry[0] === 'alpha'), ['alpha', 'bash', { command: 'slow' }]);
 });
 
+test('the owner sees safe activity while a remote call is pending and after it finishes', async () => {
+  let entered;
+  let release;
+  const pending = new Promise((resolve) => { entered = resolve; });
+  const gate = new Promise((resolve) => { release = resolve; });
+  const computer = await addComputer('activity-desk', async () => {
+    entered();
+    await gate;
+    return { text: 'private command output', meta: { exit_code: 7 } };
+  });
+
+  const callResult = call('bash', { computer: 'ACTIVITY-DESK', command: 'rg private-search-term' });
+  try {
+    await pending;
+    for (const key of [TOKEN, computer.key]) {
+      const response = await fetch(`${base}/hub/api/activity`, { headers: { Authorization: `Bearer ${key}` } });
+      assert.equal(response.status, 401);
+    }
+    const response = await admin('activity');
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    const feed = await response.json();
+    assert.equal(feed.active.length, 1);
+    assert.deepEqual(feed.active[0], {
+      id: feed.active[0].id, computer: 'activity-desk', action: 'search', startedAt: feed.active[0].startedAt,
+    });
+    assert.ok(Number.isSafeInteger(feed.active[0].startedAt));
+    assert.ok(!JSON.stringify(feed).includes('private-search-term'));
+
+    release();
+    assert.equal((await callResult).content[0].text, 'private command output');
+    const finished = await (await admin('activity')).json();
+    assert.deepEqual(finished.active, []);
+    assert.deepEqual(finished.recent[0], {
+      ...feed.active[0], status: 'failed', durationMs: finished.recent[0].durationMs,
+    });
+    assert.ok(finished.recent[0].durationMs >= 0);
+    assert.ok(!JSON.stringify(finished).includes('private command output'));
+
+    await call('bash', { computer: 'invalid-private-target', command: 'not run' });
+    const rejected = await (await (await admin('activity')).json()).recent[0];
+    assert.equal(rejected.computer, null);
+    assert.equal(rejected.status, 'failed');
+
+    await call('list_computers', {});
+    const listed = (await (await admin('activity')).json()).recent[0];
+    assert.equal(listed.action, 'list_computers');
+    assert.equal(listed.computer, null);
+    assert.equal(listed.status, 'succeeded');
+  } finally {
+    release();
+    await callResult;
+    await admin(`computers/${computer.id}`, 'DELETE');
+  }
+});
+
 test('a missing or unknown computer runs nothing and names the choices', async () => {
   for (const args of [{}, { computer: 'gamma' }]) {
     const result = await call('bash', { ...args, command: 'echo hi' });

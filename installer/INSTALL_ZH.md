@@ -9,7 +9,8 @@
 4. 连接成功后选择 **复制完整链接**，粘贴到支持远程 HTTP MCP 的 AI 客户端；如果客户端单独要求 URL 与 Token，分别点击 **复制 MCP 地址**、**复制密钥**，并选择 Bearer Token 认证。
 5. **不要公开分享完整链接或密钥**，它们具备电脑远程控制权限。
 6. 桌面鼠标键盘与 OCR 功能需点击 **安装桌面控制 / OCR** 下载 Python、依赖和模型。此步骤依赖网络以及 Windows Package Manager（winget），可能要求额外磁盘空间；未安装前，文件和命令行功能仍可使用。
-7. 固定域名需要自己管理的 Cloudflare 域名；不要使用别人提供的域名当作自己的。
+7. AI 的命令行默认用 Windows 自带的 PowerShell。想让 AI 用 Bash：安装时勾选「给 AI 下载 Bash 命令行」，或在管理器里点 **AI 命令行：下载并用 Bash**（约 60 MB，不需要管理员权限，优先走国内镜像）。随时可以点 **AI 命令行：用 PowerShell** 切回来。
+8. 固定域名需要自己管理的 Cloudflare 域名；不要使用别人提供的域名当作自己的。
 
 ## 特别说明
 - 安装包已内置 Node.js 和 Cloudflare Tunnel 运行程序；不是只有一个会调用外部 Node 的启动器。

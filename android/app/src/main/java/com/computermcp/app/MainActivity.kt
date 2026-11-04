@@ -47,6 +47,7 @@ private const val PAGE = 0xFFF3F4F6.toInt()
 private const val GREEN = 0xFF16A34A.toInt()
 private const val GRAY = 0xFF9CA3AF.toInt()
 private const val REFRESH_MS = 5000L
+private const val ACTIVITY_REFRESH_MS = 2000L
 private const val ORANGE = 0xFFEA580C.toInt()
 private const val NIGHT = 0xFF0B0F17.toInt()
 private const val PREVIEW_MS = 2500L
@@ -59,6 +60,10 @@ class MainActivity : Activity() {
     private var client: HubClient? = null
 
     private var computersBox: LinearLayout? = null
+    private var activityBox: LinearLayout? = null
+    private var activityNotice: TextView? = null
+    private var activityShown: String? = null
+    private var activityLoadingToken = -1
     private var poolBox: LinearLayout? = null
     private var poolError: TextView? = null
     private var poolShown: String? = null
@@ -83,8 +88,13 @@ class MainActivity : Activity() {
 
     private val refresher = object : Runnable {
         override fun run() {
-            if (topicBox != null) refreshTopic() else if (poolBox != null) refreshPool() else refresh()
-            main.postDelayed(this, REFRESH_MS)
+            when {
+                activityBox != null -> refreshActivity()
+                topicBox != null -> refreshTopic()
+                poolBox != null -> refreshPool()
+                else -> refresh()
+            }
+            main.postDelayed(this, if (activityBox != null) ACTIVITY_REFRESH_MS else REFRESH_MS)
         }
     }
 
@@ -267,6 +277,7 @@ class MainActivity : Activity() {
         computersBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         page.addView(computersBox)
         page.addView(primary("＋ 添加电脑") { addComputer() }.below(16))
+        page.addView(secondary("AI 正在做什么") { showActivity() }.below(10))
         poolButton = secondary("💬 AI 公共聊天池") { showPool() }.below(10)
         page.addView(poolButton)
 
@@ -290,6 +301,111 @@ class MainActivity : Activity() {
         page.addView(extras)
 
         status?.let { render(it) }
+    }
+
+    private fun showActivity() {
+        val page = page()
+        backTo = { showHome() }
+        page.addView(header("AI 正在做什么") { showHome() })
+        page.addView(text("显示通过 Computer MCP 发出的工具调用，打开本页时自动更新。", 13f, MUTED).below(10))
+        activityNotice = text("正在读取活动…", 13f, MUTED).below(10).also { page.addView(it) }
+        activityBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }.also { page.addView(it) }
+        activityShown = null
+        main.removeCallbacks(refresher)
+        main.post(refresher)
+    }
+
+    private fun refreshActivity() {
+        val current = client ?: return
+        val box = activityBox ?: return
+        val token = screenToken
+        if (activityLoadingToken == token) return
+        activityLoadingToken = token
+        work({ current.activityFeed() }, { error ->
+            if (activityLoadingToken == token) activityLoadingToken = -1
+            if (token != screenToken) return@work
+            activityNotice?.apply {
+                val reason = error.message
+                text = if (reason == "not found") "当前主机版本不支持活动列表，请升级 Computer MCP 主机。"
+                else "读取活动失败" + (if (reason.isNullOrBlank()) "，正在重试。" else "：$reason") +
+                    (if (box.childCount > 0) "（下方为上次读取的记录）" else "")
+                setTextColor(ORANGE)
+                visibility = View.VISIBLE
+            }
+        }) { feed ->
+            if (activityLoadingToken == token) activityLoadingToken = -1
+            if (token != screenToken) return@work
+            activityNotice?.visibility = View.GONE
+            val signature = feed.toString()
+            if (activityShown == signature) return@work
+            activityShown = signature
+            renderActivity(box, feed)
+        }
+    }
+
+    private fun renderActivity(box: LinearLayout, feed: JSONObject) {
+        box.removeAllViews()
+        val active = feed.getJSONArray("active")
+        val recent = feed.getJSONArray("recent")
+        val clock = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault())
+        box.addView(text("进行中（${active.length()}）", 17f, INK, bold = true))
+        if (active.length() == 0) {
+            box.addView(text("当前没有进行中的工具调用。AI 可能在思考、等待回复或已经结束。", 14f, MUTED).below(8))
+        }
+        for (index in 0 until active.length()) {
+            box.addView(activityCard(active.getJSONObject(index), clock))
+        }
+        box.addView(text("最近完成的调用", 17f, INK, bold = true).below(22))
+        if (recent.length() == 0) box.addView(text("暂无记录", 14f, MUTED).below(8))
+        for (index in 0 until recent.length()) {
+            box.addView(activityCard(recent.getJSONObject(index), clock))
+        }
+    }
+
+    private fun activityCard(entry: JSONObject, clock: SimpleDateFormat): LinearLayout {
+        val action = when (entry.getString("action")) {
+            "list_computers" -> "查看电脑列表"
+            "search" -> "搜索文件或内容"
+            "list_files" -> "查看文件列表"
+            "bash" -> "运行命令"
+            "job" -> "管理电脑任务"
+            "read_file" -> "读取文件"
+            "write_file" -> "写入文件"
+            "edit_file" -> "编辑文件"
+            "ui_look" -> "查看电脑屏幕"
+            "ui_act" -> "操作电脑界面"
+            "type_secret" -> "请求使用已保存的账号"
+            "request_human_takeover" -> "请求手机接管"
+            "check_human_takeover" -> "查看接管状态"
+            "cancel_human_takeover" -> "结束接管"
+            "pool_join" -> "加入 AI 聊天池"
+            "pool_topic" -> "管理 AI 讨论"
+            "pool_read" -> "读取 AI 聊天池"
+            "pool_wait" -> "等待 AI 聊天池回复"
+            "pool_post" -> "在 AI 聊天池发言"
+            "pool_ack" -> "确认 AI 聊天池消息"
+            else -> "调用工具"
+        }
+        val (status, color) = when (entry.optString("status")) {
+            "succeeded" -> "成功" to GREEN
+            "failed" -> "失败" to ORANGE
+            "background" -> "已交给后台任务，结果待确认" to ORANGE
+            "unknown" -> "结果未知" to ORANGE
+            else -> "调用进行中" to BLUE
+        }
+        val computer = if (entry.isNull("computer")) "" else " · ${entry.getString("computer")}"
+        val time = clock.format(Date(entry.getLong("startedAt")))
+        val duration = entry.optLong("durationMs", -1)
+        val elapsed = when {
+            duration < 0 -> ""
+            duration < 1000 -> " · ${duration} 毫秒"
+            else -> " · " + String.format(Locale.getDefault(), "%.1f 秒", duration / 1000.0)
+        }
+        return card().apply {
+            addView(text(action + computer, 15f, INK, bold = true))
+            addView(text(time + elapsed, 13f, MUTED).below(6))
+            addView(text(status, 13f, color).below(4))
+        }.below(10)
     }
 
     // ---- Public AI message pool ----
@@ -1364,6 +1480,8 @@ class MainActivity : Activity() {
         if (requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_PORTRAIT) requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         screenToken += 1
         computersBox = null
+        activityBox = null
+        activityNotice = null
         poolBox = null
         poolError = null
         topicBox = null
