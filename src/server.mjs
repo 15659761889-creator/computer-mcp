@@ -6,12 +6,13 @@ import { timingSafeEqual, createHash } from 'node:crypto';
 import { desktopSupported } from './desktop.mjs';
 import { HandoffManager, HANDOFF_TOOLS } from './handoff.mjs';
 import { SECRET_TOOL } from './hub.mjs';
+import { HISTORY_TOOL, latestHandoff, renderRecentCalls } from './history.mjs';
 import { MEMORY_TOOLS, MEMORY_TOOL_NAMES } from './memory.mjs';
 import { availableShells, defaultShell, findBash } from './shell.mjs';
 import { ALL_TOOLS, callTool, hasTool, summarizeArgs, TOOLS } from './tools.mjs';
 import { TRANSFER_TOOL } from './transfer.mjs';
 
-const VERSION = '0.6.2';
+const VERSION = '0.6.3';
 const SUPPORTED_PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const MAX_AUDIT_BYTES = 50 * 1024 * 1024;
@@ -65,7 +66,7 @@ function soloComputers(name) {
 
 // Every tool gains a required computer parameter, so a call can never land on a default machine by accident.
 // Memory tools take no required computer, so they sit beside list_computers and transfer, not inside the wrapper.
-function hubTools(hub, memory) {
+function hubTools(hub, memory, auditFile) {
   const withComputer = (tool) => ({
     ...tool,
     inputSchema: {
@@ -77,7 +78,7 @@ function hubTools(hub, memory) {
       required: ['computer', ...(tool.inputSchema.required || [])],
     },
   });
-  return [listComputersTool(memory), ...(hub?.transfers ? [TRANSFER_TOOL] : []), ...(memory ? MEMORY_TOOLS : []), ...[...ALL_TOOLS, SECRET_TOOL, ...HANDOFF_TOOLS].map(withComputer)];
+  return [listComputersTool(memory), ...(hub?.transfers ? [TRANSFER_TOOL] : []), ...(memory ? MEMORY_TOOLS : []), ...(auditFile ? [HISTORY_TOOL] : []), ...[...ALL_TOOLS, SECRET_TOOL, ...HANDOFF_TOOLS].map(withComputer)];
 }
 
 function instructions(name) {
@@ -93,7 +94,7 @@ export function auditLogger(file) {
   if (!file) return () => {};
   fs.mkdirSync(path.dirname(file), { recursive: true });
   let size = fs.existsSync(file) ? fs.statSync(file).size : 0;
-  return (entry) => {
+  const log = (entry) => {
     const line = `${JSON.stringify({ ts: new Date().toISOString(), ...entry })}\n`;
     if (size > MAX_AUDIT_BYTES) {
       fs.renameSync(file, `${file}.1`);
@@ -102,6 +103,9 @@ export function auditLogger(file) {
     size += Buffer.byteLength(line);
     fs.appendFile(file, line, () => {});
   };
+  // recent_calls reads the log back from here.
+  log.file = file;
+  return log;
 }
 
 function rpcResult(id, result) {
@@ -126,18 +130,20 @@ async function handleRpc(message, context) {
       const base = context.hub
         ? hubInstructions(context.hub)
         : `${instructions(context.name)}${context.memory ? ' Call list_computers at the start of every task: it names this computer and reports the shared memory.' : ''}`;
+      const withMemory = context.memory ? `${base}\n\n${context.memory.instructionsBlock()}` : base;
+      const resume = context.auditFile ? `${withMemory}\n\nTo continue work another AI left unfinished, call recent_calls: it lists the latest tool calls, whether each worked, and whether calls came after the last handoff note. It does not record outputs, so check the real state before you continue.` : withMemory;
       return rpcResult(id, {
         protocolVersion: SUPPORTED_PROTOCOLS.includes(requested) ? requested : SUPPORTED_PROTOCOLS[0],
         capabilities: { tools: {} },
         serverInfo: { name: `computer-mcp-${context.name}`, version: VERSION },
-        instructions: context.memory ? `${base}\n\n${context.memory.instructionsBlock()}` : base,
+        instructions: resume,
       });
     }
     case 'ping':
       return rpcResult(id, {});
     case 'tools/list':
-      if (context.hub) return rpcResult(id, { tools: hubTools(context.hub, context.memory) });
-      return rpcResult(id, { tools: [...(context.memory ? [listComputersTool(context.memory)] : []), ...(desktopSupported ? [...TOOLS, ...HANDOFF_TOOLS] : TOOLS), ...(context.memory ? MEMORY_TOOLS : [])] });
+      if (context.hub) return rpcResult(id, { tools: hubTools(context.hub, context.memory, context.auditFile) });
+      return rpcResult(id, { tools: [...(context.memory ? [listComputersTool(context.memory)] : []), ...(desktopSupported ? [...TOOLS, ...HANDOFF_TOOLS] : TOOLS), ...(context.memory ? MEMORY_TOOLS : []), ...(context.auditFile ? [HISTORY_TOOL] : [])] });
     case 'tools/call':
       return callAndAudit(id, params, context);
     default:
@@ -203,8 +209,9 @@ async function callAndAudit(id, params, context) {
   const hubTool = Boolean(context.hub || context.memory) && name === LIST_COMPUTERS_TOOL.name;
   const transferTool = Boolean(context.hub?.transfers) && name === TRANSFER_TOOL.name;
   const memoryTool = Boolean(context.memory) && MEMORY_TOOL_NAMES.has(name);
+  const historyTool = Boolean(context.auditFile) && name === HISTORY_TOOL.name;
   const known = hasTool(name) || (context.hub && (name === SECRET_TOOL.name || ALL_TOOLS.some((tool) => tool.name === name)));
-  if (typeof name !== 'string' || (!known && !handoffTool && !hubTool && !transferTool && !memoryTool)) return rpcError(id, -32602, `unknown tool: ${name}`);
+  if (typeof name !== 'string' || (!known && !handoffTool && !hubTool && !transferTool && !memoryTool && !historyTool)) return rpcError(id, -32602, `unknown tool: ${name}`);
   const args = params.arguments;
   if (args !== undefined && (typeof args !== 'object' || args === null || Array.isArray(args))) {
     return rpcError(id, -32602, 'arguments must be an object');
@@ -212,8 +219,8 @@ async function callAndAudit(id, params, context) {
   const started = Date.now();
   let finishActivity;
   // Memory writes and deletes show in the phone's activity feed, so the owner sees what AIs leave
-  // for each other; reads would only be noise.
-  if (context.hub && name !== 'memory_read') {
+  // for each other; reads (memory_read, recent_calls) would only be noise.
+  if (context.hub && name !== 'memory_read' && !historyTool) {
     const hub = context.hub;
     const own = !hubTool && !transferTool && !memoryTool;
     const target = own && typeof args?.computer === 'string' ? hub.resolve(args.computer) : null;
@@ -233,6 +240,11 @@ async function callAndAudit(id, params, context) {
       outcome = { text: JSON.stringify({ ...computers, ...memory }, null, 2) };
     } else if (transferTool) {
       outcome = await context.hub.transfers.tool(args);
+    } else if (historyTool) {
+      // Calls the hub is running right now, plus the newest handoff note, tell the reader whether the
+      // last session is still working or stopped.
+      const active = context.hub ? [...context.hub.activeCalls.values()] : [];
+      outcome = { text: renderRecentCalls({ file: context.auditFile, args: args ?? {}, active, handoff: context.memory ? latestHandoff(context.memory) : null }) };
     } else if (context.hub) {
       outcome = await runThroughHub(name, args, context, handoffTool);
     } else if (name === 'ui_act' && context.handoff.locked()) {
@@ -252,6 +264,8 @@ async function callAndAudit(id, params, context) {
     error: outcome.isError ? outcome.text.slice(0, 500) : undefined,
     ...outcome.meta,
     client: context.clientIp,
+    // Which AI client made the call, so a run of calls from one session can be told from another.
+    agent: typeof context.userAgent === 'string' ? context.userAgent.slice(0, 80) : undefined,
   });
   const content = [{ type: 'text', text: outcome.text }];
   if (outcome.image) content.push({ type: 'image', ...outcome.image });
@@ -405,7 +419,7 @@ export function createMcpServer({ name, getToken, auditFile, allowSse = true, on
         sendJson(res, 401, { error: 'unauthorized' }, { 'WWW-Authenticate': 'Bearer' });
         return;
       }
-      await serveMcp(req, res, { name, audit, handoff, hub, memory, clientIp: req.headers['cf-connecting-ip'] || req.socket.remoteAddress, userAgent: req.headers['user-agent'] }, allowSse);
+      await serveMcp(req, res, { name, audit, auditFile: audit.file ?? null, handoff, hub, memory, clientIp: req.headers['cf-connecting-ip'] || req.socket.remoteAddress, userAgent: req.headers['user-agent'] }, allowSse);
     } catch (err) {
       if (!res.headersSent) sendJson(res, err.status || 500, { error: err.status ? err.message : 'internal error' });
       else res.end();

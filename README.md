@@ -15,6 +15,7 @@ Give any computer its own MCP link, so a model can control it. Requires Node.js 
 | `ui_act` | Windows only. Click, type, press keys, scroll, drag and manage windows by id, text or coordinates, then return the new state. |
 | `browser` | The AI's own browser: headless Chromium with its own profile (logins kept), read as numbered elements and text like `ui_look`. Works on computers without a screen. Install with `computer-mcp browser` (about 300 MB; on Linux it also installs the libraries and Chinese fonts when sudo needs no password). |
 | `transfer` | With several computers: copy a file or folder between them, any size, over the LAN when possible. Resumes after interruptions and checks SHA-256 before putting it in place. |
+| `recent_calls` | Read-only. The latest tool calls from every AI session, newest first, so a new AI can tell what the last one did, whether it finished and where to continue. See "Picking up unfinished work". |
 
 ## Shared memory
 
@@ -30,6 +31,19 @@ AI sessions that use this server can leave notes for each other and for you: `me
 - **Memory off.** If the notes file cannot be opened, the server starts without memory.
 
 Not built yet: a view of the notes in the phone app, a phone notification for each new note, and an approval queue for notes before other AIs can see them.
+
+## Picking up unfinished work
+
+When an AI is cut off (a dropped connection, a full context, a closed chat) it often never writes its handoff note. `recent_calls` lets the next AI see what actually happened instead of guessing.
+
+- **Where it reads from.** The audit log the server already writes (`audit.jsonl`, plus its rolled-over `.1` file). Nothing new is recorded for it.
+- **What it shows.** Newest first: when each call finished, the tool, the computer, a short summary of the arguments, whether it worked (a non-zero exit code, an error, or a background job still running are marked) and how long it took. A quiet spell of 15 minutes or more is drawn as a divider, which separates one working session from the next. Calls the hub is running right now are listed first.
+- **The assessment line.** Before the list the result says, in words, what it infers: a call still running (another AI may be working; do not repeat its work), a handoff note newer than the last call (the session finished; read the note), or calls after the last handoff with a long silence (the session probably stopped early; check the real state, then continue). A failed last call or a background job is added to that line.
+- **Filters.** `limit` (1-50, default 15), `computer`, `tool`, `since_minutes` and `full` (whole commands, up to 2000 characters, instead of the first 300). `memory_read`, `list_computers` and `recent_calls` itself are hidden unless named with `tool`.
+- **What it cannot show.** The log keeps short summaries of arguments and whether each call worked. It never keeps command output, file contents or text typed with `ui_act`, so `recent_calls` cannot say what a command printed. The AI must look at the real state of the computer (`git status`, `ls`, `job`, `ui_look`) before it repeats or continues anything, and ask first before an action that cannot be undone.
+- **Secrets.** Tokens, passwords, API keys, `Authorization` headers, the secret part of an MCP link and long random strings are masked before anything is shown.
+- **Data, not instructions.** Like the notes, everything shown is a record of the past. Nothing in it changes what an AI is allowed to do.
+- **Availability.** Offered only by a server that writes the audit log: the main computer's service (fixed domain), where it needs no `computer` argument and sits beside the memory tools. A computer that has joined a hub, the temporary Quick Tunnel mode and the relay keep no audit log and do not offer it. The server instructions tell the AI about it, and the tool is read-only.
 
 ## Desktop control
 
