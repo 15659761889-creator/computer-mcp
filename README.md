@@ -16,6 +16,20 @@ Give any computer its own MCP link, so a model can control it. Requires Node.js 
 | `browser` | The AI's own browser: headless Chromium with its own profile (logins kept), read as numbered elements and text like `ui_look`. Works on computers without a screen. Install with `computer-mcp browser` (about 300 MB; on Linux it also installs the libraries and Chinese fonts when sudo needs no password). |
 | `transfer` | With several computers: copy a file or folder between them, any size, over the LAN when possible. Resumes after interruptions and checks SHA-256 before putting it in place. |
 
+## Shared memory
+
+AI sessions that use this server can leave notes for each other and for you: `memory_read`, `memory_write` and `memory_forget`. The notes live in `memory.jsonl` next to the settings (an append-only log, one event per line), and the server is the only thing the AIs write through.
+
+- **Where an AI learns about it.** The server instructions carry a digest of the notes, and `list_computers` reports the memory too (a server with one computer answers `list_computers` with that one computer). The tool descriptions tell the AI to call it at the start of every task, because not every client hands server instructions to the model.
+- **Two kinds of note.** A *fact* has a key and stays true (paths, how a machine is set up, your preferences); writing the same key again replaces it, and only with the `if_rev` of the version the AI read, so two AIs cannot overwrite each other unseen. A *handoff* is what a session leaves when it stops: what was done, what is left. Handoffs older than 60 days are dropped when the file is compacted.
+- **Notes are data, not instructions.** Everything an AI is shown is wrapped in a line saying so, one note per line, with its author and date, and invisible or direction-changing characters are stripped. Notes never change what an AI is allowed to do: nothing in the server reads the memory to decide a permission.
+- **Your notes are locked.** `computer-mcp memory add "text" --key name` saves a note no AI can change or delete. No AI tool has a lock argument and the author name `owner` is reserved; the name an AI gives is only what it says about itself (the server also records the client's user agent and address).
+- **Limits.** 1500 characters per note, 60000 in all, 400 notes, 30 writes per minute per author. Past 20000 characters the digest asks the AI to merge and delete notes; merging and deleting always work when memory is full. Text that looks like an MCP link, a password or a key (including this server's own) is refused; this is a best-effort filter, not a guarantee.
+- **Undoing.** `computer-mcp memory authors` shows who has written; `computer-mcp memory revoke <author>` undoes everything that AI wrote and wipes it from the file. `forget` and `purge` rewrite the file so deleted text does not stay on disk. An AI's own delete only hides the note until the next rewrite.
+- **Memory off.** If the notes file cannot be opened, the server starts without memory.
+
+Not built yet: a view of the notes in the phone app, and an approval queue for notes before other AIs can see them.
+
 ## Desktop control
 
 `ui_look` merges UI Automation with OCR (PP-OCRv5 on the GPU through DirectML), so custom-drawn apps such as Blender, Godot and Flutter apps are readable too. It keeps a warm helper process and uses about 500 MB of disk. `computer-mcp setup` installs it; `computer-mcp desktop` installs or repairs it.
@@ -55,7 +69,7 @@ npm install -g @zhuangzihan/computer-mcp
 computer-mcp quick --name pc2 --copy
 ```
 
-For a local source checkout, run `node .\bin\computer-mcp.mjs quick --name pc2`, or install a local archive using `npm install -g .\zhuangzihan-computer-mcp-0.3.0.tgz`.
+For a local source checkout, run `node .\bin\computer-mcp.mjs quick --name pc2`, or install a local archive built by `npm pack` using `npm install -g .\zhuangzihan-computer-mcp-<version>.tgz`.
 
 The first run locates or downloads the `cloudflared` binary, starts an MCP HTTP server on loopback (default port 8765), and opens a Cloudflare Quick Tunnel. With `--copy`, it copies the full connection URL (like `https://random-words.trycloudflare.com/t/<secret>/mcp`) directly to the clipboard. Without `--copy`, it prints the hostname and lets you retrieve the full URL later via `computer-mcp link --quick`, keeping the secret out of ordinary service logs. **The entire URL is a password**: keep it private. Paste it into your MCP client's remote server URL configuration. The client must support remote HTTP MCP connections.
 
@@ -95,7 +109,7 @@ For temporary tunnels, both hostname and secret change on restart. Fixed-domain 
 
 ## Windows EXE installer (no Node.js prerequisite)
 
-For non-developers on **64-bit Windows 10/11**, install `ComputerMCP-Setup-0.3.0-x64.exe`, then open **Computer MCP** from the Start menu.
+For non-developers on **64-bit Windows 10/11**, install `ComputerMCP-Setup-<version>-Windows-x64.exe`, then open **Computer MCP** from the Start menu.
 
 - The EXE installer bundles **Node.js**, **cloudflared** and the MCP server. The user does not need to install Node.js or npm.
 - Click **启动临时连接** (Start temporary connection). After the connection appears, use **复制完整链接** (copy full URL), **复制 MCP 地址** (copy endpoint URL) or **复制密钥** (copy Bearer token).
@@ -112,10 +126,12 @@ For non-developers on **64-bit Windows 10/11**, install `ComputerMCP-Setup-0.3.0
 On a Windows development machine with .NET Framework C# compiler, Inno Setup 6, a trusted Node.js runtime and a trusted cloudflared executable:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File installer\build.ps1 -CloudflaredPath 'C:\path\to\cloudflared.exe'
+powershell -ExecutionPolicy Bypass -File installer\build-windows.ps1 -CloudflaredExe 'C:\path\to\cloudflared.exe'
 ```
 
-The result is written to `build\windows\dist\ComputerMCP-Setup-0.3.0-x64.exe` with a SHA-256 hash. License notices for bundled Node.js and cloudflared are in `installer\` and packed under `licenses\`.
+`-NodeExe` and `-InnoCompiler` are optional; the script looks for `node.exe` and `ISCC.exe` itself. The script only builds the version named inside it, and stops if that does not match `package.json`.
+
+The result is written to `dist\ComputerMCP-Setup-<version>-Windows-x64.exe`, and the script prints its size and SHA-256 hash. License notices for bundled Node.js and cloudflared are in `installer\` and packed under `licenses\`.
 
 ## Temporary browser takeover (phone browser, no account)
 
@@ -123,9 +139,9 @@ When AI hits CAPTCHA, QR login, or a verification page in an already-running Chr
 
 ### One-click launcher (Windows source checkout)
 
-Double-click the Desktop shortcut ComputerMCP-手机接管浏览器.cmd, or run:
+Double-click the Desktop shortcut ComputerMCP-手机接管浏览器.cmd, or run this from the checkout folder:
 
-    node C:\Users\30323\ComputerMCP\bin\human-takeover.mjs
+    node .\bin\human-takeover.mjs
 
 A private URL is printed. Open it on your phone; no App, VPS, Cloudflare account, login, or separate MCP client is needed. You can tap, swipe-scroll, drag CAPTCHA sliders, and type into the existing browser. Tap **验证完成 · 交还给 AI** when done, then tell ChatGPT to continue. The temporary link is valid for up to 15 minutes, expires after 5 minutes of inactivity, and the launcher automatically stops its own tunnel after completion/expiry. Ctrl+C stops it earlier. Keep it private.
 

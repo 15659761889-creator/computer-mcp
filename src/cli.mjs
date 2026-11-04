@@ -5,8 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import qrcode from './vendor/qrcode.mjs';
 import {
-  DEFAULT_PORT, homeDir, hostnameFor, loadConfig, logDir, newToken, publicLink, requireConfig, saveConfig,
+  DEFAULT_PORT, homeDir, hostnameFor, loadConfig, logDir, memoryPath, newToken, publicLink, requireConfig, saveConfig,
 } from './config.mjs';
+import { MemoryStore, renderLine } from './memory.mjs';
 import {
   autostartState, installAppCopy, installAutostart, removeAutostart, runService, startService, stopService,
 } from './service.mjs';
@@ -71,6 +72,15 @@ const HELP = `computer-mcp: give this computer its own fixed MCP link
   computer-mcp relay invite   make an invite for one more person (shared relay)
   computer-mcp relay users    list the people on this relay
   computer-mcp relay remove-user <id>
+  computer-mcp memory         the notes AIs leave each other; yours are locked, so no AI can change them
+      list [--kind fact|handoff] [--query words]    show the notes (this is the default)
+      add "text" --key <key>  save a note of yours (a fact needs --key; --kind handoff has none)
+      --computer <name> --tags a,b --open           optional; --open leaves the note unlocked
+      lock <id|key> | unlock <id|key>               lock a note, which also makes it yours
+      forget <id|key>         delete a note and wipe its text from the file
+      authors                 who has written, newest first
+      revoke <author> [--since <date>]              undo everything one AI wrote (and wipe it)
+      purge                   rewrite the file with only the notes that are live
   computer-mcp status         show whether the service and the link work
   computer-mcp rotate         replace the secret; the old link stops working at once
   computer-mcp desktop        install desktop control (ui_look, ui_act); setup does this too
@@ -496,6 +506,75 @@ async function relayCommand({ flags, positional }) {
   }
 }
 
+// The owner's side of the shared memory. It works on the same file as the running service, which
+// reads whatever is appended; the rewrites (forget, revoke, purge) are rare and brief.
+function memoryCommand({ positional, flags }) {
+  const store = new MemoryStore({ file: memoryPath() });
+  const [action = 'list', ...rest] = positional;
+  const flag = (name) => (typeof flags[name] === 'string' ? flags[name] : undefined);
+  const ref = () => {
+    if (!rest[0]) throw new Error(`memory ${action} needs the id or the key of a note (see: computer-mcp memory list)`);
+    return /^m_[0-9a-f]{8}$/.test(rest[0]) ? { id: rest[0] } : { key: rest[0] };
+  };
+  switch (action) {
+    case 'list': {
+      const { total, items } = store.list({ kind: flag('kind') || 'all', query: flag('query'), limit: 50 });
+      const s = store.stats();
+      console.log(`${s.facts} facts, ${s.handoffs} handoffs, ${s.chars} characters. File: ${memoryPath()}`);
+      for (const note of items) console.log(renderLine(note, 200));
+      if (total > items.length) console.log(`(${total - items.length} more; narrow with --query or --kind)`);
+      return;
+    }
+    case 'add': {
+      const kind = flag('kind') || 'fact';
+      const key = flag('key');
+      const found = kind === 'fact' && key ? store.byKey(key) : null;
+      const { entry, created } = store.write({
+        kind,
+        text: rest[0],
+        key,
+        computer: flag('computer'),
+        tags: flag('tags') ? flag('tags').split(',') : undefined,
+        if_rev: found?.rev,
+        by: 'owner',
+        locked: flags.open ? false : undefined,
+      });
+      console.log(`${created ? 'Saved' : 'Replaced'} ${entry.kind} ${entry.id}${entry.locked ? ' (locked)' : ''}.`);
+      return;
+    }
+    case 'lock':
+    case 'unlock': {
+      const note = store.setLock(ref(), action === 'lock');
+      console.log(`${note.id} is ${note.locked ? 'locked and now yours' : 'unlocked'}.`);
+      return;
+    }
+    case 'forget': {
+      const gone = store.forget({ ...ref(), by: 'owner' });
+      console.log(`Deleted ${gone.kind} ${gone.id}; its text is gone from the file.`);
+      return;
+    }
+    case 'authors': {
+      const rows = store.authors();
+      if (!rows.length) console.log('Nobody has written yet.');
+      for (const row of rows) console.log(`${row.author}: ${row.events} writes, last ${row.last}`);
+      return;
+    }
+    case 'revoke': {
+      if (!rest[0]) throw new Error('memory revoke needs the name of an AI (see: computer-mcp memory authors)');
+      const { events } = store.revoke({ author: rest[0], since: flag('since') });
+      console.log(`Undid ${events} writes by "${rest[0]}" and wiped them from the file.`);
+      return;
+    }
+    case 'purge': {
+      const s = store.purge();
+      console.log(`The file now holds only live notes: ${s.facts} facts, ${s.handoffs} handoffs.`);
+      return;
+    }
+    default:
+      throw new Error('memory: use list, add, lock, unlock, forget, authors, revoke or purge');
+  }
+}
+
 async function status() {
   const config = requireConfig();
   if (config.joined) {
@@ -592,6 +671,8 @@ export async function main(argv) {
       return runService();
     case 'link':
       return linkCommand(parsed.flags);
+    case 'memory':
+      return memoryCommand(parsed);
     case 'status':
       return status();
     case 'rotate': {

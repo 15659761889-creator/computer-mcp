@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
 import os from 'node:os';
-import { newToken } from './config.mjs';
+import { memoryPath, newToken } from './config.mjs';
 import { clearQuickLink, connectionParts, copyToClipboard, saveQuickLink } from './link.mjs';
+import { MemoryStore } from './memory.mjs';
 import { createMcpServer } from './server.mjs';
 import { ensureCloudflared } from './tunnel.mjs';
 
@@ -56,7 +57,15 @@ export async function runQuick({ port, name = os.hostname(), proxy, cloudflared:
   const cloudflared = ensureCloudflared({ explicit: cloudflaredPath, proxy });
   const token = newToken();
   let quickOrigin = null;
-  const server = createMcpServer({ name, getToken: () => token, auditFile: null, allowSse: false, publicOrigin: () => quickOrigin });
+  // Notes outlive the temporary link, so they sit in the same file the fixed setup uses. A broken
+  // notes file must not stop the tunnel, so memory is simply left off then.
+  let memory = null;
+  try {
+    memory = new MemoryStore({ file: memoryPath(), secrets: () => [token] });
+  } catch (err) {
+    console.log(`Warning: shared memory is off: ${err.message}`);
+  }
+  const server = createMcpServer({ name, getToken: () => token, auditFile: null, allowSse: false, publicOrigin: () => quickOrigin, memory });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, '127.0.0.1', resolve);

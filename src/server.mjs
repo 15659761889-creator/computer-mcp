@@ -6,7 +6,8 @@ import { timingSafeEqual, createHash } from 'node:crypto';
 import { desktopSupported } from './desktop.mjs';
 import { HandoffManager, HANDOFF_TOOLS } from './handoff.mjs';
 import { SECRET_TOOL } from './hub.mjs';
-import { defaultShell, findBash } from './shell.mjs';
+import { MEMORY_TOOLS, MEMORY_TOOL_NAMES } from './memory.mjs';
+import { availableShells, defaultShell, findBash } from './shell.mjs';
 import { ALL_TOOLS, callTool, hasTool, summarizeArgs, TOOLS } from './tools.mjs';
 import { TRANSFER_TOOL } from './transfer.mjs';
 
@@ -35,8 +36,36 @@ const LIST_COMPUTERS_TOOL = {
   annotations: { title: 'List computers', readOnlyHint: true, openWorldHint: false },
 };
 
+// With shared memory on, list_computers is also where an AI learns the memory exists. Every client
+// shows tool descriptions to the model, which cannot be said of the server instructions, so the
+// "call me first" line lives here as well as in the instructions.
+function listComputersTool(memory) {
+  if (!memory) return LIST_COMPUTERS_TOOL;
+  return {
+    ...LIST_COMPUTERS_TOOL,
+    description: `${LIST_COMPUTERS_TOOL.description} Call it at the start of every task: it also reports the shared memory, the notes the owner and other AI sessions left for each other (read them with memory_read).`,
+  };
+}
+
+// A server that controls one computer answers list_computers with that one, in the shape a hub uses.
+function soloComputers(name) {
+  return {
+    computers: [{
+      name,
+      online: true,
+      os: `${os.type()} ${os.release()}`,
+      arch: os.arch(),
+      user: os.userInfo().username,
+      home: os.homedir(),
+      shells: availableShells(),
+      desktop: desktopSupported,
+    }],
+  };
+}
+
 // Every tool gains a required computer parameter, so a call can never land on a default machine by accident.
-function hubTools(hub) {
+// Memory tools take no required computer, so they sit beside list_computers and transfer, not inside the wrapper.
+function hubTools(hub, memory) {
   const withComputer = (tool) => ({
     ...tool,
     inputSchema: {
@@ -48,7 +77,7 @@ function hubTools(hub) {
       required: ['computer', ...(tool.inputSchema.required || [])],
     },
   });
-  return [LIST_COMPUTERS_TOOL, ...(hub?.transfers ? [TRANSFER_TOOL] : []), ...[...ALL_TOOLS, SECRET_TOOL, ...HANDOFF_TOOLS].map(withComputer)];
+  return [listComputersTool(memory), ...(hub?.transfers ? [TRANSFER_TOOL] : []), ...(memory ? MEMORY_TOOLS : []), ...[...ALL_TOOLS, SECRET_TOOL, ...HANDOFF_TOOLS].map(withComputer)];
 }
 
 function instructions(name) {
@@ -94,18 +123,21 @@ async function handleRpc(message, context) {
   switch (method) {
     case 'initialize': {
       const requested = params?.protocolVersion;
+      const base = context.hub
+        ? hubInstructions(context.hub)
+        : `${instructions(context.name)}${context.memory ? ' Call list_computers at the start of every task: it names this computer and reports the shared memory.' : ''}`;
       return rpcResult(id, {
         protocolVersion: SUPPORTED_PROTOCOLS.includes(requested) ? requested : SUPPORTED_PROTOCOLS[0],
         capabilities: { tools: {} },
         serverInfo: { name: `computer-mcp-${context.name}`, version: VERSION },
-        instructions: context.hub ? hubInstructions(context.hub) : instructions(context.name),
+        instructions: context.memory ? `${base}\n\n${context.memory.instructionsBlock()}` : base,
       });
     }
     case 'ping':
       return rpcResult(id, {});
     case 'tools/list':
-      if (context.hub) return rpcResult(id, { tools: hubTools(context.hub) });
-      return rpcResult(id, { tools: desktopSupported ? [...TOOLS, ...HANDOFF_TOOLS] : TOOLS });
+      if (context.hub) return rpcResult(id, { tools: hubTools(context.hub, context.memory) });
+      return rpcResult(id, { tools: [...(context.memory ? [listComputersTool(context.memory)] : []), ...(desktopSupported ? [...TOOLS, ...HANDOFF_TOOLS] : TOOLS), ...(context.memory ? MEMORY_TOOLS : [])] });
     case 'tools/call':
       return callAndAudit(id, params, context);
     default:
@@ -167,17 +199,20 @@ function activityStatus(name, outcome) {
 async function callAndAudit(id, params, context) {
   const name = params?.name;
   const handoffTool = HANDOFF_TOOLS.some(tool => tool.name === name);
-  const hubTool = context.hub && name === LIST_COMPUTERS_TOOL.name;
+  // A server with one computer answers list_computers only when shared memory is on; it has nothing else to say.
+  const hubTool = Boolean(context.hub || context.memory) && name === LIST_COMPUTERS_TOOL.name;
   const transferTool = Boolean(context.hub?.transfers) && name === TRANSFER_TOOL.name;
+  const memoryTool = Boolean(context.memory) && MEMORY_TOOL_NAMES.has(name);
   const known = hasTool(name) || (context.hub && (name === SECRET_TOOL.name || ALL_TOOLS.some((tool) => tool.name === name)));
-  if (typeof name !== 'string' || (!known && !handoffTool && !hubTool && !transferTool)) return rpcError(id, -32602, `unknown tool: ${name}`);
+  if (typeof name !== 'string' || (!known && !handoffTool && !hubTool && !transferTool && !memoryTool)) return rpcError(id, -32602, `unknown tool: ${name}`);
   const args = params.arguments;
   if (args !== undefined && (typeof args !== 'object' || args === null || Array.isArray(args))) {
     return rpcError(id, -32602, 'arguments must be an object');
   }
   const started = Date.now();
   let finishActivity;
-  if (context.hub) {
+  // Memory calls stay out of the phone's activity feed: they name no computer and are not actions on one.
+  if (context.hub && !memoryTool) {
     const hub = context.hub;
     const own = !hubTool && !transferTool;
     const target = own && typeof args?.computer === 'string' ? hub.resolve(args.computer) : null;
@@ -187,8 +222,14 @@ async function callAndAudit(id, params, context) {
   }
   let outcome;
   try {
-    if (hubTool) {
-      outcome = { text: JSON.stringify(context.hub.listComputers(), null, 2) };
+    if (memoryTool) {
+      // Who it came from is recorded as seen from here; the author name in the call is only what the AI says.
+      const via = [context.userAgent, context.clientIp].filter(Boolean).join(' @ ');
+      outcome = context.memory.tool(name, args ?? {}, { via });
+    } else if (hubTool) {
+      const memory = context.memory ? { memory: context.memory.banner() } : {};
+      const computers = context.hub ? context.hub.listComputers() : soloComputers(context.name);
+      outcome = { text: JSON.stringify({ ...computers, ...memory }, null, 2) };
     } else if (transferTool) {
       outcome = await context.hub.transfers.tool(args);
     } else if (context.hub) {
@@ -312,7 +353,7 @@ export async function serveMcp(req, res, context, allowSse = true) {
   }
 }
 
-export function createMcpServer({ name, getToken, auditFile, allowSse = true, onShutdown, publicOrigin = () => null, hub = null }) {
+export function createMcpServer({ name, getToken, auditFile, allowSse = true, onShutdown, publicOrigin = () => null, hub = null, memory = null }) {
   const audit = auditLogger(auditFile);
   const handoff = new HandoffManager(publicOrigin);
 
@@ -363,7 +404,7 @@ export function createMcpServer({ name, getToken, auditFile, allowSse = true, on
         sendJson(res, 401, { error: 'unauthorized' }, { 'WWW-Authenticate': 'Bearer' });
         return;
       }
-      await serveMcp(req, res, { name, audit, handoff, hub, clientIp: req.headers['cf-connecting-ip'] || req.socket.remoteAddress }, allowSse);
+      await serveMcp(req, res, { name, audit, handoff, hub, memory, clientIp: req.headers['cf-connecting-ip'] || req.socket.remoteAddress, userAgent: req.headers['user-agent'] }, allowSse);
     } catch (err) {
       if (!res.headersSent) sendJson(res, err.status || 500, { error: err.status ? err.message : 'internal error' });
       else res.end();

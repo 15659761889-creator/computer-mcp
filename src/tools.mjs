@@ -467,6 +467,13 @@ export function summarizeArgs(name, args = {}) {
       return { from: args.from, from_path: args.from_path, to: args.to, to_path: args.to_path, route: args.route, overwrite: args.overwrite, id: args.id, cancel: args.cancel };
     case 'edit_file':
       return { path: args.path, old_chars: args.old?.length, new_chars: args.new?.length, replace_all: args.replace_all };
+    case 'memory_write':
+      // The note text stays out of the audit log, like file contents do.
+      return { kind: args.kind, key: args.key, id: args.id, author: args.author, computer: args.computer, if_rev: args.if_rev, text_chars: typeof args.text === 'string' ? args.text.length : undefined };
+    case 'memory_read':
+      return { id: args.id, key: args.key, query: args.query, kind: args.kind, computer: args.computer, limit: args.limit };
+    case 'memory_forget':
+      return { id: args.id, key: args.key, author: args.author };
     default:
       return { path: args.path, offset: args.offset, limit: args.limit };
   }

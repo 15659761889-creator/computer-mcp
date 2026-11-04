@@ -2,8 +2,9 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { homeDir, loadConfig, logDir, requireConfig, saveConfig, statePath, tokenReader } from './config.mjs';
+import { homeDir, loadConfig, logDir, memoryPath, requireConfig, saveConfig, statePath, tokenReader } from './config.mjs';
 import { BROWSER_METHODS, Hub, hubPath } from './hub.mjs';
+import { MemoryStore } from './memory.mjs';
 import { startNodeLink } from './node-link.mjs';
 import { auditLogger, createMcpServer } from './server.mjs';
 import { callTool, hasTool, summarizeArgs } from './tools.mjs';
@@ -162,6 +163,17 @@ export async function runService() {
     });
     if (lan) hub.lan = { port: lan.port, addrs: lan.addrs };
   }
+  // The notes AIs leave each other. A note can never hold this server's own keys.
+  // A notes file that cannot be opened must not keep the computer from being controlled.
+  let memory = null;
+  try {
+    memory = new MemoryStore({
+      file: memoryPath(),
+      secrets: () => [getToken(), hub?.state?.adminKey],
+    });
+  } catch (err) {
+    console.error(`shared memory is off: ${err.message}`);
+  }
   const server = createMcpServer({
     name: config.name,
     getToken,
@@ -169,6 +181,7 @@ export async function runService() {
     auditFile: path.join(logDir(), 'audit.jsonl'),
     onShutdown: () => shutdown(),
     hub,
+    memory,
   });
   await new Promise((resolve, reject) => {
     server.once('error', reject);

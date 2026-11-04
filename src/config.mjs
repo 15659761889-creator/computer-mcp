@@ -16,6 +16,7 @@ export function homeDir() {
 export const configPath = () => path.join(homeDir(), 'config.json');
 export const statePath = () => path.join(homeDir(), 'run.json');
 export const logDir = () => path.join(homeDir(), 'logs');
+export const memoryPath = () => path.join(homeDir(), 'memory.jsonl');
 
 export function newToken() {
   return randomBytes(32).toString('base64url');
