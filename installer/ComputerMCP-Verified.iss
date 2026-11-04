@@ -1,18 +1,18 @@
 #define AppName "Computer MCP"
-#define AppVersion "0.4.6"
+#define AppVersion "0.5.0"
 
 [Setup]
 AppId={{C99AD54F-186F-4F5A-8F49-CC1D9C7FA7B0}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppVerName=Computer MCP 0.4.6 Windows
+AppVerName=Computer MCP 0.5.0 Windows
 AppPublisher=zhuangzihan
 AppPublisherURL=https://www.npmjs.com/package/@zhuangzihan/computer-mcp
 DefaultDirName={localappdata}\Programs\ComputerMCP
 DefaultGroupName=Computer MCP
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-OutputBaseFilename=ComputerMCP-Setup-0.4.6-Windows-x64
+OutputBaseFilename=ComputerMCP-Setup-0.5.0-Windows-x64
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -24,7 +24,7 @@ CloseApplications=no
 RestartApplications=no
 SetupLogging=yes
 LicenseFile=..\LICENSE
-VersionInfoVersion=0.4.6.0
+VersionInfoVersion=0.5.0.0
 VersionInfoDescription=Computer MCP Windows Installer
 VersionInfoCompany=Computer MCP
 VersionInfoProductName=Computer MCP

@@ -2,13 +2,15 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { homeDir, loadConfig, logDir, requireConfig, statePath, tokenReader } from './config.mjs';
+import { homeDir, loadConfig, logDir, requireConfig, saveConfig, statePath, tokenReader } from './config.mjs';
 import { BROWSER_METHODS, Hub, hubPath } from './hub.mjs';
 import { startNodeLink } from './node-link.mjs';
 import { auditLogger, createMcpServer } from './server.mjs';
 import { callTool, hasTool, summarizeArgs } from './tools.mjs';
 import { callDesktop, desktopSupported, stopDesktop, warmDesktop } from './desktop.mjs';
 import { cleanWorkDir } from './shell.mjs';
+import { LAN_PORT, allowThroughFirewall, lanAddresses, startDiscovery, startLanServer } from './lan.mjs';
+import { Transfers, handleXferLan, isXferTool, runXfer, transfersFile, xferPsk } from './transfer.mjs';
 import { spawnTunnel, tunnelConfigPath } from './tunnel.mjs';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -57,6 +59,26 @@ function writeState(state) {
   fs.writeFileSync(statePath(), JSON.stringify(state));
 }
 
+// Opens this machine's LAN port: the main computer serves its computers' polling there, and every
+// computer serves direct file copies. config.lan = false keeps it closed.
+async function openLan(config, { pskFor, handle, findMe }) {
+  if (config.lan === false) return null;
+  const log = (line) => console.log(line);
+  const server = await startLanServer({ port: config.lanPort || LAN_PORT, pskFor, handle, log });
+  if (!server) return null;
+  const { port } = server.address();
+  console.log(`LAN port ${port} open on ${lanAddresses().join(', ') || 'no network yet'}; firewall: ${allowThroughFirewall(port)}`);
+  if (findMe) startDiscovery({ answer: (message) => (findMe(message) ? { port } : null), log });
+  return { port, addrs: lanAddresses, server };
+}
+
+// Keeps what the main computer last said about routes, so a LAN-only computer still knows after a restart.
+function rememberSettings(changed) {
+  const config = loadConfig();
+  if (!config?.joined) return;
+  saveConfig({ ...config, joined: { ...config.joined, ...changed } });
+}
+
 // A computer joined to a hub opens no tunnel: its only link is the one it makes to the main computer.
 // The local server remains so `computer-mcp stop` can reach an elevated service.
 async function runJoinedComputer(config) {
@@ -73,12 +95,20 @@ async function runJoinedComputer(config) {
   });
   writeState({ pid: process.pid, startedAt: new Date().toISOString() });
   const audit = auditLogger(path.join(logDir(), 'audit.jsonl'));
+  const lan = await openLan(config, { pskFor: xferPsk, handle: handleXferLan });
   const link = startNodeLink({
     origin: config.joined.origin,
     key: config.joined.key,
+    id: config.joined.id,
     proxy: config.proxy,
+    route: config.joined.route,
+    hubLan: config.joined.hubLan,
+    onSettings: rememberSettings,
+    lanSelf: () => (lan ? { addrs: lan.addrs(), port: lan.port } : null),
     log: (line) => console.log(line),
     execute: async (tool, args) => {
+      // File copies the main computer drives; too many and too small for the audit log.
+      if (isXferTool(tool)) return runXfer(tool, args);
       // The phone's browser view, relayed by the hub: not tools the AI can call.
       if (tool.startsWith('_') && BROWSER_METHODS.includes(tool.slice(1))) {
         if (!desktopSupported) return { text: 'this computer has no desktop control', isError: true };
@@ -95,6 +125,7 @@ async function runJoinedComputer(config) {
   console.log(`computer-mcp "${config.name}" joined to ${config.joined.origin}`);
   shutdown = () => {
     link.stop();
+    lan?.server.close();
     stopDesktop();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 1000).unref();
@@ -112,18 +143,28 @@ export async function runService() {
 
   let shutdown = () => {};
   const getToken = tokenReader();
+  const hub = config.hubEnabled ? new Hub({
+    file: hubPath(homeDir()),
+    selfName: config.name,
+    origin: () => `https://${config.hostname}`,
+    getToken,
+  }) : null;
+  if (hub) {
+    hub.transfers = new Transfers({ hub, file: transfersFile(hubPath(homeDir())) });
+    const lan = await openLan(config, {
+      pskFor: (identity) => (identity.startsWith('n:') ? hub.lanPsk(identity) : xferPsk(identity)),
+      handle: (req, res, identity) => (identity.startsWith('t:') ? handleXferLan(req, res, identity) : hub.handleLan(req, res, identity)),
+      findMe: (message) => typeof message.id === 'string' && Object.hasOwn(hub.state.computers, message.id),
+    });
+    if (lan) hub.lan = { port: lan.port, addrs: lan.addrs };
+  }
   const server = createMcpServer({
     name: config.name,
     getToken,
     publicOrigin: () => 'https://' + config.hostname,
     auditFile: path.join(logDir(), 'audit.jsonl'),
     onShutdown: () => shutdown(),
-    hub: config.hubEnabled ? new Hub({
-      file: hubPath(homeDir()),
-      selfName: config.name,
-      origin: () => `https://${config.hostname}`,
-      getToken,
-    }) : null,
+    hub,
   });
   await new Promise((resolve, reject) => {
     server.once('error', reject);

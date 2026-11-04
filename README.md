@@ -13,6 +13,7 @@ Give any computer its own MCP link, so a model can control it. Requires Node.js 
 | `edit_file` | Replace exact text, keeping encoding and line endings. Refuses if the match is not unique. |
 | `ui_look` | Windows only. Windows, controls and on-screen text as a numbered list with coordinates, plus a screenshot when needed. |
 | `ui_act` | Windows only. Click, type, press keys, scroll, drag and manage windows by id, text or coordinates, then return the new state. |
+| `transfer` | With several computers: copy a file or folder between them, any size, over the LAN when possible. Resumes after interruptions and checks SHA-256 before putting it in place. |
 
 ## Desktop control
 
@@ -21,6 +22,18 @@ Give any computer its own MCP link, so a model can control it. Requires Node.js 
 Safety built into `ui_act`: nothing happens when a target is ambiguous, gone, disabled or covered, and the reply explains why. Keys and typing go only to the window from the last look. After acting it waits for the screen to change instead of sleeping, and says so if nothing changed. Typing is read back where the control allows it.
 
 Limits: a locked screen, UAC prompt or the time before logon cannot be seen or controlled. Games with anti-cheat may reject simulated input. DRM video may capture as black. Some models cannot view returned images, so the text list works without them.
+
+## Computers on the same network (0.5.0+)
+
+Every computer opens a LAN port (TCP 8766, plus UDP 8767 for finding the main computer after its address changes), encrypted and authenticated with TLS-PSK from the key it got when it joined: nothing extra to set up, and other devices on the same Wi-Fi cannot connect. The service adds a Windows Firewall rule for it. Only a computer's own polling and file copies are served there, never the MCP link or the phone API.
+
+Each joined computer has a route, set in the phone app or with `computer-mcp route <name> auto|lan|public` on the main computer (`computer-mcp route auto|lan|public` on the joined one):
+
+- `auto` (default): talk to the main computer and copy files over the LAN when it answers, otherwise over the internet, and keep checking for the LAN.
+- `lan`: never send work or files over the internet. When the LAN does not work the computer shows as offline with the reason, and transfers fail with it. It still asks over the internet whether its route changed, so it can be switched back.
+- `public`: never use the LAN.
+
+`transfer` copies between any two computers. Over the LAN the receiver pulls straight from the sender; over the internet the data passes through the main computer in 8 MB pieces. A chosen route that cannot work is an error, never a silent switch; `auto` says when it fell back. The copy is written to `<to_path>.cmcp-part` and resumes from there after a restart or a dropped connection, and replaces nothing until every file matches the source's SHA-256. Links are skipped. `config.json` `"lan": false` keeps the LAN port closed, `"lanPort"` moves it.
 
 ## Administrator rights
 

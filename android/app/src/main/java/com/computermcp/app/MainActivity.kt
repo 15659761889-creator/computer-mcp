@@ -920,7 +920,7 @@ class MainActivity : Activity() {
 
         val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         body.addView(text(computer.name + if (computer.main) "（主电脑）" else "", 16f, INK, bold = true))
-        val detail = listOf(if (computer.online) "在线" else "离线", computer.note.ifEmpty { computer.os })
+        val detail = listOf(if (computer.online) "在线" + viaLabel(computer) else "离线", computer.note.ifEmpty { computer.os })
             .filter { it.isNotEmpty() }.joinToString(" · ")
         body.addView(text(detail, 13f, MUTED).below(3))
         row.addView(body, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
@@ -1075,7 +1075,10 @@ class MainActivity : Activity() {
         })
         header.addView(text(computer.name, 24f, INK, bold = true), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         page.addView(header)
-        page.addView(text((if (computer.online) "● 在线" else "● 离线") + "  ·  " + computer.os, 14f, if (computer.online) GREEN else GRAY).below(4))
+        page.addView(text((if (computer.online) "● 在线" + viaLabel(computer) else "● 离线") + "  ·  " + computer.os, 14f, if (computer.online) GREEN else GRAY).below(4))
+        if (!computer.main && computer.route != "public" && computer.lanProblem != null && (computer.route == "lan" || !computer.online || computer.via != "lan")) {
+            page.addView(text("局域网：" + computer.lanProblem, 13f, MUTED).below(4))
+        }
         if (computer.takeover != null) page.addView(takeoverBanner(computer).below(14))
 
         val browser = card().below(16)
@@ -1117,6 +1120,9 @@ class MainActivity : Activity() {
         val settings = card().below(16)
         settings.addView(text("设置", 17f, INK, bold = true))
         settings.addView(secondary("改名 · 写用途 · 移除") { editComputer(currentComputer(computer.id) ?: computer) }.below(10))
+        if (!computer.main) {
+            settings.addView(secondary("连接方式：" + routeLabel(computer.route)) { chooseRoute(currentComputer(computer.id) ?: computer) }.below(8))
+        }
         page.addView(settings)
     }
 
@@ -1387,6 +1393,37 @@ class MainActivity : Activity() {
             .setView(ScrollView(this).apply { addView(padded(body)) })
             .setPositiveButton("复制 MCP 地址") { _, _ -> copyPart("MCP 地址") { it.full } }
             .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    private fun viaLabel(computer: Computer): String = when (computer.via) {
+        "lan" -> "（局域网）"
+        "public" -> "（公网）"
+        else -> ""
+    }
+
+    private fun routeLabel(route: String): String = when (route) {
+        "lan" -> "只用局域网"
+        "public" -> "只用公网"
+        else -> "自动"
+    }
+
+    /** auto prefers the LAN and falls back; the other two never switch, and say so when they cannot work. */
+    private fun chooseRoute(computer: Computer) {
+        val current = client ?: return
+        val routes = arrayOf("auto", "lan", "public")
+        val labels = arrayOf("自动（优先局域网，不通就走公网）", "只用局域网（连不上就报错）", "只用公网")
+        AlertDialog.Builder(this)
+            .setTitle("${computer.name} 的连接方式")
+            .setSingleChoiceItems(labels, routes.indexOf(computer.route).coerceAtLeast(0)) { dialog, which ->
+                dialog.dismiss()
+                if (routes[which] == computer.route) return@setSingleChoiceItems
+                work({ current.setRoute(computer.id, routes[which]) }, { error -> toast(error.message ?: "保存失败") }) {
+                    toast("已改为" + routeLabel(routes[which]))
+                    refresh()
+                }
+            }
+            .setNegativeButton("取消", null)
             .show()
     }
 

@@ -459,6 +459,8 @@ export function summarizeArgs(name, args = {}) {
       return summarizeAct(args);
     case 'write_file':
       return { path: args.path, bytes: typeof args.content === 'string' ? args.content.length : undefined, encoding: args.encoding };
+    case 'transfer':
+      return { from: args.from, from_path: args.from_path, to: args.to, to_path: args.to_path, route: args.route, overwrite: args.overwrite, id: args.id, cancel: args.cancel };
     case 'edit_file':
       return { path: args.path, old_chars: args.old?.length, new_chars: args.new?.length, replace_all: args.replace_all };
     default:

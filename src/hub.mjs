@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { callDesktop, desktopSupported } from './desktop.mjs';
 import { availableShells } from './shell.mjs';
+import { ROUTES, nodePsk } from './lan.mjs';
 import { OWNER, PoolError, PublicPool, poolFile } from './public-pool.mjs';
 
 const POLL_HOLD_MS = 25000;
@@ -154,6 +155,12 @@ function saveHubState(file, state) {
   fs.renameSync(tmp, file);
 }
 
+function validLan(lan) {
+  if (!lan || !Array.isArray(lan.addrs) || !Number.isInteger(lan.port) || lan.port < 1 || lan.port > 65535) return null;
+  const addrs = lan.addrs.filter((a) => typeof a === 'string' && /^\d{1,3}(\.\d{1,3}){3}$/.test(a)).slice(0, 8);
+  return addrs.length ? { addrs, port: lan.port } : null;
+}
+
 export class Hub {
   // selfName is null on a relay, which has no machine of its own to run tools on.
   constructor({ file, selfName = null, origin, getToken, state }) {
@@ -173,6 +180,10 @@ export class Hub {
     this.grants = new Map();
     this.version = 0;
     this.eventWaiters = new Set();
+    // Set by the service when this machine listens on the LAN: { port, addrs() }.
+    this.lan = null;
+    // Set by the service: moves files between computers (transfer.mjs).
+    this.transfers = null;
     // The pool is optional: without it (old Node.js, unreadable database) computers still work.
     // Pool activity wakes the phone's notification poll only when what it should show changes, not for every message.
     this.poolAlertKeys = '';
@@ -200,7 +211,7 @@ export class Hub {
   liveFor(id) {
     let live = this.live.get(id);
     if (!live) {
-      live = { lastSeen: 0, boot: null, waiter: null, queue: [], delivered: new Map() };
+      live = { id, lastSeen: 0, boot: null, waiter: null, queue: [], delivered: new Map(), via: null, lan: null, lanProblem: null };
       this.live.set(id, live);
     }
     return live;
@@ -209,6 +220,31 @@ export class Hub {
   isOnline(id) {
     const live = this.live.get(id);
     return Boolean(live) && Date.now() - live.lastSeen < OFFLINE_MS;
+  }
+
+  routeOf(computer) {
+    return ROUTES.includes(computer?.route) ? computer.route : 'auto';
+  }
+
+  // What a computer needs to pick its path to this one: its route, and where this machine listens on the LAN.
+  nodeSettings(id) {
+    return {
+      route: this.routeOf(this.state.computers[id]),
+      lan: this.lan ? { addrs: this.lan.addrs(), port: this.lan.port } : null,
+    };
+  }
+
+  // Where a computer's own LAN port is, for direct transfers: null when it has none or is offline.
+  lanOf(id) {
+    if (id === 'self') return this.lan ? { addrs: this.lan.addrs(), port: this.lan.port } : null;
+    const live = this.live.get(id);
+    return this.isOnline(id) && live?.lan ? live.lan : null;
+  }
+
+  lanPsk(identity) {
+    const id = /^n:([a-f0-9]+)$/.exec(identity)?.[1];
+    const computer = id && this.state.computers[id];
+    return computer ? nodePsk(computer.keyHash) : null;
   }
 
   // The phone feed stays in memory and never stores tool arguments or results.
@@ -241,6 +277,7 @@ export class Hub {
             name: c.name,
             note: c.note || undefined,
             online,
+            connection: online ? this.live.get(c.id)?.via || undefined : undefined,
             last_seen: online ? undefined : this.lastSeenOf(c),
             ...c.info,
           };
@@ -267,7 +304,11 @@ export class Hub {
 
   forward(computer, tool, args) {
     if (!this.isOnline(computer.id)) {
-      return Promise.resolve({ text: `computer "${computer.name}" is offline, so nothing was run. Use list_computers to see which computers are online.`, isError: true });
+      const problem = this.live.get(computer.id)?.lanProblem;
+      const lanOnly = this.routeOf(computer) === 'lan'
+        ? ` It is set to connect over the LAN only${problem ? ` and reports: ${problem}` : ''}; the owner can switch it to auto in the phone app.`
+        : '';
+      return Promise.resolve({ text: `computer "${computer.name}" is offline, so nothing was run.${lanOnly} Use list_computers to see which computers are online.`, isError: true });
     }
     const live = this.liveFor(computer.id);
     return new Promise((resolve) => {
@@ -285,7 +326,7 @@ export class Hub {
     live.waiter = null;
     clearTimeout(waiter.timer);
     if (waiter.res.destroyed) return false;
-    reply(waiter.res, 200, body);
+    reply(waiter.res, 200, { ...body, settings: this.nodeSettings(live.id) });
     return true;
   }
 
@@ -355,9 +396,13 @@ export class Hub {
     }
   }
 
-  poll(computer, body, res) {
+  // via is the path the poll came in on: 'lan' or 'public'.
+  poll(computer, body, res, via = 'public') {
     const live = this.liveFor(computer.id);
     live.lastSeen = Date.now();
+    live.via = via;
+    live.lan = validLan(body.lan);
+    live.lanProblem = typeof body.lanProblem === 'string' ? body.lanProblem.slice(0, 300) : null;
     if (computer.lastSeenSaved) delete computer.lastSeenSaved;
     if (live.boot && body.boot !== live.boot) {
       this.failPending(live, {
@@ -377,7 +422,8 @@ export class Hub {
     live.queue.unshift(...lost);
 
     this.answerWaiter(live, { calls: [] });
-    const timer = setTimeout(() => this.answerWaiter(live, { calls: [] }), POLL_HOLD_MS);
+    const stale = typeof body.knows === 'string' && body.knows !== JSON.stringify(this.nodeSettings(computer.id));
+    const timer = setTimeout(() => this.answerWaiter(live, { calls: [] }), stale ? 0 : POLL_HOLD_MS);
     live.waiter = { res, timer };
     res.once('close', () => {
       if (live.waiter?.res === res) {
@@ -386,6 +432,19 @@ export class Hub {
       }
     });
     this.flush(live);
+  }
+
+  // A computer that may only use the LAN and cannot find this one asks here, over the internet,
+  // whether its route changed. It gets no calls this way.
+  nodeCheckIn(computer, body) {
+    const live = this.liveFor(computer.id);
+    live.lanProblem = typeof body.lanProblem === 'string' ? body.lanProblem.slice(0, 300) : null;
+    if (ROUTES.includes(body.route) && body.route !== this.routeOf(computer)) {
+      computer.route = body.route;
+      this.save();
+      this.bump();
+    }
+    return this.nodeSettings(computer.id);
   }
 
   result(computer, body) {
@@ -743,6 +802,9 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
           lastSeen: this.lastSeenOf(c),
           desktop: c.info?.desktop === true,
           takeover: this.takeoverOf(c.id),
+          route: this.routeOf(c),
+          via: this.isOnline(c.id) ? this.live.get(c.id)?.via || null : null,
+          lanProblem: this.live.get(c.id)?.lanProblem || null,
         })),
       ],
     };
@@ -780,7 +842,9 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
     }
     const computer = this.state.computers[id];
     if (!computer) return { status: 404, body: { error: 'no such computer' } };
+    if (body.route !== undefined && !ROUTES.includes(body.route)) return { status: 400, body: { error: 'route must be auto, lan or public' } };
     if (note !== undefined) computer.note = note;
+    if (body.route !== undefined) computer.route = body.route;
     if (body.name !== undefined) {
       const name = cleanName(body.name).replace(/\s+/g, '-');
       const other = this.resolve(name);
@@ -788,6 +852,8 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
       computer.name = name;
     }
     this.save();
+    // A waiting poll answers now, so the computer switches routes at once.
+    if (body.route !== undefined && this.live.has(id)) this.answerWaiter(this.live.get(id), { calls: [] });
     return { status: 200, body: { ok: true } };
   }
 
@@ -827,6 +893,38 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
     else reply(res, 200, { ok: true, title: this.browsers.get(id)?.title || '' });
   }
 
+  async handleNode(computer, pathname, req, res, via) {
+    if (pathname === '/hub/node/poll' && req.method === 'POST') {
+      this.poll(computer, await readJson(req), res, via);
+    } else if (pathname === '/hub/node/result' && req.method === 'POST') {
+      this.result(computer, await readJson(req));
+      reply(res, 200, { ok: true });
+    } else if (pathname === '/hub/node/settings' && req.method === 'POST') {
+      reply(res, 200, this.nodeCheckIn(computer, await readJson(req)));
+    } else if (pathname === '/hub/node/ping') {
+      reply(res, 200, { ok: true });
+    } else {
+      reply(res, 404, { error: 'not found' });
+    }
+  }
+
+  // Requests that came in on the LAN port, already authenticated by the TLS key: only a
+  // computer's own polling. The MCP link and the phone API are never served there.
+  async handleLan(req, res, identity) {
+    const computer = this.state.computers[identity.slice(2)];
+    const { pathname } = new URL(req.url, 'https://lan');
+    if (!identity.startsWith('n:') || !computer || !pathname.startsWith('/hub/node/')) {
+      reply(res, 404, { error: 'not found' });
+      return;
+    }
+    try {
+      await this.handleNode(computer, pathname, req, res, 'lan');
+    } catch (err) {
+      if (!res.headersSent) reply(res, err.status || 500, { error: err.status ? err.message : 'internal error' });
+      else res.end();
+    }
+  }
+
   // Returns false when the path is not the hub's.
   async handle(req, res, pathname) {
     if (!pathname.startsWith('/hub/')) return false;
@@ -842,16 +940,7 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
           reply(res, 401, { error: 'this computer has been removed' });
           return true;
         }
-        if (pathname === '/hub/node/poll' && req.method === 'POST') {
-          this.poll(computer, await readJson(req), res);
-          return true;
-        }
-        if (pathname === '/hub/node/result' && req.method === 'POST') {
-          this.result(computer, await readJson(req));
-          reply(res, 200, { ok: true });
-          return true;
-        }
-        reply(res, 404, { error: 'not found' });
+        await this.handleNode(computer, pathname, req, res, 'public');
         return true;
       }
       if (pathname.startsWith('/hub/api/')) {

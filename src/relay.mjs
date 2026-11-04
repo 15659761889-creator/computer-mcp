@@ -7,6 +7,7 @@ import path from 'node:path';
 import { LETS_ENCRYPT, LETS_ENCRYPT_STAGING, needsRenewal, obtainCertificate, readCert, certPaths, writeCert } from './acme.mjs';
 import { homeDir } from './config.mjs';
 import { Hub, loadHubState } from './hub.mjs';
+import { Transfers, transfersFile } from './transfer.mjs';
 import { removePoolFiles } from './public-pool.mjs';
 import { sendJson, serveMcp } from './server.mjs';
 
@@ -79,6 +80,7 @@ export function readAccount(dir, id) {
 
 export function removeAccount(dir, id) {
   fs.rmSync(accountFile(dir, id), { force: true });
+  fs.rmSync(transfersFile(accountFile(dir, id)), { force: true });
   // A running relay may still hold the pool open; its next sync removes what is left.
   removePoolFiles(accountFile(dir, id));
 }
@@ -152,6 +154,7 @@ export class Relay {
       if (this.hubs.has(id)) continue;
       try {
         const hub = new Hub({ file: accountFile(this.dir, id), origin: () => this.origin(), getToken: () => hub.state.mcpToken });
+        hub.transfers = new Transfers({ hub, file: transfersFile(accountFile(this.dir, id)) });
         this.hubs.set(id, hub);
       } catch (err) {
         this.log(`account ${id} could not be loaded: ${err.message}`);

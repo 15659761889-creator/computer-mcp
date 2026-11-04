@@ -15,7 +15,7 @@ import { connectionParts, copyToClipboard, getQuickLink } from './link.mjs';
 import { defaultShell, findBash, saveShellChoice, shellChoice } from './shell.mjs';
 import { installBash } from './bash-install.mjs';
 import { hubPath, loadHubState, parsePair } from './hub.mjs';
-import { joinHub } from './node-link.mjs';
+import { hubClient, joinHub } from './node-link.mjs';
 import {
   appLink, createAccount, createSignup, listAccounts, loadRelayConfig, readAccount, relayDir, relayOrigin, removeAccount,
   runRelay, saveRelayConfig, signupLink, validHost,
@@ -53,6 +53,10 @@ const HELP = `computer-mcp: give this computer its own fixed MCP link
       --proxy <url>           proxy for reaching the main computer
   computer-mcp computers      list the computers on this main computer
   computer-mcp remove <name>  remove a computer from this main computer
+  computer-mcp route [name] [auto|lan|public]
+                              how a computer reaches the main one and copies files: auto
+                              prefers the LAN, lan never uses the internet for work, public
+                              never uses the LAN. On a joined computer, leave out the name.
   computer-mcp relay setup    make this rented server the relay all computers connect to
       --host <ip|domain>      this server's public IP or domain (required)
       --shared                serve several people, each signing up with an invite
@@ -356,11 +360,44 @@ async function joinCommand({ flags, positional }) {
   console.log(`\nDone. This computer is now "${joined.name}". It starts by itself and appears in the phone app.`);
 }
 
+const VIA = { lan: 'over the LAN', public: 'over the internet' };
+
 async function computersCommand() {
   const { computers } = await hubApi('status');
   for (const c of computers) {
-    console.log(`${c.online ? 'online ' : 'offline'}  ${c.name}${c.main ? '  (main)' : ''}${c.note ? `  - ${c.note}` : ''}`);
+    const path = c.main ? '' : `  [${c.route}${c.via ? `, ${VIA[c.via]}` : ''}]`;
+    console.log(`${c.online ? 'online ' : 'offline'}  ${c.name}${c.main ? '  (main)' : ''}${path}${c.note ? `  - ${c.note}` : ''}`);
+    if (!c.main && c.lanProblem && c.route !== 'public') console.log(`         LAN: ${c.lanProblem}`);
   }
+}
+
+async function routeCommand(positional) {
+  const config = requireConfig();
+  const ROUTES = ['auto', 'lan', 'public'];
+  if (config.joined) {
+    const wanted = positional[0];
+    if (!wanted) {
+      console.log(`route: ${config.joined.route || 'auto'} (as last heard from the main computer)`);
+      return;
+    }
+    if (!ROUTES.includes(wanted)) throw new Error('choose auto, lan or public');
+    const send = hubClient(config.joined.origin, config.proxy);
+    const answer = await send('/hub/node/settings', { key: config.joined.key, body: { route: wanted }, timeoutMs: 20000 })
+      .catch((err) => { throw new Error(`could not reach the main computer: ${err.message}`); });
+    if (answer.status !== 200) throw new Error(answer.body?.error || `the main computer answered ${answer.status}`);
+    saveConfig({ ...config, joined: { ...config.joined, route: answer.body.route, hubLan: answer.body.lan } });
+    console.log(`Route set to ${answer.body.route}. The running service follows within a minute.`);
+    return;
+  }
+  const [name, wanted] = positional;
+  if (!name) return computersCommand();
+  if (!ROUTES.includes(wanted)) throw new Error('usage: computer-mcp route <name> auto|lan|public');
+  const { computers } = await hubApi('status');
+  const computer = computers.find((c) => c.name.toLowerCase() === name.toLowerCase());
+  if (!computer) throw new Error(`no computer named "${name}"`);
+  if (computer.main) throw new Error('the main computer has no route; set it on the other computers');
+  await hubApi(`computers/${computer.id}`, { method: 'PATCH', body: { route: wanted } });
+  console.log(`${computer.name} now uses route ${wanted}.${computer.online ? ' It switches on its next check-in.' : ''}`);
 }
 
 async function removeCommand(name) {
@@ -540,6 +577,8 @@ export async function main(argv) {
       return computersCommand();
     case 'remove':
       return removeCommand(parsed.positional[0]);
+    case 'route':
+      return routeCommand(parsed.positional);
     case 'relay':
       return relayCommand(parsed);
     case 'run':

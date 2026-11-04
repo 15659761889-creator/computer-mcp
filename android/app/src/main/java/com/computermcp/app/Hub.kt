@@ -136,6 +136,12 @@ data class Computer(
     val desktop: Boolean,
     /** Title of the browser the AI asked the person to take over, or null. */
     val takeover: String?,
+    /** How it reaches the main computer: auto, lan or public. */
+    val route: String = "auto",
+    /** The path it uses right now, lan or public; null when offline or the main computer. */
+    val via: String? = null,
+    /** Why the LAN does not work for it, or null. */
+    val lanProblem: String? = null,
 )
 
 class BrowserFrame(val jpeg: ByteArray, val title: String)
@@ -241,6 +247,9 @@ class HubClient(private val connection: Connection) {
                     os = c.optString("os"),
                     desktop = c.optBoolean("desktop"),
                     takeover = c.optJSONObject("takeover")?.optString("title"),
+                    route = c.optString("route", "auto").ifEmpty { "auto" },
+                    via = if (c.isNull("via")) null else c.optString("via").ifEmpty { null },
+                    lanProblem = if (c.isNull("lanProblem")) null else c.optString("lanProblem").ifEmpty { null },
                 )
             },
         )
@@ -279,6 +288,10 @@ class HubClient(private val connection: Connection) {
         val body = JSONObject().put("note", note)
         if (name != null) body.put("name", name)
         request("POST", "computers/$id", body)
+    }
+
+    fun setRoute(id: String, route: String) {
+        request("POST", "computers/$id", JSONObject().put("route", route))
     }
 
     fun remove(id: String) {
