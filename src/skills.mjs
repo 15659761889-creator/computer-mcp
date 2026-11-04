@@ -405,6 +405,7 @@ export class SkillStore {
 
   status(skill, computer, state) {
     if (!computer.online) return 'offline';
+    if (skill.designedFor.computers.length && !skill.designedFor.computers.includes(computer.name)) return 'incompatible';
     const os = osOf(computer.os);
     if (skill.designedFor.os.length && os && !skill.designedFor.os.includes(os)) return 'incompatible';
     if (!skill.hasRequirements) return 'ready';
@@ -499,6 +500,8 @@ export class SkillStore {
       try {
         const stat = fs.lstatSync(file);
         if (!stat.isFile() || stat.size > SKILL_LIMITS.config) continue;
+        // Reject a config directory that resolves through a link outside this skill.
+        if (!insideRoot(fs.realpathSync(skill.root), fs.realpathSync(file))) continue;
         const text = decodeText(fs.readFileSync(file));
         if (text !== null) return { file: `config/${computerName}.${ext}`, text };
       } catch { /* not there */ }

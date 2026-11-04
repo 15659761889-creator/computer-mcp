@@ -67,6 +67,25 @@ test('offline target and unsupported OS are explicitly labelled', (t) => {
   assert.equal(r.skills[0].status['pc-test'], 'needs_setup');
 });
 
+test('designed_for.computers excludes a different computer even when its OS matches', (t) => {
+  const { store, root } = mkEnv(t);
+  const source = fs.readFileSync(path.join(root, 'SKILL.md'), 'utf8');
+  fs.writeFileSync(path.join(root, 'SKILL.md'), source.replace('  os: [windows, linux]', '  os: [windows, linux]\\n  computers: [pc-test]'.replace('\\n', '\n')));
+  const listing = JSON.parse(store.list({ computer: ['pc-test', 'linux-vm'] }).text);
+  assert.equal(listing.skills[0].status['pc-test'], 'needs_setup');
+  assert.equal(listing.skills[0].status['linux-vm'], 'incompatible');
+});
+
+test('per-computer config never follows a folder link outside the skill root', (t) => {
+  const { store, temp, root } = mkEnv(t);
+  const outside = path.join(temp, 'outside');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'pc-test.yaml'), 'SECRET-OUTSIDE-SKILL\n');
+  try { fs.symlinkSync(outside, path.join(root, 'config'), process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch (error) { if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) { t.skip('directory symlinks unavailable'); return; } throw error; }
+  assert.doesNotMatch(store.load({ name: 'python-workflow', computer: 'pc-test' }).text, /SECRET-OUTSIDE-SKILL/);
+});
+
 test('parseSkillFile requires structured frontmatter', () => {
   assert.throws(() => parseSkillFile('# No frontmatter\n'));
   assert.deepEqual(parseSkillFile('---\nname: test\ndescription: Basic\n---\nGo.\n').data.name, 'test');
