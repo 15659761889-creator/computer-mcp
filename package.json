@@ -4,6 +4,10 @@
   "description": "Remote computer control MCP server with Cloudflare Quick Tunnels or fixed domains; bash, file and desktop control tools.",
   "author": "zhuangzihan",
   "homepage": "https://www.npmjs.com/package/@zhuangzihan/computer-mcp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/15659761889-creator/computer-mcp.git"
+  },
   "type": "module",
   "bin": {
     "computer-mcp": "bin/computer-mcp.mjs"
