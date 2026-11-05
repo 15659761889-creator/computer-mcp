@@ -31,7 +31,7 @@ VersionInfoVersion=0.4.0.0
 VersionInfoDescription=Computer MCP standalone Windows installer
 VersionInfoCompany={#ProductPublisher}
 VersionInfoProductName={#ProductName}
-VersionInfoCopyright=MIT; bundled Node.js and cloudflared licenses included
+VersionInfoCopyright=PolyForm Noncommercial 1.0.0; bundled Node.js and cloudflared licenses included
 LicenseFile=..\LICENSE
 
 [Languages]
