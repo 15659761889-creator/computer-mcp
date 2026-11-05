@@ -151,7 +151,7 @@ export function loadHubState(file) {
     state = JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
-    state = { adminKey: randomBytes(32).toString('base64url'), selfNote: '', computers: {}, invites: [] };
+    state = { adminKey: randomBytes(32).toString('base64url'), selfNote: '', computers: {}, invites: [], clientTokens: [] };
     saveHubState(file, state);
   }
   return state;
@@ -196,6 +196,7 @@ export class Hub {
     this.transfers = null;
     // Set by the service when shared memory is on (memory.mjs).
     this.memory = null;
+    this.toolCatalog = null;
     this.sweeper = setInterval(() => this.sweep(), 5000);
     this.sweeper.unref();
   }
@@ -566,6 +567,78 @@ export class Hub {
   isAdmin(req) {
     const key = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '')?.[1];
     return sameSecret(key, this.state.adminKey);
+  }
+
+
+  listClientTokens() {
+    const entries = Array.isArray(this.state.clientTokens) ? this.state.clientTokens : [];
+    return entries.map(({ id, name, tools, createdAt }) => ({
+      id, name, tools: Array.isArray(tools) ? tools : [], createdAt,
+    }));
+  }
+
+  authenticateClientToken(value) {
+    if (typeof value !== 'string' || !value) return null;
+    const wanted = hashText(value);
+    const entry = (Array.isArray(this.state.clientTokens) ? this.state.clientTokens : [])
+      .find((item) => sameSecret(item.keyHash, wanted));
+    return entry ? { id: entry.id, name: entry.name, tools: Array.isArray(entry.tools) ? [...entry.tools] : [] } : null;
+  }
+
+  createClientToken(body) {
+    const name = cleanName(body?.name);
+    if (!name) throw Object.assign(new Error('name is required'), { status: 400 });
+    const catalog = this.toolCatalog?.() || [];
+    const known = new Set(catalog.map((tool) => tool.name));
+    if (!Array.isArray(body?.tools)) throw Object.assign(new Error('tools must be an array'), { status: 400 });
+    const tools = [...new Set(body.tools.filter((item) => typeof item === 'string'))];
+    if (!tools.length || tools.some((tool) => !known.has(tool))) {
+      throw Object.assign(new Error('select at least one available tool'), { status: 400 });
+    }
+    this.state.clientTokens = Array.isArray(this.state.clientTokens) ? this.state.clientTokens : [];
+    if (this.state.clientTokens.length >= 100) throw Object.assign(new Error('too many client tokens'), { status: 409 });
+    const key = 'cmcp_' + randomBytes(32).toString('base64url');
+    const entry = {
+      id: randomBytes(8).toString('hex'),
+      name,
+      keyHash: hashText(key),
+      tools: catalog.filter((tool) => tools.includes(tool.name)).map((tool) => tool.name),
+      createdAt: new Date().toISOString(),
+    };
+    this.state.clientTokens.push(entry);
+    this.save();
+    return { token: { id: entry.id, name: entry.name, tools: entry.tools, createdAt: entry.createdAt }, key };
+  }
+
+  updateClientToken(id, body) {
+    const entry = (Array.isArray(this.state.clientTokens) ? this.state.clientTokens : []).find((item) => item.id === id);
+    if (!entry) return { status: 404, body: { error: 'no such token' } };
+    const name = body.name === undefined ? entry.name : cleanName(body.name);
+    if (!name) return { status: 400, body: { error: 'name is required' } };
+    let tools = entry.tools;
+    if (body.tools !== undefined) {
+      const catalog = this.toolCatalog?.() || [];
+      const known = new Set(catalog.map((tool) => tool.name));
+      if (!Array.isArray(body.tools)) return { status: 400, body: { error: 'tools must be an array' } };
+      const selected = [...new Set(body.tools.filter((item) => typeof item === 'string'))];
+      if (!selected.length || selected.some((tool) => !known.has(tool))) {
+        return { status: 400, body: { error: 'select at least one available tool' } };
+      }
+      tools = catalog.filter((tool) => selected.includes(tool.name)).map((tool) => tool.name);
+    }
+    entry.name = name;
+    entry.tools = tools;
+    this.save();
+    return { status: 200, body: { token: { id: entry.id, name: entry.name, tools: entry.tools, createdAt: entry.createdAt } } };
+  }
+
+  deleteClientToken(id) {
+    const entries = Array.isArray(this.state.clientTokens) ? this.state.clientTokens : [];
+    const next = entries.filter((entry) => entry.id !== id);
+    if (next.length === entries.length) return false;
+    this.state.clientTokens = next;
+    this.save();
+    return true;
   }
 
   // ---- Browser takeover from the phone app, on any computer ----
@@ -957,6 +1030,28 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
           return true;
         }
         const action = pathname.slice('/hub/api/'.length);
+        if (action === 'token-tools' && req.method === 'GET') {
+          reply(res, 200, { tools: this.toolCatalog?.() || [] });
+          return true;
+        }
+        if (action === 'tokens' && req.method === 'GET') {
+          reply(res, 200, { tokens: this.listClientTokens() });
+          return true;
+        }
+        if (action === 'tokens' && req.method === 'POST') {
+          reply(res, 201, this.createClientToken(await readJson(req)));
+          return true;
+        }
+        const tokenId = /^tokens\/([a-f0-9]+)$/.exec(action)?.[1];
+        if (tokenId && req.method === 'DELETE') {
+          reply(res, this.deleteClientToken(tokenId) ? 200 : 404, { ok: true });
+          return true;
+        }
+        if (tokenId && req.method === 'POST') {
+          const result = this.updateClientToken(tokenId, await readJson(req));
+          reply(res, result.status, result.body);
+          return true;
+        }
         if (action === 'activity' && req.method === 'GET') {
           res.setHeader('Cache-Control', 'no-store');
           reply(res, 200, { active: [...this.activeCalls.values()].reverse(), recent: this.recentCalls });

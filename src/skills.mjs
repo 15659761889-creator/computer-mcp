@@ -12,7 +12,7 @@
 // requires {...}, hints, check, setup. Only name and description are required.
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { homeDir } from './config.mjs';
 import { classifyStep, RISK_TAGS } from './skill-risk.mjs';
 
@@ -25,7 +25,7 @@ export const SKILL_LIMITS = {
   config: 16 * 1024,
   listedFiles: 100,
 };
-export const SKILL_TOOL_NAMES = new Set(['skill_list', 'skill_load', 'skill_read', 'skill_risk']);
+export const SKILL_TOOL_NAMES = new Set(['skill_list', 'skill_load', 'skill_read', 'skill_risk', 'skill_verify']);
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const OS_NAMES = ['windows', 'linux', 'macos'];
 const CONFIG_EXTENSIONS = ['yaml', 'yml', 'json', 'md', 'txt'];
@@ -348,7 +348,7 @@ function insideRoot(root, target) {
 
 const STATUS_NOTES = {
   ready: 'ready: nothing more to install here.',
-  needs_setup: 'needs_setup: this skill lists requirements that have not been verified on this computer. Automatic setup is not available yet: check each requirement on the target with the bash tool before running anything from this skill, and tell the owner what you install.',
+  needs_setup: 'needs_setup: this skill lists requirements that have not been verified on this computer. Automatic setup is not available yet: check each requirement on the target with the bash tool, then record the check with skill_verify; tell the owner what you install.',
   stale: 'stale: this skill changed since it was last verified on this computer; check its requirements again before running it.',
   incompatible: 'incompatible: this skill is not designed for this computer\'s operating system. Do not apply it here unless the owner says so.',
   offline: 'offline: the target computer is not reachable right now.',
@@ -401,6 +401,38 @@ export class SkillStore {
     } catch {
       return { adaptations: {} };
     }
+  }
+
+  writeState(state) {
+    fs.mkdirSync(path.dirname(this.stateFile), { recursive: true, mode: 0o700 });
+    const temp = `${this.stateFile}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    try {
+      fs.writeFileSync(temp, JSON.stringify(state, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+      fs.renameSync(temp, this.stateFile);
+    } finally {
+      try { fs.unlinkSync(temp); } catch {}
+    }
+  }
+
+  // Record that the skill's requirements were checked on one computer. This runs
+  // nothing: the caller must have checked each requirement on the target first
+  // (bash tool, skill_risk for setup commands) and obtained any needed approval.
+  verify(args = {}) {
+    if (args.computer === undefined) throw new SkillError('computer is required: name the computer the skill was verified on.');
+    const [computer] = this.targets(args.computer);
+    if (!computer || Array.isArray(args.computer)) throw new SkillError('Verify a skill for one computer at a time.');
+    const skill = this.find(args.name);
+    const state = this.readState();
+    const status = this.status(skill, computer, state);
+    if (status === 'offline') throw new SkillError(`Computer ${computer.name} is not reachable right now.`);
+    if (status === 'incompatible') throw new SkillError(`Skill ${skill.name} is not designed for ${computer.name}.`);
+    if (!skill.hasRequirements) return { text: `Skill ${skill.name} has no requirements to verify; it is already ready on ${computer.name}.` };
+    if (status === 'ready') return { text: `Skill ${skill.name} is already verified on ${computer.name} (ref ${skill.ref}).` };
+    const note = typeof args.note === 'string' ? args.note.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').trim().slice(0, 500) : '';
+    state.adaptations[computer.name] = state.adaptations[computer.name] || {};
+    state.adaptations[computer.name][skill.name] = { hash: skill.hash, verified_at: new Date().toISOString(), note };
+    this.writeState(state);
+    return { text: JSON.stringify({ skill: skill.ref, computer: computer.name, status: 'ready', note: note || undefined }, null, 2) };
   }
 
   status(skill, computer, state) {
@@ -548,6 +580,7 @@ export class SkillStore {
       if (name === 'skill_load') return this.load(args);
       if (name === 'skill_read') return this.read(args);
       if (name === 'skill_risk') return this.risk(args);
+      if (name === 'skill_verify') return this.verify(args);
       return { text: `unknown skill tool: ${name}`, isError: true };
     } catch (err) {
       if (err instanceof SkillError) return { text: err.message, isError: true };
@@ -617,5 +650,20 @@ export const SKILL_TOOLS = [
       additionalProperties: false,
     },
     annotations: { title: 'Read a skill file', readOnlyHint: true, openWorldHint: false },
+  },
+  {
+    name: 'skill_verify',
+    description: 'Record that a skill with requirements was checked on one computer, so skill_list shows it ready there instead of needs_setup. Runs nothing and installs nothing: first check each requirement on the target with the bash tool (use skill_risk for any setup command) and get the owner approval for installs, then call this with a short note saying what was checked.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Skill name from skill_list.' },
+        computer: { type: 'string', description: 'The computer the requirements were checked on.' },
+        note: { type: 'string', description: 'Short note of what was checked, e.g. python 3.12 present, adb in PATH.' },
+      },
+      required: ['name', 'computer'],
+      additionalProperties: false,
+    },
+    annotations: { title: 'Record skill verification', openWorldHint: false },
   },
 ];

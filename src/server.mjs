@@ -14,7 +14,7 @@ import { availableShells, defaultShell, findBash } from './shell.mjs';
 import { ALL_TOOLS, callTool, hasTool, summarizeArgs, TOOLS } from './tools.mjs';
 import { TRANSFER_TOOL } from './transfer.mjs';
 
-const VERSION = '0.6.6';
+const VERSION = '0.6.7';
 const SUPPORTED_PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const MAX_AUDIT_BYTES = 50 * 1024 * 1024;
@@ -141,24 +141,28 @@ async function handleRpc(message, context) {
   switch (method) {
     case 'initialize': {
       const requested = params?.protocolVersion;
+      const canUse = (tool) => !context.allowedTools || context.allowedTools.has(tool);
       const base = context.hub
-        ? hubInstructions(context.hub)
-        : `${instructions(context.name)}${context.memory ? ' Call list_computers at the start of every task: it names this computer and reports the shared memory.' : ''}`;
-      const withMemory = context.memory ? `${base}\n\n${context.memory.instructionsBlock()}` : base;
-      const resume = context.auditFile ? `${withMemory}\n\nTo continue work another AI left unfinished, call recent_calls: it lists the latest tool calls, whether each worked, and whether calls came after the last handoff note. It does not record outputs, so check the real state before you continue.` : withMemory;
-      const coordinated = context.tasks ? `${resume}\n\nDURABLE TASKS: At the start of ANY multi-step job, call task_list; resume an existing task with task_get and task_claim, or task_create then task_claim. Persist a task_update checkpoint after each meaningful milestone with verified evidence and an exact next action, not just before the end. Include task_id and task_lease on computer actions for safe activity breadcrumbs and lease renewal. Never copy credentials into task notes. On interruption, other AIs use task_list/get after a 15-minute lease expires; they must check real files and processes before continuing. End with task_update status done/paused/blocked.` : resume;
+        ? (canUse('list_computers') ? hubInstructions(context.hub) : 'This Computer MCP connection has a restricted tool set. Use only the tools exposed by tools/list; unavailable tools cannot be called with this key.')
+        : `${instructions(context.name)}${context.memory && canUse('list_computers') ? ' Call list_computers at the start of every task: it names this computer and reports the shared memory.' : ''}`;
+      const withMemory = context.memory && (!context.allowedTools || context.allowedTools.has('memory_read')) ? `${base}\n\n${context.memory.instructionsBlock()}` : base;
+      const resume = context.auditFile && (!context.allowedTools || context.allowedTools.has('recent_calls')) ? `${withMemory}\n\nTo continue work another AI left unfinished, call recent_calls: it lists the latest tool calls, whether each worked, and whether calls came after the last handoff note. It does not record outputs, so check the real state before you continue.` : withMemory;
+      const coordinated = context.tasks && (!context.allowedTools || context.allowedTools.has('task_list')) ? `${resume}\n\nDURABLE TASKS: At the start of ANY multi-step job, call task_list; resume an existing task with task_get and task_claim, or task_create then task_claim. Persist a task_update checkpoint after each meaningful milestone with verified evidence and an exact next action, not just before the end. Include task_id and task_lease on computer actions for safe activity breadcrumbs and lease renewal. Never copy credentials into task notes. On interruption, other AIs use task_list/get after a 15-minute lease expires; they must check real files and processes before continuing. End with task_update status done/paused/blocked.` : resume;
       return rpcResult(id, {
         protocolVersion: SUPPORTED_PROTOCOLS.includes(requested) ? requested : SUPPORTED_PROTOCOLS[0],
         capabilities: { tools: {} },
         serverInfo: { name: `computer-mcp-${context.name}`, version: VERSION },
-        instructions: context.skills ? `${coordinated}\n\n${SKILL_GUIDE}` : coordinated,
+        instructions: context.skills && (!context.allowedTools || context.allowedTools.has('skill_list')) ? `${coordinated}\n\n${SKILL_GUIDE}` : coordinated,
       });
     }
     case 'ping':
       return rpcResult(id, {});
-    case 'tools/list':
-      if (context.hub) return rpcResult(id, { tools: hubTools(context.hub, context.memory, context.auditFile, context.skills, context.tasks) });
-      return rpcResult(id, { tools: [...(context.memory ? [listComputersTool(context.memory)] : []), ...(desktopSupported ? [...TOOLS, ...HANDOFF_TOOLS] : TOOLS).map(taskTagged), ...(context.memory ? MEMORY_TOOLS : []), ...(context.auditFile ? [HISTORY_TOOL] : []), ...(context.skills ? SKILL_TOOLS : []), ...(context.tasks ? TASK_TOOLS : [])] });
+    case 'tools/list': {
+      const tools = context.hub
+        ? hubTools(context.hub, context.memory, context.auditFile, context.skills, context.tasks)
+        : [...(context.memory ? [listComputersTool(context.memory)] : []), ...(desktopSupported ? [...TOOLS, ...HANDOFF_TOOLS] : TOOLS).map(taskTagged), ...(context.memory ? MEMORY_TOOLS : []), ...(context.auditFile ? [HISTORY_TOOL] : []), ...(context.skills ? SKILL_TOOLS : []), ...(context.tasks ? TASK_TOOLS : [])];
+      return rpcResult(id, { tools: context.allowedTools ? tools.filter((tool) => context.allowedTools.has(tool.name)) : tools });
+    }
     case 'tools/call':
       return callAndAudit(id, params, context);
     default:
@@ -217,8 +221,17 @@ function activityStatus(name, outcome) {
   return 'succeeded';
 }
 
+// Auto-renewal only covers one action: bash allows at most 60 minutes, so a
+// renewal past 65 minutes means the action is stuck and the lease must lapse.
+const RENEW_INTERVAL_MS = 5 * 60 * 1000;
+const RENEW_CAP_MS = 65 * 60 * 1000;
+export function leaseRenewalExpired(started, now = Date.now()) {
+  return now - started > RENEW_CAP_MS;
+}
+
 async function callAndAudit(id, params, context) {
   const name = params?.name;
+  if (context.allowedTools && !context.allowedTools.has(name)) return rpcError(id, -32601, `tool is not enabled for this token: ${name}`);
   const handoffTool = HANDOFF_TOOLS.some(tool => tool.name === name);
   // A server with one computer answers list_computers only when shared memory is on; it has nothing else to say.
   const hubTool = Boolean(context.hub || context.memory) && name === LIST_COMPUTERS_TOOL.name;
@@ -238,6 +251,7 @@ async function callAndAudit(id, params, context) {
   const actionArgs = taskLinked ? { ...args } : args;
   if (taskLinked) { delete actionArgs.task_id; delete actionArgs.task_lease; }
   let linkedTask = null;
+  let renewTimer = null;
   let finishActivity;
   // Memory writes and deletes show in the phone's activity feed, so the owner sees what AIs leave
   // for each other; reads (memory_read, recent_calls) would only be noise.
@@ -258,6 +272,15 @@ async function callAndAudit(id, params, context) {
         throw new Error('Specify both task_id and task_lease to run a tracked action.');
       context.tasks.verify(args.task_id, args.task_lease);
       linkedTask = { id: args.task_id, token: args.task_lease };
+      // One action can outlast the 15-minute lease (bash allows up to 60 minutes).
+      // Renew during the action so the lease survives it; the recordAction below
+      // still runs when the action ends.
+      renewTimer = setInterval(() => {
+        if (leaseRenewalExpired(started)) { clearInterval(renewTimer); renewTimer = null; return; }
+        try { context.tasks.renew({ id: linkedTask.id, lease_token: linkedTask.token }); }
+        catch (err) { console.error(`task ${linkedTask.id}: lease renewal failed: ${err.message}`); }
+      }, RENEW_INTERVAL_MS);
+      if (typeof renewTimer.unref === 'function') renewTimer.unref();
     }
     if (taskTool) {
       outcome = context.tasks.tool(name, args ?? {});
@@ -268,19 +291,24 @@ async function callAndAudit(id, params, context) {
     } else if (skillTool) {
       outcome = context.skills.tool(name, args ?? {});
     } else if (hubTool) {
-      const memory = context.memory ? { memory: context.memory.banner() } : {};
+      // list_computers is often the only tool granted to a restricted client. Its
+      // convenience summaries must obey the same scopes as their dedicated tools.
+      const canReadMemory = !context.allowedTools || context.allowedTools.has('memory_read');
+      const canListTasks = !context.allowedTools || context.allowedTools.has('task_list');
+      const memory = context.memory && canReadMemory ? { memory: context.memory.banner() } : {};
       const computers = context.hub ? context.hub.listComputers() : soloComputers(context.name);
-      // On standard task entrypoints, expose a small durable work index even before an AI
-      // calls task_list. This is also useful to clients with cached tool descriptions.
-      const pending = context.tasks ? context.tasks.list({ limit: 40 }).tasks
+      // On standard task entrypoints, expose a small durable work index only to clients
+      // that are also allowed to use task_list.
+      const pending = context.tasks && canListTasks ? context.tasks.list({ limit: 40 }).tasks
         .filter(t => t.status !== 'done').slice(0, 6).map(t => ({
           id: t.id, project: t.project, computer: t.computer, status: t.status,
           goal: t.goal.slice(0, 180), next: t.next.slice(0, 180),
           updated_at: t.updated_at, recoverable: t.recoverable, lease: t.lease,
         })) : [];
-      outcome = { text: JSON.stringify({ ...computers, ...memory, tasks: {
+      const taskSummary = canListTasks && context.tasks ? { tasks: {
         active: pending, note: 'Durable work exists on this hub. Call task_list and task_get before creating a duplicate task; verify actual state before continuing.'
-      } }, null, 2) };
+      } } : {};
+      outcome = { text: JSON.stringify({ ...computers, ...memory, ...taskSummary }, null, 2) };
     } else if (transferTool) {
       outcome = await context.hub.transfers.tool(actionArgs);
     } else if (historyTool) {
@@ -298,6 +326,7 @@ async function callAndAudit(id, params, context) {
   } catch (err) {
     outcome = { text: `tool failed: ${err.message}`, isError: true };
   }
+  if (renewTimer) clearInterval(renewTimer);
   if (linkedTask) {
     try { context.tasks.recordAction(linkedTask.id, linkedTask.token, {
       tool: name, computer: actionArgs?.computer,
@@ -426,13 +455,27 @@ export function createMcpServer({ name, getToken, auditFile, allowSse = true, on
   // Skills live once on this host. The computer argument selects a target, not a storage location.
   const skills = skillsStore ?? new SkillStore({ computers: () => hub ? hub.listComputers().computers : soloComputers(name).computers });
   const tasks = tasksStore ?? new TaskStore();
+  if (hub) {
+    hub.toolCatalog = () => hubTools(hub, memory, auditFile, skills, tasks).map((tool) => ({
+      name: tool.name,
+      title: tool.annotations?.title || tool.name,
+      description: tool.description,
+    }));
+  }
+
+  function credentialFor(value) {
+    if (typeof value !== 'string' || !value) return null;
+    if (sameSecret(value, getToken())) return 'ok';
+    const client = hub?.authenticateClientToken(value);
+    return client ? { client } : null;
+  }
 
   function authorized(req, pathname) {
     const pathToken = /^\/t\/([^/]+)\/mcp\/?$/.exec(pathname)?.[1];
-    if (pathToken) return sameSecret(pathToken, getToken()) ? 'ok' : 'not-found';
+    if (pathToken) return credentialFor(pathToken) || 'not-found';
     if (pathname !== '/mcp' && pathname !== '/mcp/') return 'not-found';
     const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '')?.[1];
-    return bearer && sameSecret(bearer, getToken()) ? 'ok' : 'unauthorized';
+    return credentialFor(bearer) || 'unauthorized';
   }
 
   return http.createServer(async (req, res) => {
@@ -474,7 +517,11 @@ export function createMcpServer({ name, getToken, auditFile, allowSse = true, on
         sendJson(res, 401, { error: 'unauthorized' }, { 'WWW-Authenticate': 'Bearer' });
         return;
       }
-      await serveMcp(req, res, { name, audit, auditFile: audit.file ?? null, handoff, hub, memory, skills, tasks, clientIp: req.headers['cf-connecting-ip'] || req.socket.remoteAddress, userAgent: req.headers['user-agent'] }, allowSse);
+      const clientToken = auth === 'ok' ? null : auth.client;
+      await serveMcp(req, res, { name, audit, auditFile: audit.file ?? null, handoff, hub, memory, skills, tasks,
+        allowedTools: clientToken ? new Set(clientToken.tools) : null,
+        clientName: clientToken?.name || null,
+        clientIp: req.headers['cf-connecting-ip'] || req.socket.remoteAddress, userAgent: req.headers['user-agent'] }, allowSse);
     } catch (err) {
       if (!res.headersSent) sendJson(res, err.status || 500, { error: err.status ? err.message : 'internal error' });
       else res.end();

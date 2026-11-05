@@ -90,3 +90,21 @@ test('parseSkillFile requires structured frontmatter', () => {
   assert.throws(() => parseSkillFile('# No frontmatter\n'));
   assert.deepEqual(parseSkillFile('---\nname: test\ndescription: Basic\n---\nGo.\n').data.name, 'test');
 });
+
+test('skill_verify records a check and goes stale when the skill changes', (t) => {
+  const { store, root, temp } = mkEnv(t);
+  const status = () => JSON.parse(store.list({ computer: 'pc-test' }).text).skills[0].status['pc-test'];
+  assert.equal(status(), 'needs_setup');
+  assert.equal(store.tool('skill_verify', { name: 'python-workflow', computer: 'offline-linux' }).isError, true);
+  const verified = store.tool('skill_verify', { name: 'python-workflow', computer: 'pc-test', note: 'python 3.12 present' });
+  assert.equal(verified.isError, undefined);
+  assert.equal(status(), 'ready');
+  const state = JSON.parse(fs.readFileSync(path.join(temp, 'state.json'), 'utf8'));
+  assert.equal(state.adaptations['pc-test']['python-workflow'].note, 'python 3.12 present');
+  assert.equal(store.tool('skill_verify', { name: 'python-workflow', computer: 'pc-test' }).isError, undefined);
+  fs.appendFileSync(path.join(root, 'SKILL.md'), '\nExtra line.\n');
+  assert.equal(status(), 'stale');
+  store.tool('skill_verify', { name: 'python-workflow', computer: 'pc-test', note: 're-checked after edit' });
+  assert.equal(status(), 'ready');
+});
+

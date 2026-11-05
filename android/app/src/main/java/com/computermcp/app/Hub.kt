@@ -173,6 +173,23 @@ data class HubStatus(
 
 data class Invite(val pair: String, val minutes: Int)
 
+
+data class McpTool(
+    val name: String,
+    val title: String,
+    val description: String,
+)
+
+data class ClientToken(
+    val id: String,
+    val name: String,
+    val tools: List<String>,
+    val createdAt: String,
+)
+
+data class ClientTokenView(val tokens: List<ClientToken>, val tools: List<McpTool>)
+data class IssuedClientToken(val token: ClientToken, val key: String)
+
 /** One note in the shared memory. owner: the owner wrote its latest version. */
 data class MemoryNote(
     val displayText: String,
@@ -269,6 +286,49 @@ class HubClient(private val connection: Connection) {
                 )
             },
         )
+    }
+
+
+    fun clientTokens(): ClientTokenView {
+        val toolArray = request("GET", "token-tools").getJSONArray("tools")
+        val tokensArray = request("GET", "tokens").getJSONArray("tokens")
+        val tools = List(toolArray.length()) { index ->
+            val item = toolArray.getJSONObject(index)
+            McpTool(item.getString("name"), item.optString("title", item.getString("name")), item.optString("description"))
+        }
+        val tokens = List(tokensArray.length()) { index ->
+            val item = tokensArray.getJSONObject(index)
+            val allowed = item.optJSONArray("tools")
+            ClientToken(
+                id = item.getString("id"),
+                name = item.optString("name"),
+                tools = List(allowed?.length() ?: 0) { allowed!!.getString(it) },
+                createdAt = item.optString("createdAt"),
+            )
+        }
+        return ClientTokenView(tokens, tools)
+    }
+
+    fun createClientToken(name: String, tools: List<String>): IssuedClientToken {
+        val list = org.json.JSONArray()
+        tools.forEach { list.put(it) }
+        val json = request("POST", "tokens", JSONObject().put("name", name).put("tools", list))
+        val item = json.getJSONObject("token")
+        val allowed = item.getJSONArray("tools")
+        return IssuedClientToken(
+            ClientToken(item.getString("id"), item.getString("name"), List(allowed.length()) { allowed.getString(it) }, item.optString("createdAt")),
+            json.getString("key"),
+        )
+    }
+
+    fun updateClientToken(id: String, name: String, tools: List<String>) {
+        val list = org.json.JSONArray()
+        tools.forEach { list.put(it) }
+        request("POST", "tokens/$id", JSONObject().put("name", name).put("tools", list))
+    }
+
+    fun deleteClientToken(id: String) {
+        request("DELETE", "tokens/$id")
     }
 
     fun activityFeed(): JSONObject = request("GET", "activity")

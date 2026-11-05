@@ -1034,12 +1034,19 @@ class Desktop:
         visible = [row for row in uia_rows if self._visible(row, focus_set)]
         frame = self.grab(region)
         started = time.perf_counter()
+        ocr_error = None
         key = (region, zlib.crc32(frame.tobytes()))
         if self.ocr_cache and self.ocr_cache[0] == key:
             labels = [dict(label) for label in self.ocr_cache[1]]
         else:
-            labels = self.ocr.read(frame, (region[0], region[1]))
-            self.ocr_cache = (key, [dict(label) for label in labels])
+            try:
+                labels = self.ocr.read(frame, (region[0], region[1]))
+            except Exception as error:  # noqa: BLE001 - OCR must never fail the whole look
+                ocr_error = f"{type(error).__name__}: {error}"
+                print(traceback.format_exc(), file=sys.stderr, flush=True)
+                labels = []
+            else:
+                self.ocr_cache = (key, [dict(label) for label in labels])
         ocr_ms = int((time.perf_counter() - started) * 1000)
         for label in labels:
             label["hwnd"] = root_at(*rect_center(label["rect"]))
@@ -1059,7 +1066,8 @@ class Desktop:
         self.last_target = target
         return {
             "windows": windows, "target": target, "elements": elements, "region": region, "frame": frame,
-            "uia_ms": uia_ms, "ocr_ms": ocr_ms, "truncated": max(0, len(elements) - MAX_ELEMENTS),
+            "uia_ms": uia_ms, "ocr_ms": ocr_ms, "ocr_error": ocr_error,
+            "truncated": max(0, len(elements) - MAX_ELEMENTS),
         }
 
     def _visible(self, row, focus_set):
@@ -1091,6 +1099,8 @@ class Desktop:
         if seen["truncated"]:
             lines.append(f'[{seen["truncated"]} more elements not shown; narrow with window or find]')
         lines.append(f'read: controls {seen["uia_ms"]} ms, text {seen["ocr_ms"]} ms')
+        if seen.get("ocr_error"):
+            lines.append(f'OCR failed, on-screen text labels missing: {seen["ocr_error"]}')
         return "\n".join(lines)
 
     def encode_image(self, frame, region):
@@ -1211,7 +1221,11 @@ class Desktop:
             return False
         pad = 8
         region = clip_to_screen((rect[0] - pad, rect[1] - pad, rect[2] + pad, rect[3] + pad))
-        labels = self.ocr.read(self.grab(region), (region[0], region[1]))
+        try:
+            labels = self.ocr.read(self.grab(region), (region[0], region[1]))
+        except Exception:  # noqa: BLE001 - an OCR failure must not fail the action; treat as unverified
+            print(traceback.format_exc(), file=sys.stderr, flush=True)
+            return False
         return any(names_agree(label["name"], element["name"]) for label in labels)
 
     def relocate(self, element):

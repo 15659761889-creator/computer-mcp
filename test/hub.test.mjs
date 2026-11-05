@@ -40,8 +40,12 @@ async function call(name, args) {
   return (await res.json()).result;
 }
 
-async function admin(pathname, method = 'GET') {
-  return fetch(`${base}/hub/api/${pathname}`, { method, headers: { Authorization: `Bearer ${adminKey}` } });
+async function admin(pathname, method = 'GET', body = null) {
+  return fetch(`${base}/hub/api/${pathname}`, {
+    method,
+    headers: { Authorization: `Bearer ${adminKey}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
 }
 
 async function addComputer(name, execute) {
@@ -74,6 +78,62 @@ test('wrong codes are refused and a code works once', async () => {
 test('management needs the admin key, not the MCP key or a computer key', async () => {
   const res = await fetch(`${base}/hub/api/status`, { headers: { Authorization: `Bearer ${TOKEN}` } });
   assert.equal(res.status, 401);
+});
+
+
+test('client tokens expose only selected tools and can be edited or revoked', async () => {
+  const catalogResponse = await admin('token-tools');
+  assert.equal(catalogResponse.status, 200);
+  const catalog = (await catalogResponse.json()).tools.map((tool) => tool.name);
+  assert.ok(catalog.includes('bash'));
+  assert.ok(catalog.includes('read_file'));
+  assert.ok(catalog.includes('write_file'));
+
+  const createdResponse = await admin('tokens', 'POST', { name: 'Read only AI', tools: ['bash', 'read_file'] });
+  assert.equal(createdResponse.status, 201);
+  const created = await createdResponse.json();
+  const key = created.key;
+  const entry = created.token;
+  assert.match(key, /^cmcp_[A-Za-z0-9_-]{40,}$/);
+  assert.deepEqual(entry.tools, ['bash', 'read_file']);
+  assert.ok(!JSON.stringify(await (await admin('tokens')).json()).includes(key));
+  assert.ok(!JSON.stringify(hub.state.clientTokens).includes(key));
+
+  const list = async (url, headers = {}) => fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  });
+  const deniedAdmin = await fetch(base + '/hub/api/tokens', { headers: { Authorization: 'Bearer ' + key } });
+  assert.equal(deniedAdmin.status, 401);
+  const pathList = await (await list(base + '/t/' + key + '/mcp')).json();
+  assert.deepEqual(pathList.result.tools.map((tool) => tool.name), ['bash', 'read_file']);
+  const initialized = await fetch(base + '/t/' + key + '/mcp', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'initialize', params: { protocolVersion: '2025-06-18' } }),
+  });
+  const instructions = (await initialized.json()).result.instructions;
+  assert.match(instructions, /restricted tool set/);
+  assert.doesNotMatch(instructions, /DURABLE TASKS/);
+  const bearerList = await (await list(base + '/mcp', { Authorization: 'Bearer ' + key })).json();
+  assert.deepEqual(bearerList.result.tools.map((tool) => tool.name), ['bash', 'read_file']);
+
+  const forbidden = await fetch(base + '/t/' + key + '/mcp', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'write_file', arguments: { path: 'never-created', content: 'no' } } }),
+  });
+  assert.equal((await forbidden.json()).error.code, -32601);
+
+  const changed = await admin('tokens/' + entry.id, 'POST', { name: 'Limited editor', tools: ['bash', 'read_file', 'write_file'] });
+  assert.equal(changed.status, 200);
+  const expanded = await (await list(base + '/t/' + key + '/mcp')).json();
+  assert.deepEqual(expanded.result.tools.map((tool) => tool.name), ['bash', 'read_file', 'write_file']);
+
+  assert.equal((await admin('tokens/' + entry.id, 'DELETE')).status, 200);
+  assert.equal((await list(base + '/t/' + key + '/mcp')).status, 404);
+  const after = await (await admin('tokens')).json();
+  assert.equal(after.tokens.some((token) => token.id === entry.id), false);
 });
 
 test('calls reach only the named computer, at the same time', async () => {
@@ -180,7 +240,7 @@ test('tools list requires a computer on device tools, not hub-level coordination
   });
   const { tools } = (await res.json()).result;
   for (const tool of tools) {
-    if (['list_computers', 'transfer', 'skill_list', 'skill_load', 'skill_read', 'skill_risk', 'task_create', 'task_list', 'task_get', 'task_claim', 'task_update'].includes(tool.name)) continue;
+    if (['list_computers', 'transfer', 'skill_list', 'skill_load', 'skill_read', 'skill_risk', 'task_create', 'task_list', 'task_get', 'task_claim', 'task_update', 'task_archive', 'task_unarchive', 'task_reopen', 'task_renew'].includes(tool.name)) continue;
     assert.ok(tool.inputSchema.required.includes('computer'), tool.name);
   }
   assert.ok(tools.some((tool) => tool.name === 'ui_act'));
@@ -382,4 +442,95 @@ test('password approval is not executed after takeover begins', async () => {
     assert.equal((await pending).isError, true);
     assert.equal(called, false);
   } finally { h.close(); }
+});
+
+
+test('list_computers summaries obey memory_read and task_list token scopes', async (t) => {
+  const scopedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmcp-scoped-summary-'));
+  const scopedHub = new Hub({
+    file: path.join(scopedDir, 'hub.json'),
+    selfName: 'scoped-main',
+    origin: () => 'https://hub.example.com',
+    getToken: () => 'scoped-master-token',
+  });
+  const scopedMemory = {
+    banner: () => ({ owner_notes: [{ text: 'PRIVATE_MEMORY_SENTINEL' }] }),
+    instructionsBlock: () => 'memory instructions',
+    tool: () => ({ text: 'unused' }),
+  };
+  const scopedTasks = {
+    list: () => ({ tasks: [{
+      id: 't_private', project: 'private-project', computer: 'scoped-main',
+      status: 'active', goal: 'PRIVATE_TASK_SENTINEL', next: 'private next step',
+      updated_at: '2026-11-04T00:00:00.000Z', recoverable: true, lease: null,
+    }] }),
+    tool: () => ({ text: 'unused' }),
+  };
+  const scopedServer = createMcpServer({
+    name: 'scoped-main',
+    getToken: () => 'scoped-master-token',
+    auditFile: null,
+    hub: scopedHub,
+    memory: scopedMemory,
+    tasksStore: scopedTasks,
+  });
+  await new Promise((resolve) => scopedServer.listen(0, '127.0.0.1', resolve));
+  const scopedBase = 'http://127.0.0.1:' + scopedServer.address().port;
+  const createToken = async (tools) => {
+    const response = await fetch(scopedBase + '/hub/api/tokens', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + scopedHub.state.adminKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name: 'scope test', tools }),
+    });
+    assert.equal(response.status, 201);
+    return (await response.json()).key;
+  };
+  const listComputers = async (key) => {
+    const response = await fetch(scopedBase + '/t/' + key + '/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: { name: 'list_computers', arguments: {} },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const rpc = await response.json();
+    assert.equal(rpc.error, undefined);
+    return JSON.parse(rpc.result.content[0].text);
+  };
+
+  try {
+    const restrictedKey = await createToken(['list_computers']);
+    const restricted = await listComputers(restrictedKey);
+    assert.ok(restricted.computers.some((computer) => computer.name === 'scoped-main'));
+    assert.equal(Object.hasOwn(restricted, 'memory'), false);
+    assert.equal(Object.hasOwn(restricted, 'tasks'), false);
+    assert.doesNotMatch(JSON.stringify(restricted), /PRIVATE_MEMORY_SENTINEL|PRIVATE_TASK_SENTINEL/);
+
+    const memoryOnlyKey = await createToken(['list_computers', 'memory_read']);
+    const memoryOnly = await listComputers(memoryOnlyKey);
+    assert.equal(memoryOnly.memory.owner_notes[0].text, 'PRIVATE_MEMORY_SENTINEL');
+    assert.equal(Object.hasOwn(memoryOnly, 'tasks'), false);
+    assert.doesNotMatch(JSON.stringify(memoryOnly), /PRIVATE_TASK_SENTINEL/);
+
+    const tasksOnlyKey = await createToken(['list_computers', 'task_list']);
+    const tasksOnly = await listComputers(tasksOnlyKey);
+    assert.equal(Object.hasOwn(tasksOnly, 'memory'), false);
+    assert.equal(tasksOnly.tasks.active[0].goal, 'PRIVATE_TASK_SENTINEL');
+    assert.doesNotMatch(JSON.stringify(tasksOnly), /PRIVATE_MEMORY_SENTINEL/);
+
+    const scopedKey = await createToken(['list_computers', 'memory_read', 'task_list']);
+    const authorized = await listComputers(scopedKey);
+    assert.equal(authorized.memory.owner_notes[0].text, 'PRIVATE_MEMORY_SENTINEL');
+    assert.equal(authorized.tasks.active[0].goal, 'PRIVATE_TASK_SENTINEL');
+  } finally {
+    scopedServer.closeAllConnections();
+    await new Promise((resolve) => scopedServer.close(resolve));
+    scopedHub.close();
+    fs.rmSync(scopedDir, { recursive: true, force: true });
+  }
 });

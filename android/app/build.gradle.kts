@@ -10,8 +10,8 @@ android {
         applicationId = "com.computermcp.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.6.4"
+        versionCode = 10
+        versionName = "0.6.7"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

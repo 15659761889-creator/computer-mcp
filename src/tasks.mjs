@@ -6,7 +6,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { homeDir } from './config.mjs';
 
 export const taskDir = () => path.join(homeDir(), 'tasks');
-export const TASK_NAMES = new Set(['task_create', 'task_list', 'task_get', 'task_claim', 'task_update']);
+export const TASK_NAMES = new Set(['task_create', 'task_list', 'task_get', 'task_claim', 'task_update', 'task_archive', 'task_unarchive', 'task_reopen', 'task_renew']);
 const ID = /^t_[a-f0-9]{16}$/;
 const PROJECT = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const STATUS = new Set(['open', 'active', 'paused', 'blocked', 'done']);
@@ -112,7 +112,10 @@ export class TaskStore {
     }));
     const next = args.next === undefined ? (steps[0]?.title || 'Inspect the project and record a concrete next step.') : shortText(args.next, 'next', 1000, true);
     return this.locked('create', () => {
-      if (this.all().length >= MAX_TASKS) throw new TaskError(`Task limit of ${MAX_TASKS} reached. Archive tasks before creating more.`);
+      const existing = this.all().filter((t) => !t.archived);
+      if (existing.length >= MAX_TASKS) throw new TaskError(`Task limit of ${MAX_TASKS} reached. Archive tasks before creating more.`);
+      const dup = existing.find((t) => t.goal === goal && ['open', 'active', 'paused', 'blocked'].includes(t.status));
+      if (dup) throw new TaskError(`A task with the same goal already exists: ${dup.id} (${dup.status}). Resume it with task_get and task_claim instead of creating a duplicate.`);
       const n = this.now();
       for (let attempt = 0; attempt < 4; attempt++) {
         const id = 't_' + randomBytes(8).toString('hex');
@@ -120,7 +123,7 @@ export class TaskStore {
         const task = {
           id, project, computer, goal, status: 'open', rev: 1, created_at: time(n),
           updated_at: time(n), last_actor: null, summary: '', next,
-          steps, files: [], events: [], lease: null,
+          steps, files: [], events: [], lease: null, archived: false,
         };
         this.save(task);
         return { task: publicTask(task, n), next_action: 'Call task_claim(id, actor) before work, then task_update after each meaningful step.' };
@@ -132,12 +135,14 @@ export class TaskStore {
     const limit = args.limit === undefined ? 30 : args.limit;
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new TaskError('limit must be between 1 and 100.');
     const tasks = this.all().filter(t =>
+      (args.include_archived === true || !t.archived) &&
       (args.project === undefined || t.project === args.project) &&
       (args.status === undefined || t.status === args.status)
     ).sort((a, b) => b.updated_at.localeCompare(a.updated_at));
     const n = this.now();
     return { count: tasks.length, tasks: tasks.slice(0, limit).map(t => ({
       id: t.id, project: t.project, computer: t.computer, goal: t.goal, status: t.status,
+      archived: t.archived === true,
       rev: t.rev, updated_at: t.updated_at, next: t.next, summary: t.summary,
       completed_steps: t.steps.filter(s => s.status === 'done').length, total_steps: t.steps.length,
       lease: publicTask(t, n).lease, recoverable: publicTask(t, n).recoverable,
@@ -151,7 +156,8 @@ export class TaskStore {
     const actor = shortText(args.actor, 'actor', 100, true);
     return this.locked(args.id, () => {
       const task = this.read(args.id);
-      if (task.status === 'done') throw new TaskError('This task is completed; create a new task for new work.');
+      if (task.archived) throw new TaskError('This task is archived; restore it with task_unarchive first.');
+      if (task.status === 'done') throw new TaskError('This task is completed; reopen it with task_reopen or create a new task for new work.');
       const n = this.now();
       if (task.lease?.until > n && !(typeof args.lease_token === 'string' && hash(args.lease_token) === task.lease.hash))
         throw new TaskError(`Task is held by ${task.lease.holder} until ${time(task.lease.until)}. Do not duplicate their work; retry when the lease expires.`);
@@ -197,6 +203,11 @@ export class TaskStore {
         task.steps[args.step_index].updated_at = time(n);
         if (evidence !== undefined) task.steps[args.step_index].evidence = evidence;
       }
+      if (args.add_step !== undefined) {
+        const title = shortText(args.add_step, 'add_step', 240, true);
+        if (task.steps.length >= MAX_STEPS) throw new TaskError(`steps must contain at most ${MAX_STEPS} titles.`);
+        task.steps.push({ index: task.steps.length, title, status: 'todo', evidence: '', updated_at: null });
+      }
       if (args.files !== undefined) {
         if (!Array.isArray(args.files) || args.files.length > 20) throw new TaskError('files must contain at most 20 paths.');
         task.files = args.files.map((file, i) => shortText(file, `files[${i}]`, 350, true));
@@ -211,6 +222,69 @@ export class TaskStore {
       else task.lease.until = n + LEASE_MS;
       this.save(task);
       return { task: publicTask(task, n), next_action: task.status === 'done' ? 'The task is complete.' : task.status === 'active' ? 'Continue and checkpoint at the next meaningful step.' : 'Another AI can now claim this task.' };
+    });
+  }
+  archive(args = {}) {
+    return this.locked(args.id, () => {
+      const task = this.read(args.id);
+      const n = this.now();
+      if (task.lease?.until > n) {
+        if (typeof args.lease_token !== 'string' || !args.lease_token || hash(args.lease_token) !== task.lease.hash)
+          throw new TaskError(`Task is held by ${task.lease.holder} until ${time(task.lease.until)}; archive it with the lease token or wait for the lease to expire.`);
+      }
+      if (task.archived) throw new TaskError('Task is already archived.');
+      task.archived = true;
+      task.lease = null;
+      task.rev++;
+      task.updated_at = time(n);
+      task.events.push({ at: time(n), kind: 'archive', actor: task.last_actor });
+      task.events = task.events.slice(-MAX_EVENTS);
+      this.save(task);
+      return { task: publicTask(task, n), next_action: 'Archived tasks do not count toward the task limit. Use task_unarchive to restore it.' };
+    });
+  }
+  unarchive(args = {}) {
+    return this.locked(args.id, () => {
+      const task = this.read(args.id);
+      if (!task.archived) throw new TaskError('Task is not archived.');
+      if (this.all().filter((t) => !t.archived).length >= MAX_TASKS)
+        throw new TaskError(`Task limit of ${MAX_TASKS} reached. Archive another task before restoring this one.`);
+      const n = this.now();
+      task.archived = false;
+      task.rev++;
+      task.updated_at = time(n);
+      task.events.push({ at: time(n), kind: 'unarchive', actor: task.last_actor });
+      task.events = task.events.slice(-MAX_EVENTS);
+      this.save(task);
+      return { task: publicTask(task, n), next_action: 'Call task_get and task_claim before resuming.' };
+    });
+  }
+  reopen(args = {}) {
+    return this.locked(args.id, () => {
+      const task = this.read(args.id);
+      if (task.archived) throw new TaskError('Task is archived; restore it with task_unarchive first.');
+      if (task.status !== 'done') throw new TaskError('Only a done task can be reopened.');
+      const n = this.now();
+      task.status = 'active';
+      task.rev++;
+      task.updated_at = time(n);
+      task.events.push({ at: time(n), kind: 'reopen', actor: task.last_actor });
+      task.events = task.events.slice(-MAX_EVENTS);
+      this.save(task);
+      return { task: publicTask(task, n), next_action: 'Call task_claim(id, actor) before work.' };
+    });
+  }
+  renew(args = {}) {
+    return this.locked(args.id, () => {
+      const task = this.verify(args.id, args.lease_token);
+      const minutes = args.minutes === undefined ? 15 : args.minutes;
+      if (!Number.isInteger(minutes) || minutes < 1 || minutes > 60)
+        throw new TaskError('minutes must be between 1 and 60.');
+      const n = this.now();
+      task.lease.until = n + minutes * 60 * 1000;
+      task.updated_at = time(n);
+      this.save(task);
+      return { task: publicTask(task, n), next_action: 'Lease extended. Renew again before it expires if the work runs long.' };
     });
   }
   // Called by the MCP router after an explicitly task-linked action. No command content is stored.
@@ -236,7 +310,11 @@ export class TaskStore {
         : name === 'task_list' ? this.list(args)
         : name === 'task_get' ? this.get(args)
         : name === 'task_claim' ? this.claim(args)
-        : name === 'task_update' ? this.update(args) : null;
+        : name === 'task_update' ? this.update(args)
+        : name === 'task_archive' ? this.archive(args)
+        : name === 'task_unarchive' ? this.unarchive(args)
+        : name === 'task_reopen' ? this.reopen(args)
+        : name === 'task_renew' ? this.renew(args) : null;
       return value ? { text: JSON.stringify(value, null, 2) } : { text: 'Unknown task tool', isError: true };
     } catch (err) {
       if (err instanceof TaskError) return { text: err.message, isError: true };
@@ -263,6 +341,7 @@ export const TASK_TOOLS = [
     description: 'FIRST call when starting, resuming or checking multi-step work. Shows durable goals, progress and which AI holds each lease, even if the last AI vanished without a handoff.',
     inputSchema: { type: 'object', properties: {
       project: { type: 'string' }, status: { type: 'string', enum: ['open', 'active', 'paused', 'blocked', 'done'] },
+      include_archived: { type: 'boolean', description: 'Archived tasks are hidden unless this is true.' },
       limit: { type: 'integer', minimum: 1, maximum: 100 },
     }, additionalProperties: false },
     annotations: { title: 'List durable tasks', readOnlyHint: true, openWorldHint: false },
@@ -292,10 +371,40 @@ export const TASK_TOOLS = [
       next: { type: 'string', description: 'Specific next command, file or verification action.' },
       step_index: { type: 'integer', minimum: 0 },
       step_status: { type: 'string', enum: ['todo', 'doing', 'done', 'blocked'] },
+      add_step: { type: 'string', description: 'Append one step title (up to 40 steps in total).' },
       evidence: { type: 'string', description: 'Short verification for the updated step.' },
       files: { type: 'array', items: { type: 'string' }, description: 'Up to 20 exact artifact/repository paths.' },
       status: { type: 'string', enum: ['active', 'paused', 'blocked', 'done'] },
     }, required: ['id', 'lease_token'], additionalProperties: false },
     annotations: { title: 'Save task checkpoint or handoff', openWorldHint: false },
+  },
+  {
+    name: 'task_archive',
+    description: 'Archive a task so it stops counting toward the 200-task limit. The task file stays on disk and can be restored with task_unarchive. A live lease held by another AI can only be archived with its lease token.',
+    inputSchema: { type: 'object', properties: {
+      id: { type: 'string' }, lease_token: { type: 'string', description: 'Private token from task_claim, only needed while the task is leased.' },
+    }, required: ['id'], additionalProperties: false },
+    annotations: { title: 'Archive task', openWorldHint: false },
+  },
+  {
+    name: 'task_unarchive',
+    description: 'Restore an archived task so it shows in task_list again and counts toward the task limit.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false },
+    annotations: { title: 'Restore archived task', openWorldHint: false },
+  },
+  {
+    name: 'task_reopen',
+    description: 'Reopen a done task as active so it can be claimed and worked on again, instead of creating a duplicate task.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false },
+    annotations: { title: 'Reopen done task', openWorldHint: false },
+  },
+  {
+    name: 'task_renew',
+    description: 'Extend the lease on a task you hold, before a long action that would outrun the 15-minute lease. The router also renews automatically while a task-linked action runs. minutes defaults to 15, maximum 60.',
+    inputSchema: { type: 'object', properties: {
+      id: { type: 'string' }, lease_token: { type: 'string', description: 'Private token from task_claim.' },
+      minutes: { type: 'integer', minimum: 1, maximum: 60 },
+    }, required: ['id', 'lease_token'], additionalProperties: false },
+    annotations: { title: 'Extend task lease', openWorldHint: false },
   },
 ];

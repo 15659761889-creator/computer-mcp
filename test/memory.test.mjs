@@ -334,7 +334,7 @@ test('a one-computer server with memory answers list_computers and carries the m
     for (const name of ['list_computers', 'memory_read', 'memory_write', 'memory_forget', 'bash']) assert.ok(names.includes(name), name);
     assert.match(tools.find((tool) => tool.name === 'list_computers').description, /start of every task/);
     for (const tool of tools) {
-      if (['skill_load', 'skill_risk'].includes(tool.name)) continue; // Skill tools select a target, even on solo servers.
+      if (['skill_load', 'skill_risk', 'skill_verify'].includes(tool.name)) continue; // Skill tools select a target, even on solo servers.
       assert.ok(!(tool.inputSchema.required ?? []).includes('computer'), `${tool.name} must not need a computer here`);
     }
 

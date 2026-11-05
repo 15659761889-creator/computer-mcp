@@ -284,6 +284,7 @@ class MainActivity : Activity() {
         computersBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         page.addView(computersBox)
         page.addView(primary(tr("＋ 添加电脑", "+ Add computer")) { addComputer() }.below(16))
+        page.addView(secondary(tr("管理 AI 访问密钥", "Manage AI access keys")) { showClientTokens() }.below(10))
         page.addView(secondary(tr("AI 正在做什么", "What the AI is doing")) { showActivity() }.below(10))
         page.addView(secondary(tr("AI 的共享记忆", "AI shared memory")) { showMemory() }.below(10))
 
@@ -728,6 +729,170 @@ class MainActivity : Activity() {
             toast(if (entry == null) tr("已拒绝", "Denied") else tr("已允许，电脑上正在填写", "Allowed; the computer is filling it in"))
             refresh()
         }
+    }
+
+
+    private fun showClientTokens() {
+        val current = client ?: return
+        val page = page()
+        backTo = { showHome() }
+        val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        header.addView(text("‹", 30f, INK).apply {
+            setPadding(0, 0, dp(14), dp(4))
+            setOnClickListener { showHome() }
+        })
+        header.addView(text(tr("AI 访问密钥", "AI access keys"), 24f, INK, bold = true))
+        page.addView(header)
+        page.addView(text(
+            tr("给不同的 AI 客户端创建独立密钥。每个密钥只能看到并调用你勾选的工具；主密钥不受影响。新密钥只显示一次，请在创建后立即复制。", "Create separate keys for different AI clients. Each key can only see and call the tools you select; your main key is unchanged. A new key is shown only once, so copy it when created."),
+            13f, MUTED
+        ).below(12))
+        page.addView(primary(tr("＋ 新增访问密钥", "+ Add access key")) {
+            work({ current.clientTokens() }, { error -> toast(error.message ?: tr("读取工具失败", "Couldn’t load tools")) }) { view ->
+                editClientToken(null, view.tools, emptyList())
+            }
+        }.below(16))
+        val notice = text(tr("正在读取密钥…", "Loading keys…"), 14f, MUTED).below(10)
+        page.addView(notice)
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        page.addView(box)
+        work({ current.clientTokens() }, { error ->
+            notice.text = error.message ?: tr("读取失败", "Couldn’t load keys")
+        }) { view ->
+            notice.text = if (view.tokens.isEmpty()) tr("还没有单独创建的密钥。", "No separate keys yet.") else
+                tr("共 " + view.tokens.size + " 个客户端密钥", view.tokens.size.toString() + " client keys")
+            box.removeAllViews()
+            for (entry in view.tokens) {
+                val item = card().below(10)
+                item.addView(text(entry.name, 16f, INK, bold = true).below(4))
+                item.addView(text(
+                    tr(entry.tools.size.toString() + " 个允许使用的工具", entry.tools.size.toString() + " allowed tools"),
+                    13f, MUTED
+                ).below(8))
+                item.addView(text(entry.tools.joinToString(" · "), 12f, MUTED).below(10))
+                val actions = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+                actions.addView(secondary(tr("修改权限", "Edit tools")) {
+                    editClientToken(entry, view.tools, entry.tools)
+                }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginEnd = dp(8) })
+                actions.addView(secondary(tr("删除", "Delete")) {
+                    confirmDeleteClientToken(entry)
+                }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+                item.addView(actions)
+                box.addView(item)
+            }
+        }
+    }
+
+    private fun editClientToken(existing: ClientToken?, tools: List<McpTool>, selectedTools: List<String>) {
+        val current = client ?: return
+        val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val name = EditText(this).apply {
+            hint = tr("名称，例如 Claude、GPT 工作账号", "Name, e.g. Claude, GPT work account")
+            setText(existing?.name.orEmpty())
+            inputType = InputType.TYPE_CLASS_TEXT
+            isSingleLine = true
+        }
+        form.addView(text(tr("密钥名称", "Key name"), 13f, MUTED))
+        form.addView(name.below(4))
+        form.addView(text(tr("允许显示和调用的工具", "Tools this key can see and call"), 14f, INK, bold = true).below(14))
+        val checks = tools.map { tool ->
+            val check = CheckBox(this).apply {
+                text = tool.title + "  ·  " + tool.name
+                textSize = 14f
+                setTextColor(INK)
+                isChecked = selectedTools.contains(tool.name)
+                setPadding(0, dp(4), 0, dp(4))
+            }
+            form.addView(check)
+            tool.name to check
+        }
+        val scroll = ScrollView(this).apply {
+            addView(form)
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, dp(520))
+        }
+        AlertDialog.Builder(this)
+            .setTitle(if (existing == null) tr("创建访问密钥", "Create access key") else tr("修改访问权限", "Edit access permissions"))
+            .setView(padded(scroll))
+            .setPositiveButton(tr("保存", "Save")) { _, _ ->
+                val label = name.text.toString().trim()
+                val chosen = checks.filter { it.second.isChecked }.map { it.first }
+                if (label.isEmpty()) {
+                    toast(tr("请填写密钥名称", "Enter a key name"))
+                    return@setPositiveButton
+                }
+                if (chosen.isEmpty()) {
+                    toast(tr("至少选择一个工具", "Select at least one tool"))
+                    return@setPositiveButton
+                }
+                if (existing == null) {
+                    work({ current.createClientToken(label, chosen) }, { error ->
+                        toast(error.message ?: tr("创建失败", "Couldn’t create key"))
+                    }) { issued ->
+                        showIssuedClientToken(issued)
+                    }
+                } else {
+                    work({ current.updateClientToken(existing.id, label, chosen) }, { error ->
+                        toast(error.message ?: tr("保存失败", "Couldn’t save permissions"))
+                    }) {
+                        toast(tr("权限已更新", "Permissions updated"))
+                        showClientTokens()
+                    }
+                }
+            }
+            .setNegativeButton(tr("取消", "Cancel"), null)
+            .show()
+    }
+
+    private fun showIssuedClientToken(issued: IssuedClientToken) {
+        val host = connection?.host ?: return
+        val fullUrl = "https://" + host + "/t/" + issued.key + "/mcp"
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        body.addView(text(
+            tr("这是新密钥的唯一显示机会。复制并添加到对应 AI 客户端；离开此窗口后无法再次查看密钥，只能删除并重新创建。", "This is the only time the new key will be shown. Copy it into the intended AI client. After closing this window, the secret cannot be viewed again; delete and recreate it if lost."),
+            13f, MUTED
+        ).below(12))
+        val baseUrl = "https://" + host + "/mcp"
+        body.addView(text(tr("MCP 地址（直接粘贴到 AI 客户端）", "MCP URL (paste directly into the AI client)"), 13f, INK, bold = true).below(4))
+        body.addView(text(fullUrl, 12f, BLUE).apply { setTextIsSelectable(true) }.below(8))
+        body.addView(secondary(tr("复制完整 MCP 地址", "Copy full MCP URL")) {
+            copy(tr("MCP 地址", "MCP URL"), fullUrl, sensitive = true)
+        }.below(12))
+        body.addView(text(tr("需要分开填写网址和 Bearer 密钥时，使用下面两项：", "For clients that need a separate URL and Bearer key, use these two items:"), 12f, MUTED).below(6))
+        body.addView(text(tr("基础网址", "Base URL"), 13f, INK, bold = true).below(4))
+        body.addView(text(baseUrl, 12f, BLUE).apply { setTextIsSelectable(true) }.below(6))
+        body.addView(secondary(tr("复制基础网址", "Copy base URL")) {
+            copy(tr("基础网址", "Base URL"), baseUrl, sensitive = true)
+        }.below(10))
+        body.addView(text(tr("Bearer 密钥", "Bearer key"), 13f, INK, bold = true).below(4))
+        body.addView(text(issued.key, 12f, INK).apply { setTextIsSelectable(true) }.below(6))
+        body.addView(secondary(tr("复制密钥", "Copy secret")) {
+            copy(tr("密钥", "Secret key"), issued.key, sensitive = true)
+        }.below(8))
+        AlertDialog.Builder(this)
+            .setTitle(tr("密钥已创建", "Access key created"))
+            .setView(padded(body))
+            .setPositiveButton(tr("完成", "Done")) { _, _ -> showClientTokens() }
+            .show()
+    }
+
+    private fun confirmDeleteClientToken(entry: ClientToken) {
+        val current = client ?: return
+        AlertDialog.Builder(this)
+            .setTitle(tr("删除访问密钥？", "Delete access key?"))
+            .setMessage(
+                tr("删除「" + entry.name + "」后，使用它的 AI 客户端会立即失去访问权限。这个操作无法撤销。",
+                   "Deleting “" + entry.name + "” immediately revokes access for any AI client using it. This cannot be undone.")
+            )
+            .setPositiveButton(tr("删除", "Delete")) { _, _ ->
+                work({ current.deleteClientToken(entry.id) }, { error ->
+                    toast(error.message ?: tr("删除失败", "Couldn’t delete key"))
+                }) {
+                    toast(tr("密钥已撤销", "Access key revoked"))
+                    showClientTokens()
+                }
+            }
+            .setNegativeButton(tr("取消", "Cancel"), null)
+            .show()
     }
 
     private fun showVault() {

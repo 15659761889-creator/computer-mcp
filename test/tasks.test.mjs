@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { TaskStore } from '../src/tasks.mjs';
-import { createMcpServer } from '../src/server.mjs';
+import { createMcpServer, leaseRenewalExpired } from '../src/server.mjs';
 import { Hub } from '../src/hub.mjs';
 
 function fixture(t) {
@@ -148,3 +148,74 @@ test('task limits and path validation prevent accidental storage traversal', t =
   assert.throws(() => store.create({ goal: 'x', steps: Array.from({ length: 41 }, (_, i) => String(i)) }), /at most 40/);
   assert.equal(fs.existsSync(path.join(dir, 'secret')), false);
 });
+
+test('archive hides a task from the limit and list, unarchive restores it', t => {
+  const { store } = fixture(t);
+  const created = create(store);
+  const owned = store.claim({ id: created.id, actor: 'agent-one' });
+  assert.throws(() => store.archive({ id: created.id, lease_token: 'wrong' }), /held by agent-one/);
+  const archived = store.archive({ id: created.id, lease_token: owned.lease_token });
+  assert.equal(archived.task.archived, true);
+  assert.equal(store.list({}).count, 0);
+  assert.equal(store.list({ include_archived: true }).count, 1);
+  assert.throws(() => store.claim({ id: created.id, actor: 'agent-two' }), /archived/);
+  const restored = store.unarchive({ id: created.id });
+  assert.equal(restored.task.archived, false);
+  assert.equal(store.list({}).count, 1);
+  assert.equal(store.claim({ id: created.id, actor: 'agent-two' }).task.lease.holder, 'agent-two');
+});
+
+test('reopen turns a done task back into claimable work', t => {
+  const { store } = fixture(t);
+  const created = create(store);
+  const owned = store.claim({ id: created.id, actor: 'agent-one' });
+  store.update({ id: created.id, lease_token: owned.lease_token, status: 'done', summary: 'Done.' });
+  assert.equal(store.get({ id: created.id }).task.status, 'done');
+  assert.throws(() => store.claim({ id: created.id, actor: 'agent-two' }), /reopen/);
+  const reopened = store.reopen({ id: created.id });
+  assert.equal(reopened.task.status, 'active');
+  assert.equal(store.claim({ id: created.id, actor: 'agent-two' }).task.lease.holder, 'agent-two');
+  assert.throws(() => store.reopen({ id: created.id }), /Only a done task/);
+});
+
+test('renew extends the lease up to 60 minutes', t => {
+  const { store, advance } = fixture(t);
+  const created = create(store);
+  const owned = store.claim({ id: created.id, actor: 'agent-one' });
+  assert.throws(() => store.renew({ id: created.id, lease_token: owned.lease_token, minutes: 61 }), /between 1 and 60/);
+  advance(14 * 60_000);
+  const renewed = store.renew({ id: created.id, lease_token: owned.lease_token, minutes: 60 });
+  assert.equal(renewed.task.recoverable, false);
+  advance(30 * 60_000);
+  assert.equal(store.get({ id: created.id }).task.recoverable, false);
+  advance(31 * 60_000);
+  assert.equal(store.get({ id: created.id }).task.recoverable, true);
+});
+
+test('unarchive refuses when the task limit is already full', t => {
+  const { store } = fixture(t);
+  const ids = [];
+  for (let i = 0; i < 200; i++) ids.push(store.create({ goal: `filler task ${i}` }).task.id);
+  assert.equal(store.archive({ id: ids[0] }).task.archived, true);
+  store.create({ goal: 'one more after archiving' });
+  assert.throws(() => store.unarchive({ id: ids[0] }), /Task limit of 200 reached/);
+  assert.equal(store.get({ id: ids[0] }).task.archived, true);
+});
+
+test('lease auto-renewal stops after 65 minutes', () => {
+  const started = Date.UTC(2026, 10, 5, 0, 0);
+  assert.equal(leaseRenewalExpired(started, started + 65 * 60_000), false);
+  assert.equal(leaseRenewalExpired(started, started + 65 * 60_000 + 1), true);
+});
+
+test('add_step appends a step and create refuses an exact duplicate goal', t => {
+  const { store } = fixture(t);
+  const created = create(store);
+  const owned = store.claim({ id: created.id, actor: 'agent-one' });
+  const updated = store.update({ id: created.id, lease_token: owned.lease_token, add_step: 'Verify on the phone' });
+  assert.equal(updated.task.steps.length, 4);
+  assert.equal(updated.task.steps[3].title, 'Verify on the phone');
+  assert.equal(updated.task.steps[3].status, 'todo');
+  assert.throws(() => store.create({ goal: 'Build a playable campus and verify the camera follows the player.' }), /already exists/);
+});
+
