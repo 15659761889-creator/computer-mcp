@@ -122,6 +122,27 @@ test('calls after the last handoff note and a long quiet spell mean the session 
   assert.match(text, /check the real state/);
 });
 
+test('a task marked done after the last call means the session finished, not that it was cut off', () => {
+  const file = auditFile([bash(300, 'echo before'), bash(100, 'echo after 1'), bash(90, 'echo after 2')]);
+  const text = render(file, { handoff: note(200, 'codex'), task: { at: NOW - 30 * MIN, id: 't_0123456789abcdef', status: 'done' } });
+  assert.match(text, /The newest task \(t_0123456789abcdef\) was marked done 30 min ago/);
+  assert.match(text, /probably finished its work in the task system/);
+  assert.match(text, /task_get/);
+  assert.ok(!text.includes('probably stopped before it wrote a handoff note'));
+});
+
+test('a task marked done before the last call does not hide a cut-off session', () => {
+  const file = auditFile([bash(300, 'echo before'), bash(100, 'echo after 1'), bash(90, 'echo after 2')]);
+  const text = render(file, { handoff: note(200, 'codex'), task: { at: NOW - 400 * MIN, id: 't_0123456789abcdef', status: 'done' } });
+  assert.match(text, /probably stopped before it wrote a handoff note/);
+});
+
+test('a task that is still active does not count as finished', () => {
+  const file = auditFile([bash(300, 'echo before'), bash(100, 'echo after 1'), bash(90, 'echo after 2')]);
+  const text = render(file, { handoff: note(200, 'codex'), task: { at: NOW - 30 * MIN, id: 't_0123456789abcdef', status: 'active' } });
+  assert.match(text, /probably stopped before it wrote a handoff note/);
+});
+
 test('a very recent call means another AI may still be working', () => {
   const file = auditFile([bash(4, 'echo busy')]);
   const text = render(file, { handoff: note(90) });

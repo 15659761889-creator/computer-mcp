@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, test } from 'node:test';
 import { Hub } from '../src/hub.mjs';
-import { MEMORY_TOOLS, MemoryStore } from '../src/memory.mjs';
+import { MEMORY_GUIDE, MEMORY_TOOLS, MemoryStore } from '../src/memory.mjs';
 import { createMcpServer } from '../src/server.mjs';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -436,4 +436,104 @@ test('a one-computer server without memory has neither list_computers nor memory
   } finally {
     await close();
   }
+});
+
+// ---- rolling handoff cap, batch delete, guide ----
+
+const handoff = (store, name, extra) => store.write({ kind: 'handoff', author: 'claude-ai', text: `handoff ${name}`, ...extra });
+const liveHandoffs = (store, project) => store.list({ kind: 'handoff', project, limit: 50 }).items.map((e) => e.text).sort();
+
+test('a new handoff archives the oldest ones beyond the per-project cap and leaves other projects alone', () => {
+  const { store, clock } = fresh({ limits: { maxHandoffsPerProject: 3, maxHandoffs: 100 } });
+  handoff(store, 'other', { project: 'beta' });
+  const evicted = [];
+  for (let i = 1; i <= 5; i += 1) {
+    clock.now += 1000;
+    evicted.push(handoff(store, i, { project: 'alpha' }).evicted);
+  }
+  assert.deepEqual(evicted, [0, 0, 0, 1, 1]);
+  assert.deepEqual(liveHandoffs(store, 'alpha'), ['handoff 3', 'handoff 4', 'handoff 5']);
+  assert.deepEqual(liveHandoffs(store, 'beta'), ['handoff other']);
+});
+
+test('the overall cap covers handoffs without a project, and the owner\'s handoffs are never archived', () => {
+  const { store, clock } = fresh({ limits: { maxHandoffs: 3, maxHandoffsPerProject: 0 } });
+  store.write({ kind: 'handoff', text: 'handoff owner', by: 'owner' });
+  for (let i = 1; i <= 5; i += 1) {
+    clock.now += 1000;
+    handoff(store, i);
+  }
+  assert.deepEqual(liveHandoffs(store), ['handoff 3', 'handoff 4', 'handoff 5', 'handoff owner']);
+});
+
+test('archived handoffs come back when the owner undoes the AI whose write archived them', () => {
+  const { store, clock } = fresh({ limits: { maxHandoffs: 2, maxHandoffsPerProject: 0 } });
+  handoff(store, 'a', { author: 'codex' });
+  clock.now += 1000;
+  handoff(store, 'b', { author: 'codex' });
+  clock.now += 1000;
+  handoff(store, 'c');
+  assert.deepEqual(liveHandoffs(store), ['handoff b', 'handoff c']);
+  store.revoke({ author: 'claude-ai' });
+  assert.deepEqual(liveHandoffs(store), ['handoff a', 'handoff b']);
+});
+
+test('automatic archiving does not use up the writer\'s rate limit', () => {
+  const { store } = fresh({ limits: { maxHandoffs: 1, maxHandoffsPerProject: 0, writesPerMinute: 4 } });
+  for (let i = 1; i <= 4; i += 1) handoff(store, i);
+  assert.throws(() => handoff(store, 5), /Too many memory writes/);
+  assert.deepEqual(liveHandoffs(store), ['handoff 4']);
+});
+
+test('forgetMany deletes several notes at once, all or nothing', () => {
+  const { store } = fresh();
+  const ids = ['a', 'b', 'c'].map((k) => ai(store, { key: `k.${k}`, text: k }).entry.id);
+  store.write({ kind: 'fact', key: 'rule', text: 'locked note', by: 'owner' });
+  const locked = store.get({ key: 'rule' }).id;
+
+  // A wrong id, a locked note, an empty list or an oversized batch changes nothing.
+  assert.throws(() => store.forgetMany({ ids: [ids[0], 'nope'], author: 'claude-ai' }), /no note with id nope.*Nothing was deleted/s);
+  assert.throws(() => store.forgetMany({ ids: [ids[0], locked], author: 'claude-ai' }), /locked.*Nothing was deleted/s);
+  assert.throws(() => store.forgetMany({ ids: [], author: 'claude-ai' }), /Give the ids/);
+  assert.throws(() => store.forgetMany({ ids: Array.from({ length: 21 }, (_, i) => `x${i}`), author: 'claude-ai' }), /at most 20/);
+  assert.equal(store.list().total, 4);
+
+  // A repeated id is deleted once.
+  const gone = store.forgetMany({ ids: [ids[0], ids[1], ids[0]], author: 'claude-ai' });
+  assert.deepEqual(gone.map((n) => n.id), [ids[0], ids[1]]);
+  assert.equal(store.get({ id: ids[2] }).text, 'c');
+  assert.equal(store.list().total, 2);
+});
+
+test('the memory_forget tool takes ids, refuses mixing them with id, and a batch can be undone', () => {
+  const { store } = fresh();
+  const a = ai(store, { key: 'k.a', text: 'a', author: 'codex' }).entry.id;
+  const b = ai(store, { key: 'k.b', text: 'b', author: 'codex' }).entry.id;
+  const schema = MEMORY_TOOLS.find((t) => t.name === 'memory_forget').inputSchema;
+  assert.equal(schema.properties.ids.maxItems, 20);
+  assert.deepEqual(schema.required, ['author']);
+
+  const mixed = store.tool('memory_forget', { id: a, ids: [b], author: 'claude-ai' }, {});
+  assert.equal(mixed.isError, true);
+  assert.equal(store.list().total, 2);
+
+  const done = store.tool('memory_forget', { ids: [a, b], author: 'claude-ai' }, {});
+  assert.equal(done.isError, undefined);
+  assert.match(done.text, /Deleted 2 notes/);
+  assert.equal(store.list().total, 0);
+
+  store.revoke({ author: 'claude-ai' });
+  assert.equal(store.list().total, 2);
+});
+
+test('a batch delete counts every id toward the writer\'s rate limit afterwards', () => {
+  const { store } = fresh({ limits: { writesPerMinute: 3 } });
+  const ids = ['a', 'b', 'c'].map((k) => ai(store, { key: `k.${k}`, text: k, author: 'codex' }).entry.id);
+  store.forgetMany({ ids, author: 'claude-ai' });
+  assert.throws(() => ai(store, { key: 'k.d', text: 'd' }), /Too many memory writes/);
+});
+
+test('the guide tells an AI to tag a project and keep its state in project.<project>.status', () => {
+  assert.match(MEMORY_GUIDE, /tag notes with project/);
+  assert.match(MEMORY_GUIDE, /project\.<project>\.status/);
 });

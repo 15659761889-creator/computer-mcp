@@ -208,6 +208,17 @@ test('lease auto-renewal stops after 65 minutes', () => {
   assert.equal(leaseRenewalExpired(started, started + 65 * 60_000 + 1), true);
 });
 
+test('latestActivity returns the most recently changed task, or null when there are none', t => {
+  const { store, advance } = fixture(t);
+  assert.equal(store.latestActivity(), null);
+  const first = create(store);
+  assert.equal(store.latestActivity().id, first.id);
+  assert.equal(store.latestActivity().status, 'open');
+  advance(60_000);
+  const second = store.create({ project: 'campus', computer: 'pc-test', goal: 'Second task', steps: ['One'], next: 'Do it.' }).task;
+  assert.equal(store.latestActivity().id, second.id);
+});
+
 test('add_step appends a step and create refuses an exact duplicate goal', t => {
   const { store } = fixture(t);
   const created = create(store);

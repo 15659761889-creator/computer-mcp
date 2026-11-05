@@ -99,6 +99,18 @@ export class TaskStore {
       try { return this.read(name.slice(0, -5)); } catch { return null; }
     }).filter(Boolean);
   }
+  // The most recently changed task, for recent_calls: an AI that finishes its work
+  // marks the task done, and that update may be newer than the last audit-logged call
+  // (another server, or the update itself), so the reader should not conclude the
+  // session was cut off just because it left no handoff note.
+  latestActivity() {
+    let best = null;
+    for (const t of this.all()) {
+      const at = Date.parse(t.updated_at);
+      if (Number.isFinite(at) && (!best || at > best.at)) best = { at, id: t.id, status: t.status };
+    }
+    return best;
+  }
   create(args = {}) {
     const goal = shortText(args.goal, 'goal', 2000, true);
     const project = args.project === undefined ? null : shortText(args.project, 'project', 64, true);

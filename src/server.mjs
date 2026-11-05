@@ -312,10 +312,14 @@ async function callAndAudit(id, params, context) {
     } else if (transferTool) {
       outcome = await context.hub.transfers.tool(actionArgs);
     } else if (historyTool) {
-      // Calls the hub is running right now, plus the newest handoff note, tell the reader whether the
-      // last session is still working or stopped.
+      // Calls the hub is running right now, plus the newest handoff note and the newest task
+      // update, tell the reader whether the last session is still working or stopped.
+      // Task activity is only shown to clients allowed to use task_list, like the task
+      // summary in list_computers.
       const active = context.hub ? [...context.hub.activeCalls.values()] : [];
-      outcome = { text: renderRecentCalls({ file: context.auditFile, args: args ?? {}, active, handoff: context.memory ? latestHandoff(context.memory) : null }) };
+      const canListTasks = !context.allowedTools || context.allowedTools.has('task_list');
+      const task = canListTasks && context.tasks ? context.tasks.latestActivity() : null;
+      outcome = { text: renderRecentCalls({ file: context.auditFile, args: args ?? {}, active, handoff: context.memory ? latestHandoff(context.memory) : null, task }) };
     } else if (context.hub) {
       outcome = await runThroughHub(name, actionArgs, context, handoffTool);
     } else if (name === 'ui_act' && context.handoff.locked()) {

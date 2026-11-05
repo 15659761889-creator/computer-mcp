@@ -165,7 +165,7 @@ function summary(e, full) {
   return clip(maskSecrets(text), max);
 }
 
-function assess({ last, handoff, active, now, after }) {
+function assess({ last, handoff, active, now, after, task }) {
   if (active.length) {
     return 'A call is still running, so an AI session may be working right now. Do not repeat its work: wait, or ask the owner.';
   }
@@ -176,6 +176,13 @@ function assess({ last, handoff, active, now, after }) {
   const background = statusOf(last) === 'still running in the background' ? ' The last call started a background job; check it with the job tool.' : '';
   if (handoff && handoff.at >= finished) {
     return `The newest handoff note (by ${handoff.author}, ${ago(now - handoff.at)}) is newer than the last call, so the previous session probably finished and described its work there. Read it with memory_read (kind handoff).${lastFailed}${background}`;
+  }
+  // The task system is the other finish record: an AI that marks its task done has
+  // finished even if it left no handoff note. The update happens during the last call
+  // (or on another server, after it), so compare against when that call started.
+  const started = finished - (Number.isInteger(last.ms) ? last.ms : 0);
+  if (task && task.status === 'done' && task.at >= started) {
+    return `The newest task (${task.id}) was marked done ${ago(now - task.at)}, so the previous session probably finished its work in the task system. Check it with task_get.${lastFailed}${background}`;
   }
   const since = handoff
     ? `${after} call${after === 1 ? ' was' : 's were'} made after the newest handoff note (by ${handoff.author}, ${ago(now - handoff.at)})`
@@ -193,7 +200,8 @@ const wholeNumber = (value, min, max, fallback) => {
 
 // active: calls the hub is running right now, as { action, computer, startedAt }.
 // handoff: from latestHandoff(), or null.
-export function renderRecentCalls({ file, args = {}, now = Date.now(), active = [], handoff = null }) {
+// task: from TaskStore.latestActivity(), or null.
+export function renderRecentCalls({ file, args = {}, now = Date.now(), active = [], handoff = null, task = null }) {
   const limit = wholeNumber(args.limit, 1, 50, 15);
   const wantTool = typeof args.tool === 'string' && args.tool ? args.tool : null;
   const wantComputer = typeof args.computer === 'string' && args.computer ? args.computer.toLowerCase() : null;
@@ -219,7 +227,7 @@ export function renderRecentCalls({ file, args = {}, now = Date.now(), active = 
     const running = active.map((c) => `${c.action}${c.computer ? ` on ${c.computer}` : ''}, started ${ago(now - c.startedAt)}`);
     lines.push(`Running now (${active.length}): ${running.join('; ')}.`);
   }
-  lines.push(`Assessment: ${assess({ last, handoff, active, now, after })}`);
+  lines.push(`Assessment: ${assess({ last, handoff, active, now, after, task })}`);
   lines.push('');
 
   if (!shown.length) {
