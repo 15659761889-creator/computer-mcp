@@ -51,6 +51,13 @@ export const SECRET_TOOL = {
   annotations: { title: 'Type a saved secret', destructiveHint: true, openWorldHint: true },
 };
 
+export const SECRET_LIST_TOOL = {
+  name: 'secret_list',
+  description: 'List the saved accounts the owner keeps in the Computer MCP phone app, by label and username only, so the AI can tell accounts apart before typing anything. Passwords are never stored on the hub and never appear here. Name any connected computer; the list is the same for the whole hub. Call this before type_secret when the label alone does not say which account it is, and confirm the username with the owner before typing.',
+  inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  annotations: { title: 'List saved accounts', readOnlyHint: true, openWorldHint: false },
+};
+
 const hash = (value) => createHash('sha256').update(String(value)).digest();
 const hashText = (value) => hash(value).toString('hex');
 const sameSecret = (a, b) => typeof a === 'string' && typeof b === 'string' && timingSafeEqual(hash(a), hash(b));
@@ -186,6 +193,9 @@ export class Hub {
     this.joinFailures = [];
     this.browsers = new Map();
     this.secretRequests = new Map();
+    // Vault metadata synced from the phone app: id, label and username only.
+    // Passwords are never stored here; see setVaultMeta.
+    this.vaultAccounts = new Map();
     this.takeoverStarting = new Set();
     this.takeoverHistory = new Map();
     this.version = 0;
@@ -840,6 +850,40 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
     return true;
   }
 
+  // ---- Vault metadata: labels and usernames only, synced from the phone app ----
+  // The vault itself stays on the phone, encrypted; only its labels and usernames
+  // ever reach the hub, so the AI can tell accounts apart before typing. A
+  // password sent here by mistake is dropped, never stored, and never returned.
+
+  setVaultMeta(entries) {
+    if (!Array.isArray(entries)) throw Object.assign(new Error('entries must be an array'), { status: 400 });
+    if (entries.length > 100) throw Object.assign(new Error('too many accounts'), { status: 400 });
+    const next = new Map();
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object') throw Object.assign(new Error('each account needs id, label and username'), { status: 400 });
+      const id = String(entry.id ?? '').trim().slice(0, 80);
+      const label = String(entry.label ?? '').trim().slice(0, 60);
+      const username = String(entry.username ?? '').trim().slice(0, 120);
+      if (!id || !label) throw Object.assign(new Error('each account needs id, label and username'), { status: 400 });
+      next.set(id, { id, label, username });
+    }
+    this.vaultAccounts = next;
+    this.bump();
+    return this.vaultAccountList();
+  }
+
+  vaultAccountList() {
+    return [...this.vaultAccounts.values()]
+      .map(({ id, label, username }) => ({ id, label, username }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  secretList() {
+    const accounts = this.vaultAccountList();
+    if (!accounts.length) return { text: 'No saved accounts have been shared from the phone app yet. Ask the owner to open the Computer MCP app so it can sync them, then call secret_list again.' };
+    return { text: JSON.stringify({ accounts }, null, 2) };
+  }
+
   // Answers at once when something changed since the app's last look, otherwise when something does.
   waitForEvent(since, res) {
     if (String(since) !== String(this.version)) {
@@ -868,6 +912,7 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
       version: this.version,
       mcp: { full: `${origin}/t/${token}/mcp`, address: `${origin}/mcp`, key: token },
       secretRequests: [...this.secretRequests.values()].map(({ id, computer, hint, part, reason, where }) => ({ id, computer, hint, part, reason, where })),
+      vaultAccounts: this.vaultAccounts.size,
       computers: [
         ...(this.selfName ? [{
           id: 'self', name: this.selfName, note: this.state.selfNote || '', online: true, main: true, os: machineInfo().os, desktop: desktopSupported, browser: browserInstalled(), takeover: this.takeoverOf('self'),
@@ -1069,6 +1114,12 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
         if (secret && req.method === 'POST') {
           const answered = this.answerSecret(secret, await readJson(req));
           reply(res, answered ? 200 : 404, answered ? { ok: true } : { error: 'this request has expired' });
+          return true;
+        }
+        // Vault metadata from the phone app: labels and usernames only.
+        if (action === 'vault-meta' && req.method === 'POST') {
+          const saved = this.setVaultMeta((await readJson(req))?.entries);
+          reply(res, 200, { accounts: saved });
           return true;
         }
         if (action === 'invites' && req.method === 'POST') {

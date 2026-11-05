@@ -162,6 +162,13 @@ data class SecretRequest(
     val where: String,
 )
 
+/** A saved account's label and username, without its password, for telling accounts apart. */
+data class VaultAccountMeta(
+    val id: String,
+    val label: String,
+    val username: String,
+)
+
 data class HubStatus(
     val full: String,
     val address: String,
@@ -479,6 +486,13 @@ class HubClient(private val connection: Connection) {
         val body = JSONObject().put("approve", entry != null)
         if (entry != null) body.put("label", entry.label).put("username", entry.username).put("password", entry.password)
         request("POST", "secrets/$id", body)
+    }
+
+    /** Sends the vault's labels and usernames to the hub so the AI can tell accounts apart. Passwords are never sent. */
+    fun syncVaultMeta(entries: List<VaultEntry>) {
+        val list = org.json.JSONArray()
+        for (e in entries) list.put(JSONObject().put("id", e.id).put("label", e.label).put("username", e.username))
+        request("POST", "vault-meta", JSONObject().put("entries", list))
     }
 
     /** Hands the desktop back to the AI. */

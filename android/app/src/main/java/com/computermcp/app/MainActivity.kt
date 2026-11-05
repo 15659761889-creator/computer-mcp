@@ -74,6 +74,8 @@ class MainActivity : Activity() {
     private var status: HubStatus? = null
     private var shownComputers: Any? = null
     private lateinit var vault: VaultStore
+    /** Fingerprint of the vault metadata last sent to the hub; empty means send it again. */
+    private var lastVaultSync = ""
     private var knownIds: Set<String>? = null
     private var pairDialog: AlertDialog? = null
     /** Bumped on every screen change, so loops started for an old screen stop. */
@@ -598,7 +600,7 @@ class MainActivity : Activity() {
 
     private fun refresh() {
         val current = client ?: return
-        work({ current.status() }, { error ->
+        work({ current.status().also { syncVaultMeta(current) } }, { error ->
             errorLine?.apply {
                 text = error.message
                 visibility = View.VISIBLE
@@ -610,6 +612,24 @@ class MainActivity : Activity() {
             announceNew(fresh)
             announceTakeovers(fresh)
             render(fresh)
+        }
+    }
+
+    /**
+     * Pushes vault labels and usernames to the hub when they changed, so the AI can
+     * tell accounts apart before typing. Runs on the background thread; best effort,
+     * so a failed sync never breaks the refresh, and the next one retries.
+     * Passwords are never included.
+     */
+    private fun syncVaultMeta(client: HubClient) {
+        val entries = vault.load()
+        val fingerprint = entries.joinToString("\n") { "${it.id}\u0000${it.label}\u0000${it.username}" }
+        if (fingerprint == lastVaultSync) return
+        try {
+            client.syncVaultMeta(entries)
+            lastVaultSync = fingerprint
+        } catch (_: Exception) {
+            // The next refresh retries; the vault still works without the sync.
         }
     }
 
@@ -917,7 +937,7 @@ class MainActivity : Activity() {
         })
         header.addView(text(tr("密码库", "Password vault"), 24f, INK, bold = true))
         page.addView(header)
-        page.addView(text(tr("只加密保存在这部手机上，不会上传。AI 每次要用都会先问你，它只能让电脑把密码填进去，自己看不到。", "Stored encrypted on this phone only and never uploaded. The AI asks you every time it needs one, and it can only have the computer type the password in; it never sees it."), 13f, MUTED).below(8))
+        page.addView(text(tr("账号和密码只加密保存在这部手机上。名称和账号会同步给主电脑，好让 AI 分清是哪个账号；密码不会同步，AI 每次要用都会先问你，它只能让电脑把密码填进去，自己看不到。", "Accounts stay encrypted on this phone. Names and usernames sync to the main computer so the AI can tell accounts apart; passwords never sync. The AI asks you every time it needs one, and it can only have the computer type the password in; it never sees it."), 13f, MUTED).below(8))
         val entries = vault.load()
         if (entries.isEmpty()) page.addView(text(tr("还没有保存的账号。", "No saved accounts yet."), 14f, MUTED).below(16))
         for (entry in entries) {
@@ -949,12 +969,14 @@ class MainActivity : Activity() {
                     return@setPositiveButton
                 }
                 vault.put(entry.copy(label = name, username = username.text.toString(), password = password.text.toString()))
+                lastVaultSync = ""
                 toast(tr("已保存", "Saved"))
                 after()
             }
             .setNegativeButton(tr("取消", "Cancel"), null)
         if (known) dialog.setNeutralButton(tr("删除", "Delete")) { _, _ ->
             vault.remove(entry.id)
+            lastVaultSync = ""
             toast(tr("已删除", "Deleted"))
             after()
         }
