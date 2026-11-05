@@ -290,7 +290,12 @@ class HubClient(private val connection: Connection) {
 
 
     fun clientTokens(): ClientTokenView {
-        val toolArray = request("GET", "token-tools").getJSONArray("tools")
+        val toolArray = try {
+            request("GET", "token-tools").getJSONArray("tools")
+        } catch (error: HubException) {
+            if (error.message == "not found") throw HubException(tr("主电脑的版本太旧，还没有访问密钥，请先升级", "The main computer is too old and has no access keys yet. Please upgrade it first"))
+            throw error
+        }
         val tokensArray = request("GET", "tokens").getJSONArray("tokens")
         val tools = List(toolArray.length()) { index ->
             val item = toolArray.getJSONObject(index)

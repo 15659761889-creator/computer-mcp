@@ -2,6 +2,8 @@
   "name": "@zhuangzihan/computer-mcp",
   "version": "0.6.7",
   "description": "Remote computer control MCP server with Cloudflare Quick Tunnels or fixed domains; bash, file and desktop control tools.",
+  "author": "zhuangzihan",
+  "homepage": "https://www.npmjs.com/package/@zhuangzihan/computer-mcp",
   "type": "module",
   "bin": {
     "computer-mcp": "bin/computer-mcp.mjs"

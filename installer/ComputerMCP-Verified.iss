@@ -1,5 +1,5 @@
 #define AppName "Computer MCP"
-#define AppVersion "0.6.6"
+#define AppVersion "0.6.7"
 
 [Setup]
 AppId={{C99AD54F-186F-4F5A-8F49-CC1D9C7FA7B0}
@@ -24,7 +24,7 @@ CloseApplications=no
 RestartApplications=no
 SetupLogging=yes
 LicenseFile=..\LICENSE
-VersionInfoVersion=0.6.6.0
+VersionInfoVersion=0.6.7.0
 VersionInfoDescription=Computer MCP Windows Installer
 VersionInfoCompany=Computer MCP
 VersionInfoProductName=Computer MCP

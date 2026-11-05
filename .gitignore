@@ -33,6 +33,7 @@ hub.json
 run.json
 # Scratch, logs, backups and generated release metadata
 *.log
+*.err
 *.out
 *.tmp
 repair-backup-*/

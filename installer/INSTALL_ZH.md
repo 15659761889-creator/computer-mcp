@@ -1,9 +1,11 @@
 # Computer MCP Windows EXE 安装说明
 
+> 想把这台电脑设为主电脑（固定地址、多台电脑、手机 App 管理），看同一目录下的 `HOST_SETUP_ZH.md`（两种方法：自己一步步做，或临时隧道 + 让 AI 帮忙配对）。
+
 适用系统：Windows 10/11 x64。此安装包无需预装 Node.js 或 npm。
 
 ## 普通用户
-1. 双击 `ComputerMCP-Setup-0.4.0-x64.exe` 完成安装。
+1. 双击最新版安装包（文件名形如 `ComputerMCP-Setup-0.6.4-Windows-x64.exe`）完成安装。
 2. 打开开始菜单里的 **Computer MCP**。
 3. 点击 **启动临时连接**，确认远程控制安全提醒。此模式无需域名或 Cloudflare 账号，但需要网络连接。
 4. 连接成功后选择 **复制完整链接**，粘贴到支持远程 HTTP MCP 的 AI 客户端；如果客户端单独要求 URL 与 Token，分别点击 **复制 MCP 地址**、**复制密钥**，并选择 Bearer Token 认证。
@@ -24,7 +26,7 @@
 ## 开发者重新打包
 在 Windows 开发机安装 Inno Setup 6，并准备可信的 node.exe、cloudflared.exe：
 ```powershell
-powershell -ExecutionPolicy Bypass -File installer\build.ps1 -CloudflaredPath 'C:\path\to\cloudflared.exe'
+powershell -ExecutionPolicy Bypass -File installer\build-windows.ps1
 ```
 
-输出位于 `build\windows\dist\ComputerMCP-Setup-0.4.0-x64.exe`。
+输出位于 `dist\ComputerMCP-Setup-0.6.7-Windows-x64.exe`。

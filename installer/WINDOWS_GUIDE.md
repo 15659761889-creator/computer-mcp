@@ -2,7 +2,7 @@
 
 ## Install
 
-1. Download `ComputerMCP-Setup-0.4.0-win-x64.exe` from a trusted source and verify its SHA-256 checksum.
+1. Download the latest `ComputerMCP-Setup-*-Windows-x64.exe` (e.g. `ComputerMCP-Setup-0.6.4-Windows-x64.exe`) from a trusted source and verify its SHA-256 checksum.
 2. Double-click the installer, accept the license, and finish the standard Windows installation.
 3. Launch **Computer MCP** from the Start menu.
 4. Click **启动临时连接 / Start Temporary Connection**. The first connection requires internet access to reach Cloudflare's public Quick Tunnel service.
@@ -33,4 +33,4 @@ Users with their **own** Cloudflare-managed domain can enter the domain and clic
 
 ## Building from source
 
-`installer/build-windows.ps1` compiles the native WinForms manager with the Windows .NET Framework C# compiler, stages the Node runtime and Cloudflare tunnel and invokes Inno Setup 6. This generates `dist/ComputerMCP-Setup-0.4.0-win-x64.exe`. It does not publish the installer or npm package.
+`installer/build-windows.ps1` compiles the native WinForms manager with the Windows .NET Framework C# compiler, stages the Node runtime and Cloudflare tunnel and invokes Inno Setup 6. This generates `dist/ComputerMCP-Setup-0.6.7-Windows-x64.exe`. It does not publish the installer or npm package.

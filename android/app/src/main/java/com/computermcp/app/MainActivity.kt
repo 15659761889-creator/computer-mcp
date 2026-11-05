@@ -11,7 +11,9 @@ import android.content.res.Configuration
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
+import android.content.res.ColorStateList
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -21,7 +23,10 @@ import android.text.InputType
 import android.text.TextUtils
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.HapticFeedbackConstants
 import android.view.View
+import android.view.animation.DecelerateInterpolator
+import android.view.animation.OvershootInterpolator
 import android.view.WindowManager
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -747,9 +752,15 @@ class MainActivity : Activity() {
             tr("给不同的 AI 客户端创建独立密钥。每个密钥只能看到并调用你勾选的工具；主密钥不受影响。新密钥只显示一次，请在创建后立即复制。", "Create separate keys for different AI clients. Each key can only see and call the tools you select; your main key is unchanged. A new key is shown only once, so copy it when created."),
             13f, MUTED
         ).below(12))
+        var loadedTools: List<McpTool>? = null
         page.addView(primary(tr("＋ 新增访问密钥", "+ Add access key")) {
-            work({ current.clientTokens() }, { error -> toast(error.message ?: tr("读取工具失败", "Couldn’t load tools")) }) { view ->
-                editClientToken(null, view.tools, emptyList())
+            val tools = loadedTools
+            if (tools != null) {
+                editClientToken(null, tools, emptyList())
+            } else {
+                work({ current.clientTokens() }, { error -> toast(error.message ?: tr("读取工具失败", "Couldn’t load tools")) }) { view ->
+                    editClientToken(null, view.tools, emptyList())
+                }
             }
         }.below(16))
         val notice = text(tr("正在读取密钥…", "Loading keys…"), 14f, MUTED).below(10)
@@ -759,6 +770,7 @@ class MainActivity : Activity() {
         work({ current.clientTokens() }, { error ->
             notice.text = error.message ?: tr("读取失败", "Couldn’t load keys")
         }) { view ->
+            loadedTools = view.tools
             notice.text = if (view.tokens.isEmpty()) tr("还没有单独创建的密钥。", "No separate keys yet.") else
                 tr("共 " + view.tokens.size + " 个客户端密钥", view.tokens.size.toString() + " client keys")
             box.removeAllViews()
@@ -1442,8 +1454,10 @@ class MainActivity : Activity() {
         setPadding(dp(18), dp(16), dp(18), dp(16))
         background = GradientDrawable().apply {
             setColor(Color.WHITE)
-            cornerRadius = dp(14).toFloat()
+            cornerRadius = dp(16).toFloat()
+            setStroke(dp(1), 0xFFE5E7EB.toInt())
         }
+        elevation = dp(2).toFloat()
     }
 
     private fun text(value: String, size: Float, color: Int, bold: Boolean = false) = TextView(this).apply {
@@ -1460,11 +1474,39 @@ class MainActivity : Activity() {
         stateListAnimator = null
         setTextColor(ink)
         minHeight = dp(48)
-        background = GradientDrawable().apply {
-            setColor(fill)
-            cornerRadius = dp(10).toFloat()
+        // Ripple in a contrasting tone, clipped to the same rounded shape.
+        val dark = Color.red(fill) * 0.299 + Color.green(fill) * 0.587 + Color.blue(fill) * 0.114 < 128
+        background = RippleDrawable(
+            ColorStateList.valueOf(if (dark) 0x40FFFFFF else 0x1A000000),
+            GradientDrawable().apply {
+                setColor(fill)
+                cornerRadius = dp(12).toFloat()
+            },
+            GradientDrawable().apply {
+                setColor(Color.WHITE)
+                cornerRadius = dp(12).toFloat()
+            },
+        )
+        // A small press-in and a soft bounce back, so a tap feels answered.
+        setOnTouchListener { view, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    view.animate().cancel()
+                    view.animate().scaleX(0.96f).scaleY(0.96f).setDuration(90)
+                        .setInterpolator(DecelerateInterpolator()).start()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    view.animate().cancel()
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(240)
+                        .setInterpolator(OvershootInterpolator(2.2f)).start()
+                }
+            }
+            false
         }
-        setOnClickListener { onClick() }
+        setOnClickListener {
+            performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            onClick()
+        }
     }
 
     private fun primary(label: String, onClick: () -> Unit) = button(label, BLUE, Color.WHITE, onClick)
