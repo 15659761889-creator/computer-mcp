@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,13 +32,25 @@ function onPath() {
   return result.status === 0 ? result.stdout.split(/\r?\n/)[0].trim() : null;
 }
 
-function downloadUrl() {
+// Pinned cloudflared release, not "latest": a moving target cannot be verified.
+// SHA-256 sums are published in the release notes at
+// https://github.com/cloudflare/cloudflared/releases/tag/2026.10.7
+const CLOUDFLARED_VERSION = '2026.10.7';
+const CLOUDFLARED_SHA256 = {
+  'cloudflared-windows-amd64.exe': '2493dbc168923bb3e59e5e7716f71deced92992eea9acd6e9d74f84ac7751343',
+  'cloudflared-darwin-amd64.tgz': '5c55e77da7012cebca19170357e196176c48c9647cc2ead404702fa125ddbd86',
+  'cloudflared-darwin-arm64.tgz': '2136431d5eb467bf447d2ee514b713e192719b143aec1d9e09bf7dc290d5bb12',
+  'cloudflared-linux-amd64': '1f99fb518b83dec2ba8d870a7cc991d82a77e6196295a3d2754ba17ab9f91872',
+  'cloudflared-linux-arm64': '3df43aedc9ff291d1735b5cb576cb97e0b157488796db2e32b28aecabb445775',
+};
+
+function downloadInfo() {
   const arch = { x64: 'amd64', arm64: 'arm64' }[process.arch];
   if (!arch) throw new Error(`no cloudflared build for ${process.arch}; install it yourself and pass --cloudflared <path>`);
-  const base = 'https://github.com/cloudflare/cloudflared/releases/latest/download';
-  if (IS_WINDOWS) return `${base}/cloudflared-windows-${arch}.exe`;
-  if (process.platform === 'darwin') return `${base}/cloudflared-darwin-${arch}.tgz`;
-  return `${base}/cloudflared-linux-${arch}`;
+  const file = IS_WINDOWS ? `cloudflared-windows-${arch}.exe` : process.platform === 'darwin' ? `cloudflared-darwin-${arch}.tgz` : `cloudflared-linux-${arch}`;
+  const sha256 = CLOUDFLARED_SHA256[file];
+  if (!sha256) throw new Error(`no pinned cloudflared build for ${file}; install it yourself and pass --cloudflared <path>`);
+  return { url: `https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/${file}`, sha256 };
 }
 
 // curl ships with every supported OS and, unlike fetch, honours the proxy settings.
@@ -49,7 +62,7 @@ export function ensureCloudflared({ explicit, proxy }) {
   const existing = onPath() || (fs.existsSync(bundledPath()) ? bundledPath() : null);
   if (existing) return existing;
 
-  const url = downloadUrl();
+  const { url, sha256 } = downloadInfo();
   const target = bundledPath();
   fs.mkdirSync(path.dirname(target), { recursive: true });
   console.log(`Downloading cloudflared from ${url}`);
@@ -59,6 +72,11 @@ export function ensureCloudflared({ explicit, proxy }) {
   if (curl.status !== 0) {
     fs.rmSync(download, { force: true });
     throw new Error('downloading cloudflared failed; if this network needs a proxy, retry with --proxy http://host:port');
+  }
+  const actual = createHash('sha256').update(fs.readFileSync(download)).digest('hex');
+  if (actual !== sha256) {
+    fs.rmSync(download, { force: true });
+    throw new Error('cloudflared download failed its SHA-256 check; refusing to run it');
   }
   if (isArchive) {
     const tar = run('tar', ['-xzf', download, '-C', path.dirname(target)]);

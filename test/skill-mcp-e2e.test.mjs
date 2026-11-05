@@ -17,7 +17,7 @@ test('Skill tools are discoverable and callable over authenticated MCP, without 
   fs.writeFileSync(path.join(dir, 'scripts', 'helper.txt'), 'TEST-SKILL-MCP-OK\n');
   const skillsStore = new SkillStore({
     dir: path.join(tmp, 'skills'), stateFile: path.join(tmp, 'skills-state.json'),
-    computers: () => [{ name: 'pc-test', os: 'Windows_NT 10.0.26200', home: 'C:/Users/30323', online: true }],
+    computers: () => [{ name: 'pc-test', os: 'Windows_NT 10.0.26200', home: 'C:/Users/testuser', online: true }],
   });
   const server = createMcpServer({ name: 'pc-test', getToken: () => TOKEN, skillsStore });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));

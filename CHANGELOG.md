@@ -1,6 +1,13 @@
 # Changelog
 
-## 0.6.7 (unreleased)
+## 0.6.7 (2026-11-05)
+
+### Audit fixes
+- Relay installer now installs 0.6.7 (0.4.0 never existed on npm); README install matches the released version.
+- cloudflared downloads are pinned to 2026.10.7 and SHA-256 checked.
+- Handoff token comparison uses a hash, like the main service.
+- LAN keeps only the ChaCha20 cipher suite; transfer writes refuse symlinks, junctions and Windows alternate data streams.
+- Test fixtures use fake paths and domains; the npm package no longer includes `desktop/__pycache__`.
 
 ### Scoped client tokens
 - The hub can now issue per-client tokens (`cmcp_...`) that expose only a chosen

@@ -29,12 +29,42 @@ export const transfersFile = (stateFile) => `${stateFile.replace(/\.json$/i, '')
 const fail = (message) => { throw new XferError(message); };
 const toRel = (rel) => String(rel ?? '').split(/[\\/]+/).filter(Boolean).join('/');
 
-// rel must stay inside root: no absolute paths, no "..".
+// rel must stay inside root: no absolute paths, no "..", and no ":" in any part
+// (on Windows "name:stream" is an alternate data stream, not a plain file).
 function inside(root, rel) {
   const clean = toRel(rel);
   if (!clean) return root;
-  if (clean.split('/').some((part) => part === '..' || part === '.') || path.isAbsolute(clean) || /^[a-z]:/i.test(clean)) fail(`bad path in transfer: ${rel}`);
+  if (clean.split('/').some((part) => part === '..' || part === '.' || part.includes(':')) || path.isAbsolute(clean) || /^[a-z]:/i.test(clean)) fail(`bad path in transfer: ${rel}`);
   return path.join(root, ...clean.split('/'));
+}
+
+// realpath of a path, or of its nearest existing ancestor with the rest re-attached,
+// so paths that do not exist yet can still be resolved through symlinked parents.
+async function realDir(p) {
+  let dir = p;
+  const tail = [];
+  for (;;) {
+    const real = await fsp.realpath(dir).catch(() => null);
+    if (real) return path.join(real, ...tail);
+    tail.unshift(path.basename(dir));
+    const parent = path.dirname(dir);
+    if (parent === dir) return p;
+    dir = parent;
+  }
+}
+
+// inside(), plus a check that the resolved destination really stays inside the
+// resolved root: a symlink or junction inside the root must not redirect a write
+// outside it. Returns the resolved destination.
+async function insideReal(root, rel) {
+  const dest = inside(root, rel);
+  const realRoot = await realDir(root);
+  const resolved = await realDir(dest);
+  const relToRoot = process.platform === 'win32'
+    ? path.win32.relative(realRoot.toLowerCase(), resolved.toLowerCase())
+    : path.relative(realRoot, resolved);
+  if (relToRoot.startsWith('..') || path.isAbsolute(relToRoot)) fail(`bad path in transfer: ${rel}`);
+  return resolved;
 }
 
 const stagingOf = (dest) => `${dest}${STAGING}`;
@@ -93,13 +123,13 @@ async function prepare(args) {
   return { dest };
 }
 
-const stagedFile = (dest, kind, rel) => (kind === 'file' ? stagingOf(dest) : inside(stagingOf(dest), rel));
+const stagedFile = async (dest, kind, rel) => insideReal(stagingOf(dest), kind === 'file' ? '' : rel);
 
 async function have(args) {
   const dest = resolvePath(args.dest);
   const sizes = {};
   for (const rel of args.files || []) {
-    const size = await sizeOf(stagedFile(dest, args.kind, rel));
+    const size = await sizeOf(await stagedFile(dest, args.kind, rel));
     if (size) sizes[rel] = size;
   }
   return { sizes };
@@ -146,7 +176,7 @@ async function lock(file, work) {
 async function writePieces(args) {
   const dest = resolvePath(args.dest);
   for (const piece of args.pieces || []) {
-    const file = stagedFile(dest, args.kind, piece.rel);
+    const file = await stagedFile(dest, args.kind, piece.rel);
     await lock(file, async () => {
       await fsp.mkdir(path.dirname(file), { recursive: true });
       const current = await sizeOf(file);
@@ -233,7 +263,7 @@ async function pull(args) {
   const sizes = {};
   for (const { rel, size } of args.files || []) {
     if (budget <= 0) break;
-    const file = stagedFile(dest, args.kind, rel);
+    const file = await stagedFile(dest, args.kind, rel);
     await lock(file, async () => {
       await fsp.mkdir(path.dirname(file), { recursive: true });
       let current = await sizeOf(file);
@@ -272,7 +302,7 @@ async function hashAll(args) {
   const hashes = [];
   const stats = [];
   for (const rel of args.files || []) {
-    const file = args.staged ? stagedFile(root, args.kind, rel) : (args.kind === 'file' ? root : inside(root, rel));
+    const file = args.staged ? await stagedFile(root, args.kind, rel) : (args.kind === 'file' ? root : inside(root, rel));
     const info = await fsp.stat(file).catch(() => null);
     if (!info) {
       hashes.push(null);
@@ -287,7 +317,7 @@ async function hashAll(args) {
 
 async function drop(args) {
   const dest = resolvePath(args.dest);
-  for (const rel of args.files || []) await fsp.rm(stagedFile(dest, args.kind, rel), { force: true });
+  for (const rel of args.files || []) await fsp.rm(await stagedFile(dest, args.kind, rel), { force: true });
   return { ok: true };
 }
 
@@ -305,7 +335,7 @@ async function commit(args) {
     if (fs.existsSync(dest)) return { ok: true };
     fail(`the copy waiting at ${staging} is gone`);
   }
-  for (const rel of args.dirs || []) await fsp.mkdir(inside(staging, rel), { recursive: true });
+  for (const rel of args.dirs || []) await fsp.mkdir(await insideReal(staging, rel), { recursive: true });
   const existing = await fsp.stat(dest).catch(() => null);
   if (existing && !args.overwrite) fail(`${dest} appeared while copying; the copy is kept at ${staging}`);
   if (args.kind === 'file' || !existing) {
@@ -317,6 +347,10 @@ async function commit(args) {
     for (const entry of await fsp.readdir(from, { withFileTypes: true })) {
       const a = path.join(from, entry.name);
       const b = path.join(to, entry.name);
+      // A pre-existing symlink or junction in the destination must not redirect
+      // a file out of it.
+      const existing = await fsp.lstat(b).catch(() => null);
+      if (existing?.isSymbolicLink()) fail(`refusing to write through a link at ${b}`);
       if (entry.isDirectory()) {
         await fsp.mkdir(b, { recursive: true });
         await merge(a, b);

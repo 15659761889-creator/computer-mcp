@@ -9,13 +9,16 @@ import os from 'node:os';
 // for the person to set up. Only TLS 1.2 has PSK in Node.js; ECDHE adds forward secrecy.
 export const LAN_PORT = 8766;
 export const DISCOVERY_PORT = 8767;
-const CIPHERS = 'ECDHE-PSK-CHACHA20-POLY1305:ECDHE-PSK-AES256-CBC-SHA384';
+const CIPHERS = 'ECDHE-PSK-CHACHA20-POLY1305';
 const TLS = { ciphers: CIPHERS, minVersion: 'TLSv1.2', maxVersion: 'TLSv1.2' };
 const FIREWALL_RULE = 'Computer MCP LAN';
 
 export const ROUTES = ['auto', 'lan', 'public'];
 
-// The hub keeps only sha256(key), so the LAN key is derived from that.
+// The hub keeps only sha256(key), so the LAN key is derived from that. This means
+// anyone who learns a computer's key hash can also derive its LAN key (but not the
+// admin key itself, which the hash does not reveal). A separate per-computer LAN
+// secret would need a pairing-protocol change, so this trade-off is accepted.
 export function nodePsk(keyHashHex) {
   return createHmac('sha256', Buffer.from(keyHashHex, 'hex')).update('computer-mcp lan v1').digest();
 }

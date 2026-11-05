@@ -7,8 +7,8 @@ const linux = {
   skillDirs: ['/home/ai/skills/example'], vars: { SKILL_ENV: '/home/ai/skills/example/.venv' },
 };
 const windows = {
-  os: 'windows', homeDir: 'C:/Users/30323', cwd: 'C:/Users/30323',
-  skillDirs: ['C:/Users/30323/skills/example'], vars: { SKILL_ENV: 'C:/Users/30323/skills/example/.venv' },
+  os: 'windows', homeDir: 'C:/Users/testuser', cwd: 'C:/Users/testuser',
+  skillDirs: ['C:/Users/testuser/skills/example'], vars: { SKILL_ENV: 'C:/Users/testuser/skills/example/.venv' },
 };
 function tags(command, ctx = linux) { return classifyStep(command, ctx).map((x) => x.tag); }
 function highest(command, ctx = linux) { return Math.max(...tags(command, ctx).map((x) => RISK_TAGS.indexOf(x))); }
@@ -43,7 +43,7 @@ test('disk wipe and destructive outside-skill commands are flagged', () => {
   for (const command of ['rm -rf /home/ai/Documents', 'sudo rm -rf /', 'mkfs.ext4 /dev/sdb', 'dd if=/dev/zero of=/dev/sda']) {
     minimum(command, 'destructive');
   }
-  minimum('Remove-Item -Recurse C:/Users/30323/Documents', 'destructive', windows);
+  minimum('Remove-Item -Recurse C:/Users/testuser/Documents', 'destructive', windows);
 });
 
 test('elevation is flagged', () => {

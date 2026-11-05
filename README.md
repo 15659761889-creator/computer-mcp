@@ -254,3 +254,9 @@ node live-tests\real-model.mjs      # a real model completes a task using only t
 ```
 
 Tests use a local MCP server and simulated tunnel output. No external Cloudflare resource is provisioned unless you actually run `computer-mcp quick` or `setup`.
+
+## License
+
+PolyForm Noncommercial 1.0.0 — free for personal, research, study, hobby and
+non-profit use; commercial use needs the author's permission. See `LICENSE`.
+Copyright (c) 2026 zhuangzihan.

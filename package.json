@@ -15,7 +15,8 @@
   "files": [
     "bin",
     "src",
-    "desktop",
+    "desktop/helper.py",
+    "desktop/requirements.txt",
     "web",
     "installer/install-relay.sh",
     "README.md"

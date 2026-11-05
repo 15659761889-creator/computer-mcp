@@ -40,7 +40,7 @@ class VerifyManagerLaunch {
     try {
       var method = type.GetMethod("StartCliTask", BindingFlags.Instance | BindingFlags.NonPublic);
       if (method == null) throw new Exception("StartCliTask not found");
-      string pair = "cmcp://pc-test.mcp.3618.app/TEST1234";
+      string pair = "cmcp://pc-test.mcp.example.app/TEST1234";
       method.Invoke(form, new object[] { "join \"" + pair + "\"", "Test join" });
       for (int i = 0; i < 100 && !File.Exists(capture); i++) Thread.Sleep(100);
       if (!File.Exists(capture)) throw new Exception("Direct launch produced no argument file");

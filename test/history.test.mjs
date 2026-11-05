@@ -150,7 +150,7 @@ test('secrets in command lines are masked and long commands are clipped unless f
   assert.equal(maskSecrets('{"token": "abc123"}'), '{"token": [masked]}');
   assert.equal(maskSecrets('tool --api-key sk-1234567890abcdefghij'), 'tool --api-key [masked]');
   assert.equal(maskSecrets('key sk-1234567890abcdefghij'), 'key [masked-key]');
-  assert.equal(maskSecrets('https://pc-test-mcp.example.app/t/redacted-cf031b13e48872ca/mcp'), 'https://pc-test-mcp.example.app/t/[masked]/mcp');
+  assert.equal(maskSecrets('https://pc-test-mcp.example.app/t/test-token-0000/mcp'), 'https://pc-test-mcp.example.app/t/[masked]/mcp');
   assert.equal(maskSecrets('hash a3f9c2e1b4d5a3f9c2e1b4d5a3f9c2e1b4d5a3f9c2e1'), 'hash [masked-long-string]');
   // Ordinary text survives.
   const plain = 'git status --short; compass: north; C:\\Users\\me\\android-workstation-removed-20261104';

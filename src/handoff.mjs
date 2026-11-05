@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { callDesktop, desktopSupported } from './desktop.mjs';
@@ -28,9 +28,12 @@ export const HANDOFF_TOOLS = [
 ];
 
 const random = () => randomBytes(32).toString('base64url');
-const equal = (a,b) => {
+// Compare by hash, like server.mjs sameSecret: comparing raw strings leaks length
+// through timing, and truncating to 100 characters is not a comparison.
+const equal = (a, b) => {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
-  return timingSafeEqual(Buffer.from(a.padEnd(100).slice(0,100)), Buffer.from(b.padEnd(100).slice(0,100))) && a.length === b.length;
+  const hash = (value) => createHash('sha256').update(value).digest();
+  return timingSafeEqual(hash(a), hash(b));
 };
 function json(res, status, payload) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });

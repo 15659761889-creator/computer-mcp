@@ -7,10 +7,13 @@
 #   curl -fsSL <url of this file> | sudo bash
 #   curl -fsSL <url of this file> | sudo CMCP_SHARED=1 bash     # serve several people
 #
+# Read this script before running it: it installs software and opens firewall
+# ports 80/443 as root. Do not pipe a script to bash that you have not read.
+#
 # Optional: CMCP_HOST (public IP or domain), CMCP_PACKAGE (npm spec or tarball URL), CMCP_STAGING=1.
 set -euo pipefail
 
-PACKAGE="${CMCP_PACKAGE:-@zhuangzihan/computer-mcp@0.4.0}"
+PACKAGE="${CMCP_PACKAGE:-@zhuangzihan/computer-mcp@0.6.7}"
 STATE=/var/lib/computer-mcp
 NODE_MAJOR=22
 

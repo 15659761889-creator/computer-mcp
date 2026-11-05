@@ -265,7 +265,7 @@ await app('blender', async (check) => {
 });
 
 await app('godot', async (check) => {
-  const exe = 'C:/Users/30323/Desktop/ClaudeGameStudio/tools/godot/Godot_v4.7.2-stable_win64.exe';
+  const exe = process.env.GODOT_EXE || 'C:/Users/testuser/Desktop/GameStudio/tools/godot/Godot_v4.7.2-stable_win64.exe';
   const dir = path.join(WORK, 'godot-project');
   fs.mkdirSync(dir);
   fs.writeFileSync(path.join(dir, 'project.godot'), 'config_version=5\n[application]\nconfig/name="CMCP验收"\n');

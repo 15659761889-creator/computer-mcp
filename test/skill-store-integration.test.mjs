@@ -17,7 +17,7 @@ const mkEnv = (t) => {
   fs.mkdirSync(path.join(root, 'scripts'));
   fs.writeFileSync(path.join(root, 'scripts', 'check.py'), 'print("ready")\n');
   const computers = [
-    { name: 'pc-test', os: 'Windows_NT 10.0.26200', online: true, home: 'C:/Users/30323' },
+    { name: 'pc-test', os: 'Windows_NT 10.0.26200', online: true, home: 'C:/Users/testuser' },
     { name: 'linux-vm', os: 'Linux 6.18', online: true, home: '/home/ai' },
     { name: 'offline-linux', os: 'Linux 6.18', online: false, home: '/home/offline' },
   ];
