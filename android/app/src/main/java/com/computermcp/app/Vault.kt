@@ -18,11 +18,14 @@ data class VaultEntry(
     val label: String,
     val username: String,
     val password: String,
+    /** The owner marked this account trusted: the AI may use it without asking each time. Off by default. */
+    val autoAllow: Boolean = false,
 )
 
 /**
  * Saved accounts. They exist only on this phone, encrypted with a key the Android keystore holds,
- * and leave it one at a time, when the person allows the AI to type one.
+ * and leave it one at a time, when the person allows the AI to type one. An account the owner
+ * marked autoAllow leaves without asking each time; that flag is set only in this app, never by the AI.
  */
 class VaultStore(context: Context) {
     private val prefs = context.getSharedPreferences("vault", Context.MODE_PRIVATE)
@@ -49,7 +52,7 @@ class VaultStore(context: Context) {
             val list = JSONArray(String(cipher.doFinal(Base64.decode(sealed, Base64.NO_WRAP))))
             List(list.length()) { index ->
                 val e = list.getJSONObject(index)
-                VaultEntry(e.getString("id"), e.getString("label"), e.optString("username"), e.optString("password"))
+                VaultEntry(e.getString("id"), e.getString("label"), e.optString("username"), e.optString("password"), e.optBoolean("autoAllow", false))
             }
         } catch (_: Exception) {
             emptyList()
@@ -58,7 +61,7 @@ class VaultStore(context: Context) {
 
     private fun save(entries: List<VaultEntry>) {
         val list = JSONArray()
-        for (e in entries) list.put(JSONObject().put("id", e.id).put("label", e.label).put("username", e.username).put("password", e.password))
+        for (e in entries) list.put(JSONObject().put("id", e.id).put("label", e.label).put("username", e.username).put("password", e.password).put("autoAllow", e.autoAllow))
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
         prefs.edit()
@@ -70,6 +73,9 @@ class VaultStore(context: Context) {
     fun put(entry: VaultEntry) = save(load().filter { it.id != entry.id } + entry)
 
     fun remove(id: String) = save(load().filter { it.id != id })
+
+    /** The entry whose name fits what the AI asked for and the owner marked auto-allow, if any. */
+    fun autoAllowMatch(hint: String): VaultEntry? = bestMatch(hint)?.takeIf { it.autoAllow }
 
     /** The entry whose name fits what the AI asked for, if any. */
     fun bestMatch(hint: String): VaultEntry? {

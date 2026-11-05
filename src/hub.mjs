@@ -33,7 +33,7 @@ const EVENT_HOLD_MS = 25000;
 
 export const SECRET_TOOL = {
   name: 'type_secret',
-  description: 'Type a saved username or password into the computer without ever seeing it. The owner keeps accounts in the Computer MCP phone app; each use asks them on the phone to pick the account and allow it, which can take a minute. Click into the field first, or name it with target or element_id, then call this once for the username and once for the password. The reply never contains the value. Use this for logins instead of asking for passwords in chat, and only type into the login form the owner expects.',
+  description: 'Type a saved username or password into the computer without ever seeing it. The owner keeps accounts in the Computer MCP phone app; each use usually asks them on the phone to pick the account and allow it, which can take a minute, but accounts the owner marked as trusted in the phone app are filled without asking (secret_list shows which ones those are). Click into the field first, or name it with target or element_id, then call this once for the username and once for the password. The reply never contains the value. Use this for logins instead of asking for passwords in chat, and only type into the login form the owner expects.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -53,7 +53,7 @@ export const SECRET_TOOL = {
 
 export const SECRET_LIST_TOOL = {
   name: 'secret_list',
-  description: 'List the saved accounts the owner keeps in the Computer MCP phone app, by label and username only, so the AI can tell accounts apart before typing anything. Passwords are never stored on the hub and never appear here. Name any connected computer; the list is the same for the whole hub. Call this before type_secret when the label alone does not say which account it is, and confirm the username with the owner before typing.',
+  description: 'List the saved accounts the owner keeps in the Computer MCP phone app, by label and username only, so the AI can tell accounts apart before typing anything. Each entry also says autoAllow: true when the owner lets the AI use that account without asking each time. Passwords are never stored on the hub and never appear here. Name any connected computer; the list is the same for the whole hub. Call this before type_secret when the label alone does not say which account it is, and confirm the username with the owner before typing.',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   annotations: { title: 'List saved accounts', readOnlyHint: true, openWorldHint: false },
 };
@@ -851,9 +851,10 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
   }
 
   // ---- Vault metadata: labels and usernames only, synced from the phone app ----
-  // The vault itself stays on the phone, encrypted; only its labels and usernames
-  // ever reach the hub, so the AI can tell accounts apart before typing. A
-  // password sent here by mistake is dropped, never stored, and never returned.
+  // The vault itself stays on the phone, encrypted; only its labels, usernames and
+  // the owner's auto-allow flag ever reach the hub, so the AI can tell accounts apart
+  // before typing. A password sent here by mistake is dropped, never stored, and never
+  // returned. The flag itself is set only in the phone app, never by any MCP tool.
 
   setVaultMeta(entries) {
     if (!Array.isArray(entries)) throw Object.assign(new Error('entries must be an array'), { status: 400 });
@@ -865,7 +866,7 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
       const label = String(entry.label ?? '').trim().slice(0, 60);
       const username = String(entry.username ?? '').trim().slice(0, 120);
       if (!id || !label) throw Object.assign(new Error('each account needs id, label and username'), { status: 400 });
-      next.set(id, { id, label, username });
+      next.set(id, { id, label, username, autoAllow: entry.autoAllow === true });
     }
     this.vaultAccounts = next;
     this.bump();
@@ -874,7 +875,7 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
 
   vaultAccountList() {
     return [...this.vaultAccounts.values()]
-      .map(({ id, label, username }) => ({ id, label, username }))
+      .map(({ id, label, username, autoAllow }) => ({ id, label, username, autoAllow: autoAllow === true }))
       .sort((a, b) => a.label.localeCompare(b.label));
   }
 

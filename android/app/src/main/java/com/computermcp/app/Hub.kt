@@ -162,11 +162,12 @@ data class SecretRequest(
     val where: String,
 )
 
-/** A saved account's label and username, without its password, for telling accounts apart. */
+/** A saved account's label and username, without its password, for telling accounts apart. autoAllow says the owner lets the AI use this account without asking each time. */
 data class VaultAccountMeta(
     val id: String,
     val label: String,
     val username: String,
+    val autoAllow: Boolean = false,
 )
 
 data class HubStatus(
@@ -488,10 +489,10 @@ class HubClient(private val connection: Connection) {
         request("POST", "secrets/$id", body)
     }
 
-    /** Sends the vault's labels and usernames to the hub so the AI can tell accounts apart. Passwords are never sent. */
+    /** Sends the vault's labels, usernames and auto-allow flags to the hub so the AI can tell accounts apart. Passwords are never sent. */
     fun syncVaultMeta(entries: List<VaultEntry>) {
         val list = org.json.JSONArray()
-        for (e in entries) list.put(JSONObject().put("id", e.id).put("label", e.label).put("username", e.username))
+        for (e in entries) list.put(JSONObject().put("id", e.id).put("label", e.label).put("username", e.username).put("autoAllow", e.autoAllow))
         request("POST", "vault-meta", JSONObject().put("entries", list))
     }
 

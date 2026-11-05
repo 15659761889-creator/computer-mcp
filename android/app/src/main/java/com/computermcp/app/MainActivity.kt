@@ -76,6 +76,8 @@ class MainActivity : Activity() {
     private lateinit var vault: VaultStore
     /** Fingerprint of the vault metadata last sent to the hub; empty means send it again. */
     private var lastVaultSync = ""
+    /** Secret requests already answered without asking, so a slow refresh never answers one twice. */
+    private val autoAnswered = mutableSetOf<String>()
     private var knownIds: Set<String>? = null
     private var pairDialog: AlertDialog? = null
     /** Bumped on every screen change, so loops started for an old screen stop. */
@@ -612,6 +614,7 @@ class MainActivity : Activity() {
             announceNew(fresh)
             announceTakeovers(fresh)
             render(fresh)
+            autoAnswerSecrets(fresh)
         }
     }
 
@@ -621,9 +624,23 @@ class MainActivity : Activity() {
      * so a failed sync never breaks the refresh, and the next one retries.
      * Passwords are never included.
      */
+    /**
+     * Answers secret requests for accounts the owner marked "no need to ask each time".
+     * Runs on the main thread after each refresh; anything else still shows the approval dialog.
+     */
+    private fun autoAnswerSecrets(fresh: HubStatus) {
+        val current = client ?: return
+        for (request in fresh.secretRequests) {
+            if (request.id in autoAnswered) continue
+            val entry = vault.autoAllowMatch(request.hint) ?: continue
+            autoAnswered.add(request.id)
+            answer(current, request, entry)
+        }
+    }
+
     private fun syncVaultMeta(client: HubClient) {
         val entries = vault.load()
-        val fingerprint = entries.joinToString("\n") { "${it.id}\u0000${it.label}\u0000${it.username}" }
+        val fingerprint = entries.joinToString("\n") { "${it.id}\u0000${it.label}\u0000${it.username}\u0000${it.autoAllow}" }
         if (fingerprint == lastVaultSync) return
         try {
             client.syncVaultMeta(entries)
@@ -937,13 +954,13 @@ class MainActivity : Activity() {
         })
         header.addView(text(tr("密码库", "Password vault"), 24f, INK, bold = true))
         page.addView(header)
-        page.addView(text(tr("账号和密码只加密保存在这部手机上。名称和账号会同步给主电脑，好让 AI 分清是哪个账号；密码不会同步，AI 每次要用都会先问你，它只能让电脑把密码填进去，自己看不到。", "Accounts stay encrypted on this phone. Names and usernames sync to the main computer so the AI can tell accounts apart; passwords never sync. The AI asks you every time it needs one, and it can only have the computer type the password in; it never sees it."), 13f, MUTED).below(8))
+        page.addView(text(tr("账号和密码只加密保存在这部手机上。名称和账号会同步给主电脑，好让 AI 分清是哪个账号；密码不会同步，AI 每次要用都会先问你，除非你给这个账号开了“不用每次都问”；它只能让电脑把密码填进去，自己看不到。", "Accounts stay encrypted on this phone. Names and usernames sync to the main computer so the AI can tell accounts apart; passwords never sync. The AI asks you every time it needs one, unless you marked that account “no need to ask each time”; it can only have the computer type the password in, and it never sees it."), 13f, MUTED).below(8))
         val entries = vault.load()
         if (entries.isEmpty()) page.addView(text(tr("还没有保存的账号。", "No saved accounts yet."), 14f, MUTED).below(16))
         for (entry in entries) {
             val row = card().below(10)
             row.addView(text(entry.label, 16f, INK, bold = true))
-            row.addView(text(entry.username.ifEmpty { tr("（没有账号名）", "(no account name)") } + "  ·  ••••••", 13f, MUTED).below(3))
+            row.addView(text(entry.username.ifEmpty { tr("（没有账号名）", "(no account name)") } + "  ·  ••••••" + if (entry.autoAllow) tr("  ·  不用每次都问", "  ·  no need to ask") else "", 13f, MUTED).below(3))
             row.setOnClickListener { editEntry(entry) { showVault() } }
             page.addView(row)
         }
@@ -958,6 +975,12 @@ class MainActivity : Activity() {
         form.addView(label)
         form.addView(username)
         form.addView(password)
+        val autoAllow = CheckBox(this).apply {
+            isChecked = entry.autoAllow
+            text = tr("不用每次都问：AI 可以直接用这个账号登录，不用每次都问你。密码还是不会让 AI 看到。", "No need to ask each time: the AI may use this account directly, without asking you each time. It still never sees the password.")
+            setPadding(0, dp(10), 0, 0)
+        }
+        form.addView(autoAllow)
         val known = vault.load().any { it.id == entry.id }
         val dialog = AlertDialog.Builder(this)
             .setTitle(if (known) tr("编辑账号", "Edit account") else tr("添加账号", "Add account"))
@@ -968,7 +991,7 @@ class MainActivity : Activity() {
                     toast(tr("请填写名称", "Please enter a name"))
                     return@setPositiveButton
                 }
-                vault.put(entry.copy(label = name, username = username.text.toString(), password = password.text.toString()))
+                vault.put(entry.copy(label = name, username = username.text.toString(), password = password.text.toString(), autoAllow = autoAllow.isChecked))
                 lastVaultSync = ""
                 toast(tr("已保存", "Saved"))
                 after()

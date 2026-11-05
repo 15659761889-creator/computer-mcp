@@ -344,40 +344,44 @@ test('a saved password is typed after the phone allows it, and the AI never sees
   assert.deepEqual((await (await admin('status')).json()).secretRequests, []);
 });
 
-test('secret_list shows labels and usernames, never passwords', async () => {
+test('secret_list shows labels, usernames and the auto-allow flag, never passwords', async () => {
   await addComputer('vault-list', async () => ({ text: 'ok' }));
   // Nothing is listed until the phone syncs its vault metadata.
   const empty = await call('secret_list', { computer: 'vault-list' });
   assert.match(empty.content[0].text, /No saved accounts/);
   // The phone syncs metadata only; a password smuggled into the sync is dropped.
+  // autoAllow defaults to false when absent, and only a real boolean true counts.
   const synced = await admin('vault-meta', 'POST', { entries: [
-    { id: 'a1', label: 'google1', username: 'alice@example.com', password: 'must-not-be-stored' },
+    { id: 'a1', label: 'google1', username: 'alice@example.com', password: 'must-not-be-stored', autoAllow: true },
     { id: 'a2', label: 'GitHub', username: 'me@example.com' },
+    { id: 'a3', label: 'Other', username: 'other@example.com', autoAllow: 'yes' },
   ] });
   assert.equal(synced.status, 200);
   const saved = await synced.json();
   assert.equal(JSON.stringify(saved).includes('must-not-be-stored'), false);
   assert.deepEqual(saved.accounts, [
-    { id: 'a2', label: 'GitHub', username: 'me@example.com' },
-    { id: 'a1', label: 'google1', username: 'alice@example.com' },
+    { id: 'a2', label: 'GitHub', username: 'me@example.com', autoAllow: false },
+    { id: 'a1', label: 'google1', username: 'alice@example.com', autoAllow: true },
+    { id: 'a3', label: 'Other', username: 'other@example.com', autoAllow: false },
   ]);
   const listed = await call('secret_list', { computer: 'vault-list' });
   const { accounts } = JSON.parse(listed.content[0].text);
   assert.deepEqual(accounts, [
-    { id: 'a2', label: 'GitHub', username: 'me@example.com' },
-    { id: 'a1', label: 'google1', username: 'alice@example.com' },
+    { id: 'a2', label: 'GitHub', username: 'me@example.com', autoAllow: false },
+    { id: 'a1', label: 'google1', username: 'alice@example.com', autoAllow: true },
+    { id: 'a3', label: 'Other', username: 'other@example.com', autoAllow: false },
   ]);
   assert.doesNotMatch(JSON.stringify(listed), /must-not-be-stored/);
-  assert.equal((await (await admin('status')).json()).vaultAccounts, 2);
+  assert.equal((await (await admin('status')).json()).vaultAccounts, 3);
   // A later sync replaces the whole list, so deletions reach the hub too.
-  await admin('vault-meta', 'POST', { entries: [{ id: 'a1', label: 'google1', username: 'alice@example.com' }] });
+  await admin('vault-meta', 'POST', { entries: [{ id: 'a1', label: 'google1', username: 'alice@example.com', autoAllow: true }] });
   const after = JSON.parse((await call('secret_list', { computer: 'vault-list' })).content[0].text);
-  assert.deepEqual(after.accounts, [{ id: 'a1', label: 'google1', username: 'alice@example.com' }]);
+  assert.deepEqual(after.accounts, [{ id: 'a1', label: 'google1', username: 'alice@example.com', autoAllow: true }]);
   // Bad syncs are rejected, and the last good list stays.
   assert.equal((await admin('vault-meta', 'POST', { entries: 'nope' })).status, 400);
   assert.equal((await admin('vault-meta', 'POST', { entries: [{ id: 'x' }] })).status, 400);
   const kept = JSON.parse((await call('secret_list', { computer: 'vault-list' })).content[0].text);
-  assert.deepEqual(kept.accounts, [{ id: 'a1', label: 'google1', username: 'alice@example.com' }]);
+  assert.deepEqual(kept.accounts, [{ id: 'a1', label: 'google1', username: 'alice@example.com', autoAllow: true }]);
 });
 
 test('a declined secret runs nothing', async () => {
