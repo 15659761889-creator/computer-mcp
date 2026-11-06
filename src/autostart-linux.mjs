@@ -15,6 +15,7 @@ const UNIT = 'wanji.service';
 const LEGACY_UNIT = 'computer-mcp.service';
 const legacyKeeperName = () => `ComputerMCP-WSL-${(process.env.WSL_DISTRO_NAME || 'Linux').replace(/[^\w.-]/g, '_')}.vbs`;
 const unitFile = () => path.join(os.homedir(), '.config', 'systemd', 'user', UNIT);
+const legacyUnitFile = () => path.join(os.homedir(), '.config', 'systemd', 'user', LEGACY_UNIT);
 const hasSystemd = () => fs.existsSync('/run/systemd/system');
 
 export function isWsl() {
@@ -123,7 +124,7 @@ export function installLinuxAutostart() {
     '',
   ].join('\n');
   // Drop the pre-rename unit so it cannot keep starting the old entry file.
-  const legacyFile = path.join(os.homedir(), '.config', 'systemd', 'user', LEGACY_UNIT);
+  const legacyFile = legacyUnitFile();
   if (fs.existsSync(legacyFile)) {
     systemctl('disable', '--now', LEGACY_UNIT);
     fs.rmSync(legacyFile, { force: true });
@@ -144,11 +145,18 @@ export function installLinuxAutostart() {
 }
 
 export function startLinuxService() {
+  // An install from before the rename has only the legacy unit (`update` does
+  // not install autostart): move it to the new unit first.
+  if (!fs.existsSync(unitFile()) && fs.existsSync(legacyUnitFile())) {
+    const migrated = installLinuxAutostart();
+    if (!migrated.installed) throw new Error(migrated.note);
+  }
   const result = systemctl('restart', UNIT);
   if (result.status !== 0) throw new Error(`could not start ${UNIT}: ${(result.stderr || '').trim()}`);
 }
 
 export function stopLinuxService() {
+  if (fs.existsSync(legacyUnitFile())) systemctl('stop', LEGACY_UNIT);
   if (fs.existsSync(unitFile())) systemctl('stop', UNIT);
 }
 

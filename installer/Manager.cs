@@ -140,7 +140,7 @@ namespace WanjiWindows {
 
       ticker = new System.Windows.Forms.Timer { Interval = 3500 };
       ticker.Tick += (s, e) => RefreshStatus();
-      Shown += (s, e) => { RefreshStatus(); ticker.Start(); };
+      Shown += (s, e) => { RefreshStatus(); ticker.Start(); OfferJoinFile(); };
       FormClosed += (s, e) => ticker.Stop();
     }
 
@@ -336,6 +336,23 @@ namespace WanjiWindows {
         var args = "join " + Q(code.Replace(" ", "/").Replace("cmcp://", ""));
         if (!string.IsNullOrWhiteSpace(proxy.Text)) args += " --proxy " + Q(proxy.Text.Trim());
         StartCliTask(args, T("加入主电脑", "Join main computer"));
+      } catch (Exception ex) { MessageBox.Show(ex.Message, T("加入失败", "Couldn’t join")); }
+    }
+    // A join file from the main computer (wanji invite --file) waits in the config folder;
+    // the service never uses it on its own, so the person confirms here, seeing where it points.
+    private void OfferJoinFile() {
+      var file = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "computer-mcp", "join.json");
+      if (!System.IO.File.Exists(file)) return;
+      string origin;
+      try {
+        var match = Regex.Match(System.IO.File.ReadAllText(file), "\"origin\"\\s*:\\s*\"([^\"]+)\"");
+        origin = match.Success ? match.Groups[1].Value : T("（文件里没有主电脑地址）", "(no main computer address in the file)");
+      } catch (Exception ex) { origin = ex.Message; }
+      if (MessageBox.Show(this, T("发现加入文件：\n" + file + "\n\n主电脑地址：" + origin + "\n\n加入后，主电脑上连接的 AI 可以完全控制这台电脑，包括读取和修改文件。\n只加入你自己的主电脑。现在加入？", "Found a join file:\n" + file + "\n\nMain computer: " + origin + "\n\nAfter joining, the AI connected to the main computer can fully control this computer, including reading and changing files.\nOnly join your own main computer. Join now?"), T("从文件加入主电脑", "Join from file"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+      try {
+        var args = "join --file " + Q(file);
+        if (!string.IsNullOrWhiteSpace(proxy.Text)) args += " --proxy " + Q(proxy.Text.Trim());
+        StartCliTask(args, T("从文件加入主电脑", "Join from file"));
       } catch (Exception ex) { MessageBox.Show(ex.Message, T("加入失败", "Couldn’t join")); }
     }
     private void UseBash() {

@@ -12,6 +12,8 @@ export const DISCOVERY_PORT = 8767;
 const CIPHERS = 'ECDHE-PSK-CHACHA20-POLY1305';
 const TLS = { ciphers: CIPHERS, minVersion: 'TLSv1.2', maxVersion: 'TLSv1.2' };
 const FIREWALL_RULE = '万机 LAN';
+// The pre-rename rule; removed so the old and new rules do not pile up.
+const LEGACY_FIREWALL_RULE = 'Computer MCP LAN';
 
 export const ROUTES = ['auto', 'lan', 'public'];
 
@@ -228,6 +230,7 @@ export function discover(message, { port = DISCOVERY_PORT, timeoutMs = 1500 } = 
 export function allowThroughFirewall(tcpPort) {
   if (process.platform !== 'win32') return 'not needed';
   const program = process.execPath;
+  spawnSync('netsh', ['advfirewall', 'firewall', 'delete', 'rule', `name=${LEGACY_FIREWALL_RULE}`], { windowsHide: true });
   const show = spawnSync('netsh', ['advfirewall', 'firewall', 'show', 'rule', `name=${FIREWALL_RULE}`, 'verbose'], { encoding: 'utf8', windowsHide: true });
   const current = show.stdout || '';
   if (show.status === 0 && current.includes(String(tcpPort)) && current.toLowerCase().includes(program.toLowerCase())) return 'already allowed';

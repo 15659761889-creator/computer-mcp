@@ -40,7 +40,8 @@ export async function choosePort(requested) {
 }
 
 // Join file: the host pre-registers a computer and writes its credentials here;
-// the new computer picks it up on start and joins without a pairing code.
+// the owner then joins with `wanji join --file` (or the Windows manager offers it).
+// The service never reads it on its own.
 export const joinFilePath = () => path.join(homeDir(), 'join.json');
 
 export function readJoinFileAt(file) {
@@ -71,19 +72,6 @@ export function readJoinFileAt(file) {
     throw new Error('加入文件无效：origin 必须是 http:// 或 https:// 开头');
   }
   return { origin, id, key, name: typeof name === 'string' && name ? name : undefined };
-}
-
-export function readJoinFile() {
-  return readJoinFileAt(joinFilePath());
-}
-
-// Reads the join file and deletes it; returns null when there is no file.
-// An invalid file throws and is kept, so the owner can inspect it.
-export function consumeJoinFile() {
-  const joined = readJoinFile();
-  if (!joined) return null;
-  fs.rmSync(joinFilePath(), { force: true });
-  return joined;
 }
 
 export function loadConfig() {

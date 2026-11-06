@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import qrcode from './vendor/qrcode.mjs';
 import {
-  DEFAULT_PORT, choosePort, homeDir, hostnameFor, loadConfig, logDir, memoryPath, newToken, publicLink, readJoinFileAt, requireConfig, saveConfig,
+  DEFAULT_PORT, choosePort, homeDir, hostnameFor, joinFilePath, loadConfig, logDir, memoryPath, newToken, publicLink, readJoinFileAt, requireConfig, saveConfig,
 } from './config.mjs';
 import { MemoryStore, renderLine } from './memory.mjs';
 import {
@@ -53,7 +53,8 @@ const HELP = `wanji: give this computer its own fixed MCP link
       --file <path>           instead, pre-register a computer and write a join file
       --name <name>           name the new computer (default: computer, or computer-2 ...)
   wanji join <code>    add this computer to a main computer; it then starts by itself
-      --file <path>           join from a join file instead of a pairing code
+      --file [path]           join from a join file instead of a pairing code
+                              (no path: join.json in this computer's config folder)
       --name <name>           name the AI sees (default: this computer's name)
       --proxy <url>           proxy for reaching the main computer
   wanji computers      list the computers on this main computer
@@ -343,18 +344,26 @@ async function inviteFileCommand(flags) {
   const target = path.resolve(flags.file);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, `${JSON.stringify({ origin: created.origin, id: created.id, key: created.key, name: created.name }, null, 2)}\n`, { mode: 0o600 });
-  console.log(`加入文件已保存到：${target}\n\n把这个文件复制到新电脑的 %APPDATA%\\computer-mcp\\join.json，\n在新电脑上启动程序就会自动加入，不用输配对码。\n\n注意：这个文件就是凭证，别泄露；新电脑用完后会自动删除。`);
+  console.log(`加入文件已保存到：${target}\n\n把这个文件复制到新电脑的 %APPDATA%\\computer-mcp\\join.json，\n再在新电脑上打开 万机 管理器，确认后就会加入，不用输配对码\n（或者在新电脑上运行：wanji join --file <文件路径>）。\n\n注意：这个文件就是凭证，别泄露；加入成功后会自动删除。`);
+}
+
+// The config a joined computer saves; kept separate so it can be tested
+// without stopping services or installing anything.
+export function joinedConfig(existing, joined, { port, proxy, token }) {
+  return {
+    name: joined.name, port, proxy, token: existing?.token || token, joined: { origin: joined.origin, id: joined.id, key: joined.key },
+  };
 }
 
 // The shared tail of joining: save the credentials, install the app copy and
-// desktop control, set up autostart, and start the service.
-async function finishJoin(existing, joined, flags) {
+// desktop control, set up autostart, and start the service. A join file is
+// deleted only once its credentials are saved, so a failure cannot lose them.
+async function finishJoin(existing, joined, flags, joinFile) {
   const proxy = flags.proxy === true ? undefined : flags.proxy || existing?.proxy;
   await stopService();
   const port = existing?.port || await choosePort();
-  saveConfig({
-    name: joined.name, port, proxy, token: existing?.token || newToken(), joined: { origin, id: joined.id, key: joined.key },
-  });
+  saveConfig(joinedConfig(existing, joined, { port, proxy, token: newToken() }));
+  if (joinFile) fs.rmSync(joinFile, { force: true });
   installAppCopy();
   if (desktopSupported && !flags['no-desktop'] && !desktopInstalled()) {
     try {
@@ -372,10 +381,13 @@ async function finishJoin(existing, joined, flags) {
 async function joinCommand({ flags, positional }) {
   const existing = loadConfig();
   if (existing?.hostname) throw new Error(`this computer already has its own link as "${existing.name}"; run wanji uninstall --delete-tunnel --purge first`);
-  if (typeof flags.file === 'string' && flags.file) {
-    const joined = readJoinFileAt(flags.file);
-    if (!joined) throw new Error(`no join file at ${flags.file}; ask the main computer for one (wanji invite --file <path>)`);
-    return finishJoin(existing, joined, flags);
+  if (flags.file) {
+    // --file alone means the join.json in this computer's config folder.
+    const file = typeof flags.file === 'string' ? path.resolve(flags.file) : joinFilePath();
+    const joined = readJoinFileAt(file);
+    if (!joined) throw new Error(`no join file at ${file}; ask the main computer for one (wanji invite --file <path>)`);
+    const name = joined.name || (typeof flags.name === 'string' ? flags.name : os.hostname().toLowerCase());
+    return finishJoin(existing, { ...joined, name }, flags, file);
   }
   const { origin, code } = parsePair(positional.join(' '));
   const proxy = flags.proxy === true ? undefined : flags.proxy || existing?.proxy;
@@ -706,7 +718,7 @@ export async function main(argv) {
       requireConfig();
       await stopService();
       installAppCopy();
-      writeLauncher();
+      if (process.platform === 'win32') writeLauncher();
       startService();
       console.log('The service now runs this version.');
       return undefined;

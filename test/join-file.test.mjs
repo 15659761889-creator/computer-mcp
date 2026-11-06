@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { Hub } from '../src/hub.mjs';
-import { consumeJoinFile, joinFilePath, readJoinFile, readJoinFileAt } from '../src/config.mjs';
+import { joinFilePath, readJoinFileAt } from '../src/config.mjs';
+import { joinedConfig } from '../src/cli.mjs';
 import { startNodeLink } from '../src/node-link.mjs';
 import { createMcpServer } from '../src/server.mjs';
 
@@ -96,21 +97,28 @@ test('readJoinFileAt rejects invalid join files', () => {
   fs.rmSync(file);
 });
 
-test('consumeJoinFile deletes the file after reading it', () => {
-  const file = joinFilePath();
-  assert.equal(readJoinFile(), null);
-  fs.writeFileSync(file, JSON.stringify({ origin: 'https://hub.example.com', id: '0123456789abcdef', key: 'k'.repeat(43), name: 'desk-3' }));
-  const joined = consumeJoinFile();
-  assert.equal(joined.name, 'desk-3');
-  assert.equal(joined.origin, 'https://hub.example.com');
-  assert.equal(fs.existsSync(file), false);
-  assert.equal(consumeJoinFile(), null);
+test('joinFilePath is join.json in the config folder', () => {
+  assert.equal(joinFilePath(), path.join(home, 'join.json'));
 });
 
-test('consumeJoinFile keeps an invalid file instead of deleting it', () => {
-  const file = joinFilePath();
-  fs.writeFileSync(file, JSON.stringify({ origin: 'https://hub.example.com' }));
-  assert.throws(() => consumeJoinFile(), /缺少 origin\/id\/key/);
-  assert.equal(fs.existsSync(file), true);
-  fs.rmSync(file);
+test('joinedConfig saves the main computer origin from the join file', () => {
+  const key = 'k'.repeat(43);
+  const joined = readJoinFileAt((() => {
+    const file = path.join(home, 'cfg.json');
+    fs.writeFileSync(file, JSON.stringify({ origin: 'https://hub.example.com', id: '0123456789abcdef', key, name: 'desk-4' }));
+    return file;
+  })());
+  fs.rmSync(path.join(home, 'cfg.json'));
+  const fresh = joinedConfig(null, joined, { port: 8765, proxy: undefined, token: 'new-token' });
+  assert.deepEqual(fresh, {
+    name: 'desk-4', port: 8765, proxy: undefined, token: 'new-token', joined: { origin: 'https://hub.example.com', id: '0123456789abcdef', key },
+  });
+  const rejoined = joinedConfig({ token: 'old-token', port: 9000 }, joined, { port: 9000, proxy: 'http://127.0.0.1:7890', token: 'new-token' });
+  assert.equal(rejoined.token, 'old-token');
+  assert.equal(rejoined.joined.origin, 'https://hub.example.com');
+});
+
+test('the service does not read join.json on its own', () => {
+  const source = fs.readFileSync(new URL('../src/service.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /readJoinFile|joinFilePath|consumeJoinFile/);
 });
