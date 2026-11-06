@@ -4,11 +4,14 @@ import path from 'node:path';
 import { homeDir } from './config.mjs';
 
 // License keys use the same unambiguous alphabet as pairing codes (no 0/O, 1/I/L).
-// 16 characters = 80 bits; brute force is infeasible, so v1 has no rate limiting.
 export const LICENSE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
 export const LICENSE_CACHE_MS = 24 * 60 * 60 * 1000;
 export const MAX_MACHINES_PER_KEY = 5;
 export const PADDLE_TOLERANCE_MS = 300 * 1000;
+export const VERIFY_RATE_WINDOW_MS = 60 * 1000;
+export const VERIFY_RATE_IP_MAX = 60;
+export const VERIFY_RATE_ACCOUNT_MAX = 10;
+const verifyRateBuckets = new Map();
 // v1 license server: the owner's hub, already public. Override with --server or
 // WANJI_LICENSE_SERVER; a buyer never needs to know it, it is in the Paddle email.
 export const DEFAULT_LICENSE_SERVER = 'https://pc-test-mcp.3618.app';
@@ -133,7 +136,10 @@ export function revokeLicense(dir, keyOrPrefix) {
 function extendLicenseBySubscription(dir, subscriptionId, endsAt) {
   const found = findLicenseBySubscription(dir, subscriptionId);
   if (!found || found.record.status !== 'active') return null;
-  if (endsAt && Number.isFinite(Date.parse(endsAt))) found.record.expiresAt = new Date(endsAt).toISOString();
+  if (endsAt && Number.isFinite(Date.parse(endsAt))
+    && (!Number.isFinite(Date.parse(found.record.expiresAt || '')) || Date.parse(endsAt) > Date.parse(found.record.expiresAt))) {
+    found.record.expiresAt = new Date(endsAt).toISOString();
+  }
   writeRecord(dir, found.keyHash, found.record);
   return found;
 }
@@ -149,7 +155,7 @@ function revokeLicenseBySubscription(dir, subscriptionId) {
 // The license server's check. A successful check binds the machine (first 5).
 export function verifyLicense(dir, key, machineId) {
   if (!validKeyFormat(key)) return { valid: false, reason: 'invalid' };
-  if (typeof machineId !== 'string' || !machineId) return { valid: false, reason: 'invalid' };
+  if (typeof machineId !== 'string' || !machineId || machineId.length > 128) return { valid: false, reason: 'invalid' };
   const record = readLicense(dir, key);
   if (!record) return { valid: false, reason: 'invalid' };
   if (record.status !== 'active') return { valid: false, reason: 'revoked', expiresAt: record.expiresAt };
@@ -164,8 +170,20 @@ export function verifyLicense(dir, key, machineId) {
   return { valid: true, plan: record.plan || 'pro', expiresAt: record.expiresAt };
 }
 
-// What the relay checks on every request for a license-linked account: the store is
-// the source of truth, so a revoke takes effect at once.
+export function unbindLicenseMachine(dir, key, machineId) {
+  if (!validKeyFormat(key) || typeof machineId !== 'string' || !machineId || machineId.length > 128) {
+    return { unbound: false, reason: 'invalid' };
+  }
+  const record = readLicense(dir, key);
+  if (!record) return { unbound: false, reason: 'invalid' };
+  const machines = Array.isArray(record.machines) ? record.machines : [];
+  if (!machines.includes(machineId)) return { unbound: false, reason: 'not-bound' };
+  record.machines = machines.filter((id) => id !== machineId);
+  writeRecord(dir, keyHash(key), record);
+  return { unbound: true, machinesRemaining: record.machines.length };
+}
+
+// Local relays use the license store directly; separate relays query /license/status.
 export function licenseActive(dir, hashHex) {
   const record = readLicenseByHash(dir, hashHex);
   if (!record) return { active: false, reason: 'invalid' };
@@ -217,6 +235,34 @@ export async function verifyRemote(server, key, machineId) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ key, machineId }),
     signal: AbortSignal.timeout(10000),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`license server answered ${res.status}`);
+  return body;
+}
+
+export async function unbindRemote(server, key, machineId) {
+  const origin = String(server || '').replace(/\/$/, '');
+  if (!/^https?:\/\//.test(origin)) throw new Error('license server must be an http(s) URL');
+  const res = await fetch(`${origin}/license/unbind`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, machineId }),
+    signal: AbortSignal.timeout(10000),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`license server answered ${res.status}`);
+  return body;
+}
+
+export async function licenseStatusRemote(server, hashHex) {
+  const origin = String(server || '').replace(/\/$/, '');
+  if (!/^https?:\/\//.test(origin)) throw new Error('license server must be an http(s) URL');
+  const res = await fetch(`${origin}/license/status`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ keyHash: hashHex }),
+    signal: AbortSignal.timeout(5000),
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`license server answered ${res.status}`);
@@ -329,14 +375,16 @@ export function clearPendingDelivery(dir, keyOrPrefix) {
   return true;
 }
 
-// Paddle event shapes are read defensively: the fields we need have moved between
-// API versions, so every lookup has a fallback and a missing expiry means 30 days.
+// Paddle sends the billing period on transactions and subscriptions under different names.
 export function handlePaddleEvent(dir, event) {
   const type = event?.event_type;
   const data = event?.data && typeof event.data === 'object' ? event.data : {};
+  const subscription = data.subscription && typeof data.subscription === 'object' ? data.subscription : {};
   const email = data.customer?.email || data.customer_email || null;
-  const subscriptionId = data.subscription_id || data.id || null;
-  const endsAt = data.current_billing_period?.ends_at || data.next_billed_at || data.ends_at || null;
+  const subscriptionId = data.subscription_id || subscription.id || data.id || null;
+  const endsAt = data.billing_period?.ends_at || data.current_billing_period?.ends_at
+    || subscription.current_billing_period?.ends_at || subscription.billing_period?.ends_at
+    || data.next_billed_at || data.ends_at || subscription.next_billed_at || null;
   const daysFrom = (iso) => (iso && Number.isFinite(Date.parse(iso))
     ? Math.max(1, Math.ceil((Date.parse(iso) - Date.now()) / 86400000)) : 30);
   if (type === 'subscription.created' || type === 'subscription.activated') {
@@ -350,7 +398,7 @@ export function handlePaddleEvent(dir, event) {
     queuePendingDelivery(dir, key, email);
     return { handled: true, action: 'created', keyHash: keyHash(key), email, expiresAt: record.expiresAt };
   }
-  if (type === 'transaction.completed') {
+  if (type === 'transaction.completed' || (type === 'subscription.updated' && data.status === 'active')) {
     const kept = extendLicenseBySubscription(dir, subscriptionId, endsAt);
     if (!kept) return { handled: false, reason: 'no license for this subscription' };
     return { handled: true, action: 'extended', keyHash: kept.keyHash, email: kept.record.email };
@@ -365,11 +413,33 @@ export function handlePaddleEvent(dir, event) {
   return { handled: false, reason: 'ignored event type' };
 }
 
-// ---- HTTP: the license server's two routes ----
+// ---- HTTP: License Server verification, status, unbind and Paddle webhook routes ----
 
-function reply(res, status, body) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+function reply(res, status, body, headers = {}) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
   res.end(JSON.stringify(body));
+}
+
+function verifyRateLimit(req, key, now = Date.now(), accountHash = null) {
+  for (const [bucket, entry] of verifyRateBuckets) {
+    if (entry.resetAt <= now) verifyRateBuckets.delete(bucket);
+  }
+  const buckets = [[`ip:${req.socket?.remoteAddress || 'unknown'}`, VERIFY_RATE_IP_MAX]];
+  if (validKeyFormat(key)) buckets.push([`account:${keyHash(key)}`, VERIFY_RATE_ACCOUNT_MAX]);
+  else if (/^[a-f0-9]{64}$/i.test(String(accountHash || ''))) {
+    buckets.push([`account:${String(accountHash).toLowerCase()}`, VERIFY_RATE_ACCOUNT_MAX]);
+  }
+  const limited = buckets.map(([name, max]) => {
+    const entry = verifyRateBuckets.get(name);
+    return entry && entry.count >= max ? entry : null;
+  }).find(Boolean);
+  if (limited) return Math.max(1, Math.ceil((limited.resetAt - now) / 1000));
+  for (const [name] of buckets) {
+    const entry = verifyRateBuckets.get(name);
+    if (!entry || entry.resetAt <= now) verifyRateBuckets.set(name, { count: 1, resetAt: now + VERIFY_RATE_WINDOW_MS });
+    else entry.count += 1;
+  }
+  return 0;
 }
 
 function readBody(req, maxBytes) {
@@ -391,12 +461,29 @@ function readBody(req, maxBytes) {
 }
 
 export async function handleLicenseHttp(req, res, pathname, dir = licensesDir()) {
-  if (pathname === '/license/verify' && req.method === 'POST') {
+  if ((pathname === '/license/verify' || pathname === '/license/unbind' || pathname === '/license/status') && req.method === 'POST') {
     let body;
     try {
       body = JSON.parse((await readBody(req, 16384)).toString('utf8'));
     } catch {
       reply(res, 400, { error: 'invalid JSON' });
+      return;
+    }
+    if (pathname === '/license/status' && !/^[a-f0-9]{64}$/i.test(String(body?.keyHash || ''))) {
+      reply(res, 400, { error: 'invalid license hash' });
+      return;
+    }
+    const retryAfter = verifyRateLimit(req, body?.key, Date.now(), pathname === '/license/status' ? body.keyHash : null);
+    if (retryAfter) {
+      reply(res, 429, { error: 'too many license requests; try again later' }, { 'Retry-After': String(retryAfter) });
+      return;
+    }
+    if (pathname === '/license/unbind') {
+      reply(res, 200, unbindLicenseMachine(dir, body?.key, body?.machineId));
+      return;
+    }
+    if (pathname === '/license/status') {
+      reply(res, 200, licenseActive(dir, String(body.keyHash).toLowerCase()));
       return;
     }
     reply(res, 200, verifyLicense(dir, body?.key, body?.machineId));

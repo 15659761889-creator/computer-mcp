@@ -9,7 +9,7 @@ import { after, before, test } from 'node:test';
 import { buildCsr, needsRenewal } from '../src/acme.mjs';
 import { parsePair } from '../src/hub.mjs';
 import { joinHub, startNodeLink } from '../src/node-link.mjs';
-import { createAccount, createSignup, readAccount, Relay, removeAccount } from '../src/relay.mjs';
+import { createAccount, readAccount, Relay, removeAccount } from '../src/relay.mjs';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmcp-relay-'));
 let relay;
@@ -18,7 +18,7 @@ let base;
 const links = [];
 
 before(async () => {
-  const config = { host: '127.0.0.1', tls: 'none', origin: 'https://relay.example.com', shared: true };
+  const config = { host: '127.0.0.1', tls: 'none', origin: 'https://relay.example.com', shared: false };
   relay = new Relay({ dir, config });
   server = http.createServer((req, res) => relay.handle(req, res));
   await new Promise((resolve) => { server.listen(0, '127.0.0.1', resolve); });
@@ -40,13 +40,10 @@ const post = (pathname, body, key) => fetch(`${base}${pathname}`, {
 });
 
 async function signUp() {
-  const { code } = createSignup(dir);
-  const res = await post('/relay/signup', { code });
-  assert.equal(res.status, 200);
-  const { adminKey } = await res.json();
-  assert.equal((await post('/relay/signup', { code })).status, 403, 'an invite works once');
+  const { id, adminKey } = createAccount(dir);
+  relay.sync();
   const status = await (await fetch(`${base}/hub/api/status`, { headers: { Authorization: `Bearer ${adminKey}` } })).json();
-  return { adminKey, token: status.mcp.key, status };
+  return { id, adminKey, token: status.mcp.key, status };
 }
 
 async function call(token, name, args) {

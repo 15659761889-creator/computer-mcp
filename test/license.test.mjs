@@ -10,9 +10,9 @@ import {
   clearPendingDelivery, createLicense, formatKey, generateKey, handleLicenseHttp, handlePaddleEvent,
   keyHash, licenseActive, licensesDir, listLicenses, listPendingDeliveries, localLicenseStatus,
   newMachineId, normalizeKey, readLicense, readLocalLicense, refreshLocalLicense, removeLocalLicense, revokeLicense,
-  saveLocalLicense, validKeyFormat, verifyLicense, verifyPaddleSignature, verifyRemote,
+  saveLocalLicense, unbindLicenseMachine, unbindRemote, validKeyFormat, verifyLicense, verifyPaddleSignature, verifyRemote,
 } from '../src/license.mjs';
-import { createSignup, Relay } from '../src/relay.mjs';
+import { createAccount, createSignup, Relay } from '../src/relay.mjs';
 import { joinHub } from '../src/node-link.mjs';
 import { createMcpServer } from '../src/server.mjs';
 
@@ -118,6 +118,8 @@ test('verify binds machines and refuses the rest', () => {
   assert.equal(readLicense(licDir, key).machines.length, 1, 'the same machine is not counted twice');
   for (const m of ['m2', 'm3', 'm4', 'm5']) assert.equal(verifyLicense(licDir, key, m).valid, true);
   assert.deepEqual(verifyLicense(licDir, key, 'm6'), { valid: false, reason: 'too-many-machines', expiresAt: readLicense(licDir, key).expiresAt });
+  assert.deepEqual(unbindLicenseMachine(licDir, key, 'm3'), { unbound: true, machinesRemaining: 4 });
+  assert.equal(verifyLicense(licDir, key, 'm6').valid, true, 'an unbound slot can be used by another machine');
   assert.equal(verifyLicense(licDir, generateKey(), 'm1').reason, 'invalid', 'an unknown key is invalid');
   assert.equal(verifyLicense(licDir, 'garbage', 'm1').reason, 'invalid');
   assert.equal(licenseActive(licDir, keyHash(key)).active, true);
@@ -151,6 +153,30 @@ test('the license verify endpoint answers without a login', async () => {
   const verdict = await verifyRemote(verifyBase, key, 'http-m1');
   assert.equal(verdict.valid, true);
   assert.equal(verdict.plan, 'pro');
+});
+
+test('license verification is rate-limited per account', async () => {
+  const { key } = createLicense(licDir, { email: 'rate-limit@example.com', days: 30 });
+  for (let i = 0; i < 10; i += 1) {
+    const res = await fetch(`${verifyBase}/license/verify`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, machineId: 'rate-limit-machine' }),
+    });
+    assert.equal(res.status, 200);
+  }
+  const limited = await fetch(`${verifyBase}/license/verify`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, machineId: 'rate-limit-machine' }),
+  });
+  assert.equal(limited.status, 429);
+  assert.ok(Number(limited.headers.get('retry-after')) > 0);
+});
+
+test('a license owner can unbind a machine through the License Server', async () => {
+  const { key } = createLicense(licDir, { email: 'unbind@example.com', days: 30 });
+  assert.equal((await verifyRemote(verifyBase, key, 'old-machine')).valid, true);
+  assert.deepEqual(await unbindRemote(verifyBase, key, 'old-machine'), { unbound: true, machinesRemaining: 0 });
+  assert.equal((await verifyRemote(verifyBase, key, 'replacement-machine')).valid, true);
 });
 
 test('the local license caches for a day and re-checks against the server', async () => {
@@ -237,8 +263,19 @@ test('Paddle signatures verify and events create, extend and revoke', () => {
   assert.equal(again.action, 'extended');
   assert.equal(again.keyHash, created.keyHash, 'a repeated event does not make a second key');
   assert.equal(listPendingDeliveries(licDir).length, 1);
-  const completed = handlePaddleEvent(licDir, { event_type: 'transaction.completed', data: { subscription_id: 'sub_test_1', current_billing_period: { ends_at: FUTURE } } });
+  const issuedKey = listPendingDeliveries(licDir)[0].key;
+  const renewedUntil = new Date(Date.now() + 90 * 86400000).toISOString();
+  const completed = handlePaddleEvent(licDir, { event_type: 'transaction.completed', data: { subscription_id: 'sub_test_1', billing_period: { ends_at: renewedUntil } } });
   assert.equal(completed.action, 'extended');
+  assert.equal(readLicense(licDir, issuedKey).expiresAt, renewedUntil, 'transaction billing_period extends the paid-through date');
+  const renewedAgainUntil = new Date(Date.now() + 120 * 86400000).toISOString();
+  const updated = handlePaddleEvent(licDir, { event_type: 'subscription.updated', data: { id: 'sub_test_1', status: 'active', current_billing_period: { ends_at: renewedAgainUntil } } });
+  assert.equal(updated.action, 'extended');
+  assert.equal(readLicense(licDir, issuedKey).expiresAt, renewedAgainUntil, 'active subscription.updated also extends the license');
+  const associatedUntil = new Date(Date.now() + 150 * 86400000).toISOString();
+  const associated = handlePaddleEvent(licDir, { event_type: 'transaction.completed', data: { subscription: { id: 'sub_test_1', current_billing_period: { ends_at: associatedUntil } } } });
+  assert.equal(associated.action, 'extended');
+  assert.equal(readLicense(licDir, issuedKey).expiresAt, associatedUntil, 'an associated subscription is a fallback billing-period source');
   const canceled = handlePaddleEvent(licDir, { event_type: 'subscription.canceled', data: { subscription_id: 'sub_test_1' } });
   assert.equal(canceled.action, 'revoked');
   assert.equal(handlePaddleEvent(licDir, { event_type: 'something.else', data: {} }).handled, false);
@@ -267,14 +304,18 @@ test('the Paddle webhook needs its secret and a good signature', async () => {
   }
 });
 
-test('a relay account from a license key works until the key is revoked', async () => {
+test('a license creates one relay account but cannot recover its admin key', async () => {
   const { key } = createLicense(licDir, { email: 'relay-buyer@example.com', days: 30 });
+  assert.throws(() => createSignup(path.join(home, 'relay')), /valid license key is required/);
+  assert.equal((await relayPost('/relay/signup', {})).status, 403, 'a signup without a license or invite is refused');
+  assert.equal((await relayPost('/relay/signup', { code: 'old-free-invite' })).status, 403, 'an invite without a license cannot create a shared account');
   const first = await relayPost('/relay/signup', { licenseKey: key, machineId: 'buyer-pc' });
   assert.equal(first.status, 200);
   const { adminKey } = await first.json();
   const again = await relayPost('/relay/signup', { licenseKey: key, machineId: 'buyer-phone' });
-  assert.equal(again.status, 200);
-  assert.equal((await again.json()).adminKey, adminKey, 'the same key returns the same account');
+  assert.equal(again.status, 403);
+  assert.match((await again.json()).error, /已经创建过中继账号/);
+  assert.ok(adminKey, 'the first signup returns the new account key');
   const badKey = await relayPost('/relay/signup', { licenseKey: generateKey(), machineId: 'x' });
   assert.equal(badKey.status, 403);
   const status = await (await fetch(`${relayBase}/hub/api/status`, { headers: { Authorization: `Bearer ${adminKey}` } })).json();
@@ -287,10 +328,97 @@ test('a relay account from a license key works until the key is revoked', async 
   assert.equal(afterRevoke.status, 402, 'a revoked license stops the account at once');
   const mcp = await relayPost(`/t/${status.mcp.key}/mcp`, { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
   assert.equal(mcp.status, 402, 'a revoked license stops MCP too');
-  const { code } = createSignup(path.join(home, 'relay'));
+  const { key: invitedKey } = createLicense(licDir, { email: 'relay-invite@example.com', days: 30 });
+  const legacy = createAccount(path.join(home, 'relay'));
+  relay.sync();
+  const legacyStatus = await fetch(`${relayBase}/hub/api/status`, { headers: { Authorization: `Bearer ${legacy.adminKey}` } });
+  assert.equal(legacyStatus.status, 402, 'an old shared-relay account without a license is blocked');
+  const { code } = createSignup(path.join(home, 'relay'), invitedKey);
   const operator = await relayPost('/relay/signup', { code });
   assert.equal(operator.status, 200);
   const opAdmin = (await operator.json()).adminKey;
   const opStatus = await fetch(`${relayBase}/hub/api/status`, { headers: { Authorization: `Bearer ${opAdmin}` } });
-  assert.equal(opStatus.status, 200, 'an operator-made account needs no license');
+  assert.equal(opStatus.status, 200, 'an invite is backed by a verified license');
+  assert.equal((await relayPost('/relay/signup', { code })).status, 403, 'a licensed invite is one use');
+});
+
+test('an isolated shared relay verifies an invite against a remote License Server', async () => {
+  const { key } = createLicense(licDir, { email: 'remote-relay@example.com', days: 30 });
+  const remoteHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cmcp-remote-relay-'));
+  const remoteDir = path.join(remoteHome, 'relay');
+  const { code } = createSignup(remoteDir, key);
+  const remoteRelay = new Relay({
+    dir: remoteDir,
+    config: { host: '127.0.0.1', tls: 'none', origin: 'https://remote-relay.example.com', shared: true, licenseServer: verifyBase },
+  });
+  const remoteServer = http.createServer((req, res) => remoteRelay.handle(req, res));
+  await new Promise((resolve) => { remoteServer.listen(0, '127.0.0.1', resolve); });
+  const remoteBase = `http://127.0.0.1:${remoteServer.address().port}`;
+  const previousHome = process.env.COMPUTER_MCP_HOME;
+  process.env.COMPUTER_MCP_HOME = remoteHome;
+  try {
+    assert.equal(fs.existsSync(licensesDir(remoteHome)), false, 'the relay has no local license directory');
+    const signup = await fetch(`${remoteBase}/relay/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
+    });
+    assert.equal(signup.status, 200);
+    assert.deepEqual(readLicense(licDir, key).machines, ['relay:127.0.0.1'],
+      'a code signup uses a stable relay machine id that can be unbound later');
+    const { adminKey } = await signup.json();
+    let status = await fetch(`${remoteBase}/hub/api/status`, { headers: { Authorization: `Bearer ${adminKey}` } });
+    assert.equal(status.status, 200, 'remote verification authorizes the new account');
+    const firstStatus = await status.json();
+    const renewedUntil = new Date(Date.now() + 180 * 86400000).toISOString();
+    const licenseFile = path.join(licDir, `${keyHash(key)}.json`);
+    const licenseRecord = JSON.parse(fs.readFileSync(licenseFile, 'utf8'));
+    licenseRecord.expiresAt = renewedUntil;
+    fs.writeFileSync(licenseFile, JSON.stringify(licenseRecord));
+    remoteRelay.licenseStatusCache.delete(keyHash(key));
+    status = await fetch(`${remoteBase}/hub/api/status`, { headers: { Authorization: `Bearer ${adminKey}` } });
+    assert.equal(status.status, 200);
+    assert.equal((await status.json()).license.expiresAt, renewedUntil,
+      'the remote relay refreshes the paid-through date after Paddle renews the license');
+    assert.ok(Date.parse(firstStatus.license.expiresAt) < Date.parse(renewedUntil));
+    assert.equal((await fetch(`${remoteBase}/relay/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
+    })).status, 403, 'the invite token cannot be replayed');
+    revokeLicense(licDir, key);
+    remoteRelay.licenseStatusCache.delete(keyHash(key));
+    assert.equal((await fetch(`${remoteBase}/hub/api/status`, { headers: { Authorization: `Bearer ${adminKey}` } })).status, 402,
+      'a remote revocation blocks the relay account after its status refresh');
+    const { key: racingKey } = createLicense(licDir, { email: 'remote-race@example.com', days: 30 });
+    const racingRequests = await Promise.all(['race-a', 'race-b'].map((machineId) => fetch(`${remoteBase}/relay/signup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ licenseKey: racingKey, machineId }),
+    })));
+    assert.deepEqual(racingRequests.map((response) => response.status).sort(), [200, 403],
+      'concurrent attempts with one license create only one account');
+    const free = createAccount(remoteDir);
+    remoteRelay.sync();
+    assert.equal((await fetch(`${remoteBase}/hub/api/status`, { headers: { Authorization: `Bearer ${free.adminKey}` } })).status, 402,
+      'an account without a license is not admitted on a shared relay');
+  } finally {
+    process.env.COMPUTER_MCP_HOME = previousHome;
+    remoteRelay.close();
+    remoteServer.closeAllConnections();
+    remoteServer.close();
+    fs.rmSync(remoteHome, { recursive: true, force: true });
+  }
+});
+
+test('license verification is rate-limited per IP across different keys', async () => {
+  let limited = false;
+  for (let i = 0; i < 60; i += 1) {
+    const { key } = createLicense(licDir, { email: `ip-limit-${i}@example.com`, days: 30 });
+    const res = await fetch(`${verifyBase}/license/verify`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key, machineId: `ip-limit-machine-${i}` }),
+    });
+    if (res.status === 429) {
+      limited = true;
+      assert.ok(Number(res.headers.get('retry-after')) > 0);
+      break;
+    }
+    assert.equal(res.status, 200);
+  }
+  assert.equal(limited, true, 'different license keys from the same IP still hit the IP limit');
 });

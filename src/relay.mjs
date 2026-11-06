@@ -9,7 +9,7 @@ import { homeDir } from './config.mjs';
 import { Hub, loadHubState } from './hub.mjs';
 import { Transfers, transfersFile } from './transfer.mjs';
 import { sendJson, serveMcp } from './server.mjs';
-import { handleLicenseHttp, keyHash, licenseActive, licensesDir, verifyLicense } from './license.mjs';
+import { handleLicenseHttp, keyHash, licenseActive, licenseStatusRemote, licensesDir, validKeyFormat, verifyLicense, verifyRemote } from './license.mjs';
 
 // A relay is a hub on a rented server: it has no machine of its own, every computer connects
 // out to it, and it holds one account per person. Self-hosted, it holds exactly one.
@@ -20,17 +20,34 @@ const RETRY_CERT_MS = 10 * 60 * 1000;
 const SIGNUP_DAYS = 7;
 const JOIN_WINDOW_MS = 10 * 60 * 1000;
 const MAX_JOIN_FAILURES = 20;
+const REMOTE_LICENSE_CACHE_MS = 60 * 1000;
 
 const hash = (value) => createHash('sha256').update(String(value)).digest();
 const sameSecret = (a, b) => typeof a === 'string' && typeof b === 'string' && timingSafeEqual(hash(a), hash(b));
 const bearer = (req) => /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '')?.[1];
 
-// Accounts the operator made (invite/app) have no license attached and are exempt.
-// A license-linked account is served only while its license is active in the store,
-// so a revoke takes effect at once.
-const relayAccountOk = (hub) => {
+// Shared relays require a paid license. A separate relay refreshes status from the
+// License Server periodically and uses the last known expiry during a short outage.
+const relayAccountOk = async (hub, shared, cache) => {
   const link = hub.state.license;
-  if (!link?.keyHash) return true;
+  if (!link?.keyHash) return !shared;
+  if (link.server) {
+    const now = Date.now();
+    const cached = cache.get(link.keyHash);
+    if (cached && now - cached.checkedAt < REMOTE_LICENSE_CACHE_MS) return cached.active;
+    try {
+      const verdict = await licenseStatusRemote(link.server, link.keyHash);
+      const active = verdict.active === true;
+      if (active && verdict.expiresAt && verdict.expiresAt !== link.expiresAt) {
+        link.expiresAt = verdict.expiresAt;
+        hub.save();
+      }
+      cache.set(link.keyHash, { active, checkedAt: now });
+      return active;
+    } catch {
+      return Number.isFinite(Date.parse(link.expiresAt)) && Date.parse(link.expiresAt) > now;
+    }
+  }
   return licenseActive(licensesDir(), link.keyHash).active;
 };
 
@@ -95,11 +112,12 @@ export function removeAccount(dir, id) {
 }
 
 // One file per code, so the CLI adding codes and the service using them never write the same file.
-export function createSignup(dir = relayDir()) {
+export function createSignup(dir = relayDir(), licenseKey) {
+  if (!validKeyFormat(licenseKey)) throw new Error('a valid license key is required for a shared-relay invite');
   const code = randomBytes(12).toString('base64url');
   fs.mkdirSync(signupsDir(dir), { recursive: true });
   const file = path.join(signupsDir(dir), `${hash(code).toString('hex')}.json`);
-  fs.writeFileSync(file, JSON.stringify({ expires: Date.now() + SIGNUP_DAYS * 86400000 }), { mode: 0o600 });
+  fs.writeFileSync(file, JSON.stringify({ expires: Date.now() + SIGNUP_DAYS * 86400000, licenseKey }), { mode: 0o600 });
   return { code, days: SIGNUP_DAYS };
 }
 
@@ -119,6 +137,8 @@ export class Relay {
     this.hubs = new Map();
     this.challenges = new Map();
     this.joinFailures = [];
+    this.licenseSignups = new Set();
+    this.licenseStatusCache = new Map();
     this.sync();
     this.syncer = setInterval(() => this.sync(), SYNC_MS);
     this.syncer.unref();
@@ -159,7 +179,7 @@ export class Relay {
     return null;
   }
 
-  signup(code) {
+  async signup(code, machineId) {
     if (typeof code !== 'string' || !code) return null;
     const file = path.join(signupsDir(this.dir), `${hash(code).toString('hex')}.json`);
     let entry;
@@ -168,32 +188,48 @@ export class Relay {
     } catch {
       return null;
     }
-    fs.rmSync(file, { force: true });
-    if (entry.expires < Date.now()) return null;
-    const account = createAccount(this.dir);
-    this.sync();
-    return account;
+    if (entry.expires < Date.now() || !validKeyFormat(entry.licenseKey)) {
+      fs.rmSync(file, { force: true });
+      return null;
+    }
+    const result = await this.signupWithLicense(entry.licenseKey, machineId);
+    if (result && !result.error) fs.rmSync(file, { force: true });
+    return result;
   }
 
-  // A buyer signs up with a license key instead of an operator invite. The key
-  // owns one account: signing up again returns the same account (a new phone).
-  signupWithLicense(key, machineId) {
-    const verdict = verifyLicense(licensesDir(), key, machineId);
-    if (!verdict.valid) return { error: verdict.reason };
+  // A license can create one relay account, but cannot recover that account's admin key.
+  async signupWithLicense(key, machineId) {
+    if (!validKeyFormat(key)) return { error: 'invalid' };
     const hashHex = keyHash(key);
-    for (const id of listAccounts(this.dir)) {
-      const state = readAccount(this.dir, id);
-      if (state.license?.keyHash === hashHex) {
-        this.sync();
-        return { id, adminKey: state.adminKey };
-      }
+    if (this.licenseSignups.has(hashHex)
+      || listAccounts(this.dir).some((id) => readAccount(this.dir, id).license?.keyHash === hashHex)) {
+      return { error: 'already-registered' };
     }
-    const account = createAccount(this.dir);
-    const state = readAccount(this.dir, account.id);
-    state.license = { keyHash: hashHex, plan: verdict.plan || 'pro', expiresAt: verdict.expiresAt };
-    fs.writeFileSync(accountFile(this.dir, account.id), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-    this.sync();
-    return account;
+    this.licenseSignups.add(hashHex);
+    try {
+      const server = this.config.licenseServer || process.env.WANJI_LICENSE_SERVER || null;
+      const boundMachine = machineId || `relay:${this.config.host}`;
+      let verdict;
+      try {
+        verdict = server
+          ? await verifyRemote(server, key, boundMachine)
+          : verifyLicense(licensesDir(), key, boundMachine);
+      } catch {
+        return { error: 'license-server-unavailable' };
+      }
+      if (!verdict.valid) return { error: verdict.reason || 'invalid' };
+      const account = createAccount(this.dir);
+      const state = readAccount(this.dir, account.id);
+      state.license = {
+        keyHash: hashHex, plan: verdict.plan || 'pro', expiresAt: verdict.expiresAt,
+        ...(server ? { server } : {}),
+      };
+      fs.writeFileSync(accountFile(this.dir, account.id), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+      this.sync();
+      return account;
+    } finally {
+      this.licenseSignups.delete(hashHex);
+    }
   }
 
   async handle(req, res) {
@@ -208,7 +244,7 @@ export class Relay {
         res.end();
         return;
       }
-      if (pathname === '/license/verify' || pathname === '/license/webhook') {
+      if (pathname === '/license/verify' || pathname === '/license/unbind' || pathname === '/license/status' || pathname === '/license/webhook') {
         await handleLicenseHttp(req, res, pathname, licensesDir());
         return;
       }
@@ -219,30 +255,32 @@ export class Relay {
       if (pathname === '/relay/signup' && req.method === 'POST') {
         const body = await readSmallJson(req);
         const en = String(req.headers['x-app-lang'] || '').toLowerCase().startsWith('en');
-        if (body.licenseKey) {
+        if (body.licenseKey || body.code) {
           if (!this.config.shared) {
             sendJson(res, 403, { error: en ? 'This relay serves one person' : '这个中继只服务一个人' });
             return;
           }
-          const result = this.signupWithLicense(body.licenseKey, body.machineId);
-          if (result.error) {
+          const result = body.licenseKey
+            ? await this.signupWithLicense(body.licenseKey, body.machineId)
+            : await this.signup(body.code, body.machineId);
+          if (!result || result.error) {
             const why = {
               invalid: en ? 'This license key is not valid' : '这个许可证密钥无效',
               expired: en ? 'This license has expired' : '这个许可证已过期',
               revoked: en ? 'This license was revoked' : '这个许可证已被作废',
               'too-many-machines': en ? 'This license is already used on too many computers' : '这个许可证已在太多台电脑上用过',
-            }[result.error] || (en ? 'This license key is not valid' : '这个许可证密钥无效');
+              'already-registered': en ? 'This license already has a relay account. Use that account’s app key instead.' : '这个许可证已经创建过中继账号，请使用该账号的管理密钥连接',
+              'license-server-unavailable': en ? 'Could not reach the license server' : '暂时无法连接许可证服务器',
+            }[result?.error] || (en ? 'This invite is invalid or has expired' : '这个邀请无效或已过期');
             sendJson(res, 403, { error: why });
             return;
           }
           sendJson(res, 200, { adminKey: result.adminKey });
           return;
         }
-        const account = this.config.shared ? this.signup(body.code) : null;
-        if (account) sendJson(res, 200, { adminKey: account.adminKey });
-        else sendJson(res, 403, { error: en
-          ? 'This invite has expired or was already used. Ask the service provider for a new one'
-          : '这个邀请已失效或已被使用，请向服务提供者重新要一个' });
+        sendJson(res, 403, { error: en
+          ? 'This invite is invalid or has expired. Ask the service provider for a licensed invite'
+          : '这个邀请无效或已过期，请向服务提供者索取许可证邀请' });
         return;
       }
       if (pathname === '/hub/join' && req.method === 'POST') {
@@ -256,7 +294,7 @@ export class Relay {
           sendJson(res, 401, { error: 'this computer has been removed' });
           return;
         }
-        if (!relayAccountOk(hub)) {
+        if (!(await relayAccountOk(hub, this.config.shared, this.licenseStatusCache))) {
           sendJson(res, 402, { error: "this account's license has expired or was revoked" });
           return;
         }
@@ -269,7 +307,7 @@ export class Relay {
           sendJson(res, 401, { error: 'unauthorized' });
           return;
         }
-        if (!relayAccountOk(hub)) {
+        if (!(await relayAccountOk(hub, this.config.shared, this.licenseStatusCache))) {
           sendJson(res, 402, { error: "this account's license has expired or was revoked" });
           return;
         }
@@ -284,7 +322,7 @@ export class Relay {
           sendJson(res, pathToken ? 404 : 401, { error: pathToken ? 'not found' : 'unauthorized' });
           return;
         }
-        if (!relayAccountOk(hub)) {
+        if (!(await relayAccountOk(hub, this.config.shared, this.licenseStatusCache))) {
           sendJson(res, 402, { error: "this account's license has expired or was revoked" });
           return;
         }
@@ -318,7 +356,7 @@ export class Relay {
       sendJson(res, 403, { error: 'this pairing code is wrong, expired or already used' });
       return;
     }
-    if (!relayAccountOk(hub)) {
+    if (!(await relayAccountOk(hub, this.config.shared, this.licenseStatusCache))) {
       sendJson(res, 402, { error: "this account's license has expired or was revoked" });
       return;
     }

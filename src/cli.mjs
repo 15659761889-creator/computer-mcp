@@ -27,7 +27,7 @@ import {
 import {
   DEFAULT_LICENSE_SERVER, clearPendingDelivery, createLicense, listLicenses, listPendingDeliveries,
   licensesDir, localLicenseStatus, newMachineId, readLocalLicense, removeLocalLicense, revokeLicense,
-  saveLocalLicense, verifyRemote,
+  saveLocalLicense, unbindRemote, verifyRemote,
 } from './license.mjs';
 import { runQuick } from './quick.mjs';
 import {
@@ -78,7 +78,8 @@ const HELP = `wanji: give this computer its own fixed MCP link
                               never uses the LAN. On a joined computer, leave out the name.
   wanji relay setup    make this rented server the relay all computers connect to
       --host <ip|domain>      this server's public IP or domain (required)
-      --shared                serve several people, each signing up with an invite
+      --shared                serve several people, each signing up with a licensed invite
+      --license-server <url>  remote License Server for a separate relay (or WANJI_LICENSE_SERVER)
       --tls acme|files|none   acme (default) gets a free certificate itself on port 80
       --staging               use Let's Encrypt's test service
       --port <n>              HTTPS port (default 443); with --tls none, the local HTTP port
@@ -86,12 +87,13 @@ const HELP = `wanji: give this computer its own fixed MCP link
       --cert <file> --key <file>   certificate files for --tls files
   wanji relay run      run the relay in the foreground (what the system service calls)
   wanji relay app      show the QR code that connects the phone app (one-person relay)
-  wanji relay invite   make an invite for one more person (shared relay)
+  wanji relay invite <licenseKey>  make a one-use signup invite for a licensed customer
   wanji relay users    list the people on this relay
   wanji relay remove-user <id>
   wanji license [key]  Pro license: free is one computer, Pro ($19/month) adds more
       --server <url>          license server (default: the Wanji license server)
       --remove                remove the license from this computer
+  wanji license unbind <machineId>  free one machine slot on the license server
   wanji relay license create --email <email> [--days 30]
                               make a Pro license key (printed once, for the buyer)
   wanji relay license list    list issued keys by buyer, status and expiry
@@ -684,6 +686,17 @@ async function removeCommand(name) {
 
 async function licenseCommand({ flags, positional }) {
   const key = positional[0];
+  if (key === 'unbind') {
+    const machineId = positional[1];
+    const local = readLocalLicense();
+    if (!machineId) throw new Error('usage: wanji license unbind <machineId>');
+    if (!local?.key) throw new Error('this computer has no saved license key');
+    const server = (typeof flags.server === 'string' ? flags.server : null)
+      || local.server || process.env.WANJI_LICENSE_SERVER || DEFAULT_LICENSE_SERVER;
+    const result = await unbindRemote(server, local.key, machineId);
+    console.log(result.unbound ? `Unbound ${machineId}; ${result.machinesRemaining} machine(s) remain.` : `No binding found for ${machineId}.`);
+    return undefined;
+  }
   if (flags.remove) {
     removeLocalLicense();
     console.log('License removed. This computer is back to the free plan (one computer, local use).');
@@ -804,6 +817,7 @@ async function relayCommand({ flags, positional }) {
         httpsPort: tls !== 'none' && flags.port ? Number(flags.port) : config?.httpsPort,
         port: tls === 'none' && flags.port ? Number(flags.port) : config?.port,
         origin: typeof flags.origin === 'string' ? flags.origin : config?.origin,
+        licenseServer: typeof flags['license-server'] === 'string' ? flags['license-server'] : config?.licenseServer,
         certFile: typeof flags.cert === 'string' ? path.resolve(flags.cert) : config?.certFile,
         keyFile: typeof flags.key === 'string' ? path.resolve(flags.key) : config?.keyFile,
       };
@@ -812,7 +826,7 @@ async function relayCommand({ flags, positional }) {
       saveRelayConfig(next, dir);
       if (!next.shared && listAccounts(dir).length === 0) createAccount(dir, 'owner');
       console.log(`Relay set up for ${relayOrigin(next)}${next.shared ? ' (shared)' : ''}.`);
-      console.log(next.shared ? 'Make an invite for each person with: wanji relay invite' : 'Once it runs, connect the phone app with: wanji relay app');
+      console.log(next.shared ? 'Make a one-use invite for each paying customer with: wanji relay invite <license-key>' : 'Once it runs, connect the phone app with: wanji relay app');
       return undefined;
     }
     case 'run':
@@ -834,8 +848,10 @@ async function relayCommand({ flags, positional }) {
     }
     case 'invite': {
       if (!need().shared) throw new Error('this relay serves one person; connect the phone app with: wanji relay app');
-      const { code, days } = createSignup(dir);
-      showLink(signupLink(config, code), `Invite for one person, valid for ${days} days, one use. They scan it with the 万机 app.`);
+      const licenseKey = positional[0];
+      if (!licenseKey) throw new Error('usage: wanji relay invite <licenseKey>');
+      const { code, days } = createSignup(dir, licenseKey);
+      showLink(signupLink(config, code), `Licensed signup invite, valid for ${days} days and one use. The license is checked when they scan it.`);
       return undefined;
     }
     case 'users':
