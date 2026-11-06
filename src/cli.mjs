@@ -11,7 +11,7 @@ import {
 import { MemoryStore, renderLine } from './memory.mjs';
 import {
   autostartState, installAppCopy, installAutostart, installRuntimeCopy, registerUninstallEntry, removeAutostart,
-  removeUninstallEntry, runService, startService, stopService, writeLauncher,
+  removeUninstallEntry, runService, runtimeNodePath, startService, stopService, writeLauncher,
 } from './service.mjs';
 import { desktopInstalled, desktopSupported, installDesktop } from './desktop.mjs';
 import { browserInstalled, installBrowser } from './browser.mjs';
@@ -24,6 +24,11 @@ import {
   appLink, createAccount, createSignup, listAccounts, loadRelayConfig, readAccount, relayDir, relayOrigin, removeAccount,
   runRelay, saveRelayConfig, signupLink, validHost,
 } from './relay.mjs';
+import {
+  DEFAULT_LICENSE_SERVER, clearPendingDelivery, createLicense, listLicenses, listPendingDeliveries,
+  licensesDir, localLicenseStatus, newMachineId, readLocalLicense, removeLocalLicense, revokeLicense,
+  saveLocalLicense, verifyRemote,
+} from './license.mjs';
 import { runQuick } from './quick.mjs';
 import {
   checkPublic, deleteTunnel, ensureCloudflared, ensureCloudflareLogin, ensureTunnel, tunnelLogPath,
@@ -84,6 +89,17 @@ const HELP = `wanji: give this computer its own fixed MCP link
   wanji relay invite   make an invite for one more person (shared relay)
   wanji relay users    list the people on this relay
   wanji relay remove-user <id>
+  wanji license [key]  Pro license: free is one computer, Pro ($19/month) adds more
+      --server <url>          license server (default: the Wanji license server)
+      --remove                remove the license from this computer
+  wanji relay license create --email <email> [--days 30]
+                              make a Pro license key (printed once, for the buyer)
+  wanji relay license list    list issued keys by buyer, status and expiry
+  wanji relay license revoke <key|prefix>
+                              cancel a key at once
+  wanji relay license pending list keys a payment made that nobody emailed yet
+  wanji relay license sent <key|prefix>
+                              mark a pending key as emailed
   wanji memory         the notes AIs leave each other; yours are locked, so no AI can change them
       list [--kind fact|handoff] [--query words]    show the notes (this is the default)
       add "text" --key <key>  save a note of yours (a fact needs --key; --kind handoff has none)
@@ -395,7 +411,8 @@ export function buildJoinerExe({ join, target, appRoot = APP_ROOT, node = proces
     fs.copyFileSync(path.join(appRoot, 'src', 'joiner-bootstrap.cmd'), path.join(stage, 'bootstrap.cmd'));
     // The stub and the ZIP are built next to the payload, not inside it.
     const stubExe = path.join(work, 'stub.exe');
-    const cscRes = spawnSync(csc, ['/nologo', '/target:exe', '/optimize+', `/out:${stubExe}`, '/r:System.IO.Compression.dll', '/r:System.IO.Compression.FileSystem.dll', path.join(appRoot, 'src', 'joiner-stub.cs')], { encoding: 'utf8', windowsHide: true });
+    // /codepage:65001: never read the source in the computer's ANSI code page.
+    const cscRes = spawnSync(csc, ['/nologo', '/codepage:65001', '/target:exe', '/optimize+', `/out:${stubExe}`, '/r:System.IO.Compression.dll', '/r:System.IO.Compression.FileSystem.dll', path.join(appRoot, 'src', 'joiner-stub.cs')], { encoding: 'utf8', windowsHide: true });
     if (cscRes.status !== 0) throw new Error(`could not compile the joiner stub: ${(cscRes.stderr || cscRes.stdout || '').trim()}`);
     const zipPath = path.join(work, 'payload.zip');
     const quoted = (value) => `'${value.replace(/'/g, "''")}'`;
@@ -445,6 +462,8 @@ async function inviteExeCommand(flags) {
     await hubApi(`invites/${invite.id}`, { method: 'DELETE' }).catch(() => {});
     throw err;
   }
+  // The EXE carries this computer's node.exe, so it runs only on the same kind of processor.
+  if (process.arch !== 'x64') console.log(`注意：这台主电脑是 ${process.arch} 处理器，生成的加入程序只能在同类处理器的电脑上运行。`);
   const named = name ? `加进来的电脑叫 ${name}${once ? '' : '（第二台起是 ' + name + '-2、-3……）'}。` : '每台电脑会用它自己的电脑名，之后可以在手机 App 里改。';
   if (once) {
     console.log(`一键加入程序已生成：${target}\n\n把这个文件发到新电脑上，双击运行，它会自动安装并连接，不用输配对码、不用复制文件。\n${named}\n\n加进来的电脑会一直保持连接、一直能控制，直到你在手机 App 里删掉它。\n这个程序本身只能用一次，${Math.round(invite.expiresIn / 86400)} 天内有效；用过、过期就作废了（不影响已经加进来的电脑）。\n要提前作废：wanji invite --cancel ${invite.id}`);
@@ -454,7 +473,7 @@ async function inviteExeCommand(flags) {
 }
 
 async function inviteCancelCommand(id) {
-  const { cancelled } = await hubApi(typeof id === 'string' && id ? `invites/${id}` : 'invites', { method: 'DELETE' });
+  const { cancelled } = await hubApi(typeof id === 'string' && id ? `invites/${encodeURIComponent(id)}` : 'invites', { method: 'DELETE' });
   console.log(cancelled ? `已作废 ${cancelled} 个配对码 / 加入程序。` : '没有找到要作废的配对码或加入程序。');
 }
 
@@ -466,7 +485,8 @@ async function invitesCommand() {
   }
   for (const invite of invites) {
     const kind = invite.reusable ? '永久，可反复用' : `一次性，${new Date(invite.expires).toLocaleString()} 前有效`;
-    console.log(`${invite.id}  ${invite.label || '配对码'}  （${kind}；已加入 ${invite.uses || 0} 台）  创建于 ${new Date(invite.createdAt).toLocaleString()}`);
+    // Codes made before 0.6.8 have no id or creation time; they still expire within 10 minutes.
+    console.log(`${invite.id || '(旧版，无编号)'}  ${invite.label || '配对码'}  （${kind}；已加入 ${invite.uses || 0} 台）${invite.createdAt ? `  创建于 ${new Date(invite.createdAt).toLocaleString()}` : ''}`);
   }
   console.log('\n作废其中一个：wanji invite --cancel <编号>；全部作废：wanji invite --cancel');
 }
@@ -494,17 +514,25 @@ export function joinedConfig(existing, joined, { port, proxy, token }) {
 async function finishJoin(existing, joined, flags, joinFile) {
   const say = (zh, en) => console.log(flags.joiner ? zh : en);
   const proxy = flags.proxy === true ? undefined : flags.proxy || existing?.proxy;
+  const node = flags['install-runtime'] ? runtimeNodePath() : process.execPath;
+  // The startup task first: its one administrator prompt also stops a running launcher
+  // loop, which a normal process cannot stop and which would restart the old service
+  // while its files are being replaced. The task is started only at the end.
+  fs.mkdirSync(homeDir(), { recursive: true });
+  say('[2/4] 设置开机自动启动（如果弹出“是否允许更改”，请点“是”）...', 'Setting up automatic start...');
+  const autostart = installAutostart({ limited: flags.limited === true, node, stopFirst: true });
+  if (autostart.note) console.log(autostart.note);
   await stopService();
   const port = existing?.port || await choosePort();
   saveConfig(joinedConfig(existing, joined, { port, proxy, token: newToken() }));
   if (joinFile) fs.rmSync(joinFile, { force: true });
-  say('[2/4] 安装程序文件...', 'Installing the program files...');
-  const node = flags['install-runtime'] ? installRuntimeCopy() : process.execPath;
+  say('[3/4] 安装程序文件...', 'Installing the program files...');
+  if (flags['install-runtime']) installRuntimeCopy();
   installAppCopy();
   const cli = path.join(homeDir(), 'app', 'bin', 'wanji.mjs');
   let desktopProblem = null;
   if (desktopSupported && !flags['no-desktop'] && !desktopInstalled()) {
-    say('[3/4] 安装桌面控制（看屏幕、点鼠标）：要下载约 500 MB，可能要几分钟，请不要关闭窗口...', 'Installing desktop control...');
+    say('[4/4] 安装桌面控制（看屏幕、点鼠标）：要下载约 500 MB，可能要几分钟，请不要关闭窗口...', 'Installing desktop control...');
     try {
       await installDesktop({ proxy });
     } catch (err) {
@@ -512,10 +540,7 @@ async function finishJoin(existing, joined, flags, joinFile) {
       say(`警告：桌面控制没有装好：${err.message}`, `Warning: desktop control was not installed: ${err.message}`);
     }
   }
-  say('[4/4] 设置开机自动启动...', 'Setting up automatic start...');
-  const autostart = installAutostart({ limited: flags.limited === true, node });
   if (autostart.installed) startService();
-  if (autostart.note) console.log(autostart.note);
   if (flags['install-runtime']) {
     try {
       registerUninstallEntry({ node, displayName: `万机（${joined.name}）`, version: appVersion() });
@@ -569,9 +594,21 @@ async function joinSteps({ flags, positional }) {
       // permanent EXE run twice does not add the computer twice. Only a key the main
       // computer has removed means joining afresh.
       if (existing?.joined?.origin === joined.origin) {
-        const answer = await hubClient(joined.origin, proxy)('/hub/node/ping', { key: existing.joined.key, body: {}, timeoutMs: 20000 }).catch(() => null);
+        // Retried like joinHub: one TLS reset must not decide this. Only a clear answer
+        // counts; anything else would leave a removed computer on its dead key.
+        const send = hubClient(joined.origin, proxy);
+        let answer = null;
+        for (let attempt = 1; attempt <= 4 && !(answer && answer.status < 500); attempt += 1) {
+          if (attempt > 1) await new Promise((resolve) => { setTimeout(resolve, attempt * 2000); });
+          answer = await send('/hub/node/ping', { key: existing.joined.key, body: {}, timeoutMs: 20000 }).catch(() => null);
+        }
+        if (answer?.status === 200) {
+          return finishJoin(existing, { ...existing.joined, name: existing.name, repaired: true }, flags, file);
+        }
         if (answer?.status !== 401) {
-          return finishJoin(existing, { ...existing.joined, name: existing.name, repaired: true }, flags, null);
+          throw new Error(flags.joiner
+            ? `连不上主电脑（${joined.origin}）。请检查网络后再运行一次。`
+            : `could not reach ${joined.origin}${answer ? ` (it answered ${answer.status})` : ''}; check the network and try again`);
         }
       }
       let created;
@@ -645,7 +682,101 @@ async function removeCommand(name) {
   console.log(`Removed "${computer.name}". It can no longer be reached through this address.`);
 }
 
+async function licenseCommand({ flags, positional }) {
+  const key = positional[0];
+  if (flags.remove) {
+    removeLocalLicense();
+    console.log('License removed. This computer is back to the free plan (one computer, local use).');
+    await hubApi('license/refresh', { method: 'POST' }).catch(() => {});
+    return undefined;
+  }
+  if (!key) {
+    const status = localLicenseStatus();
+    if (status.plan === 'pro') {
+      console.log(`Wanji Pro until ${status.expiresAt}${status.fresh ? '' : ' (checked a while ago; run: wanji license <key> to re-check)'}.`);
+    } else {
+      console.log('Free plan: one computer, local use. Pro ($19/month) adds more computers and remote access; run: wanji license <key>.');
+    }
+    return undefined;
+  }
+  if (loadConfig()?.joined) throw new Error('this computer is joined to a main computer; the license belongs on the main computer');
+  const stored = readLocalLicense();
+  const server = (typeof flags.server === 'string' ? flags.server : null)
+    || process.env.WANJI_LICENSE_SERVER || stored?.server || DEFAULT_LICENSE_SERVER;
+  const machineId = stored?.machineId || newMachineId();
+  let verdict;
+  try {
+    verdict = await verifyRemote(server, key, machineId);
+  } catch (err) {
+    throw new Error(`could not reach the license server (${server}): ${err.message}`);
+  }
+  if (!verdict.valid) {
+    const why = {
+      invalid: 'this license key is not valid',
+      expired: 'this license has expired',
+      revoked: 'this license was revoked',
+      'too-many-machines': 'this license is already used on too many computers',
+    }[verdict.reason] || 'this license key is not valid';
+    throw new Error(why);
+  }
+  const now = new Date().toISOString();
+  saveLocalLicense(homeDir(), { key, machineId, server, plan: verdict.plan || 'pro', expiresAt: verdict.expiresAt || null, verifiedAt: now });
+  const refreshed = await hubApi('license/refresh', { method: 'POST' }).then(() => true).catch(() => false);
+  console.log(`Wanji Pro until ${verdict.expiresAt}.${refreshed ? '' : ' Restart the service to apply it (wanji stop, then wanji start).'}`);
+  return undefined;
+}
+
+async function relayLicenseCommand({ flags, positional }) {
+  const sub = positional.shift();
+  const dir = licensesDir();
+  switch (sub) {
+    case 'create': {
+      const email = typeof flags.email === 'string' ? flags.email : '';
+      const days = flags.days ? Number(flags.days) : 30;
+      const { key, record } = createLicense(dir, { email, days });
+      console.log(`Pro license key for ${email} (until ${record.expiresAt}):\n\n  ${key}\n\nSend this key to the buyer once; it is never shown again.`);
+      return undefined;
+    }
+    case 'list': {
+      const rows = listLicenses(dir);
+      if (!rows.length) {
+        console.log('No license keys issued yet.');
+        return undefined;
+      }
+      for (const { keyHash: hash, record } of rows) {
+        console.log(`${hash.slice(0, 8)}  ${record.email}  ${record.status}  ${record.plan}  until ${record.expiresAt}  ${record.machines?.length || 0} machine(s)`);
+      }
+      return undefined;
+    }
+    case 'revoke': {
+      const target = positional[0];
+      if (!target) throw new Error('usage: wanji relay license revoke <key|prefix>');
+      const done = revokeLicense(dir, target);
+      console.log(done ? `Revoked the license for ${done.record.email}.` : 'No license key matches that.');
+      return undefined;
+    }
+    case 'pending': {
+      const rows = listPendingDeliveries(dir);
+      if (!rows.length) {
+        console.log('No license keys waiting to be emailed.');
+        return undefined;
+      }
+      for (const { key, email, createdAt } of rows) console.log(`${key}  ${email}  since ${createdAt}`);
+      return undefined;
+    }
+    case 'sent': {
+      const target = positional[0];
+      if (!target) throw new Error('usage: wanji relay license sent <key|prefix>');
+      console.log(clearPendingDelivery(dir, target) ? 'Marked as emailed.' : 'No pending key matches that.');
+      return undefined;
+    }
+    default:
+      throw new Error('usage: wanji relay license create|list|revoke|pending|sent');
+  }
+}
+
 async function relayCommand({ flags, positional }) {
+  if (positional[0] === 'license') return relayLicenseCommand({ flags, positional: positional.slice(1) });
   const sub = positional.shift();
   const dir = relayDir();
   const config = loadRelayConfig(dir);
@@ -847,14 +978,25 @@ async function shellCommand({ positional, flags }) {
 }
 
 async function uninstall({ flags }) {
+  try {
+    await uninstallSteps(flags);
+  } catch (err) {
+    // From Settings > Apps the console closes with the process, so the reason stays readable.
+    if (flags['from-settings']) {
+      console.log(`\n没有卸载完：${err.message}\n可以再卸载一次。`);
+      await new Promise((resolve) => { setTimeout(resolve, 10000); });
+    }
+    throw err;
+  }
+}
+
+async function uninstallSteps(flags) {
   // The task and its launcher loop first, or the loop restarts the service just stopped.
   // If it stays, nothing else is removed either, so running this again finishes the job.
   if (removeAutostart() === false) {
-    if (flags['from-settings']) {
-      console.log('没有卸载：开机任务需要管理员权限才能删掉。请再卸载一次，在弹出的“是否允许更改”里点“是”。');
-      await new Promise((resolve) => { setTimeout(resolve, 8000); });
-    }
-    throw new Error('the startup task could not be removed without administrator rights; run this again and allow the prompt');
+    throw new Error(flags['from-settings']
+      ? '开机任务需要管理员权限才能删掉，请在弹出的“是否允许更改”里点“是”。'
+      : 'the startup task could not be removed without administrator rights; run this again and allow the prompt');
   }
   await stopService();
   const config = loadConfig();
@@ -862,26 +1004,30 @@ async function uninstall({ flags }) {
     deleteTunnel({ cloudflared: config.cloudflared, name: config.name, proxy: config.proxy });
     console.log(`Tunnel deleted. The DNS record ${config.hostname} remains; remove it in the Cloudflare dashboard if you no longer need the name.`);
   }
-  removeUninstallEntry();
   if (flags.purge) {
     const home = path.resolve(homeDir());
     const running = path.resolve(process.execPath);
+    // The stopped service and its desktop helper may hold files for a moment longer.
+    const remove = (target) => fs.rmSync(target, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 });
     if (process.platform === 'win32' && running.toLowerCase().startsWith(`${home.toLowerCase()}${path.sep}`)) {
       // Removed from Settings > Apps: this very node.exe lives in the folder and stays
       // locked until it exits, so everything else goes now and a short-lived cmd takes the rest.
       for (const entry of fs.readdirSync(home)) {
-        if (path.join(home, entry).toLowerCase() !== path.dirname(running).toLowerCase()) fs.rmSync(path.join(home, entry), { recursive: true, force: true });
+        if (path.join(home, entry).toLowerCase() !== path.dirname(running).toLowerCase()) remove(path.join(home, entry));
       }
       // Verbatim, because cmd does not understand the \" quoting node would add.
-      // Retried for up to a minute, since this process may linger a few seconds.
+      // Retried for up to a minute, since this process may linger a few seconds; it
+      // starts outside the folder so its own working directory does not keep it.
       spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', `for /l %i in (1,1,30) do @(ping -n 3 127.0.0.1 >nul & rmdir /s /q "${home}" 2>nul & if not exist "${home}" exit /b 0)`], {
-        detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true,
+        detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true, cwd: os.tmpdir(),
       }).unref();
     } else {
-      fs.rmSync(home, { recursive: true, force: true });
+      remove(home);
     }
     console.log('Local settings, logs and the secret are deleted.');
   }
+  // Last, so a failure above leaves the Settings entry for another try.
+  removeUninstallEntry();
   console.log('Automatic start removed and service stopped.');
   if (flags['from-settings']) {
     console.log('\n万机已从这台电脑移除。如果主电脑的手机 App 里还显示这台电脑，在那里删掉它即可。');
@@ -919,6 +1065,8 @@ export async function main(argv) {
       return removeCommand(parsed.positional[0]);
     case 'route':
       return routeCommand(parsed.positional);
+    case 'license':
+      return licenseCommand(parsed);
     case 'relay':
       return relayCommand(parsed);
     case 'run':
@@ -961,7 +1109,7 @@ export async function main(argv) {
         return undefined;
       }
       installAppCopy();
-      const autostart = installAutostart({ limited: parsed.flags.limited === true });
+      const autostart = installAutostart({ limited: parsed.flags.limited === true, stopFirst: true });
       if (!autostart.installed) throw new Error(autostart.note);
       await stopService();
       startService();

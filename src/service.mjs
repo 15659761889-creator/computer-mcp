@@ -14,6 +14,7 @@ import { cleanWorkDir } from './shell.mjs';
 import { localHandoff } from './handoff-local.mjs';
 import { LAN_PORT, allowThroughFirewall, lanAddresses, startDiscovery, startLanServer } from './lan.mjs';
 import { Transfers, handleXferLan, isXferTool, runXfer, transfersFile, xferPsk } from './transfer.mjs';
+import { refreshHubLicense } from './license.mjs';
 import { spawnTunnel, tunnelConfigPath } from './tunnel.mjs';
 import {
   installLinuxAutostart, linuxAutostartState, removeLinuxAutostart, startLinuxService, stopLinuxService,
@@ -170,6 +171,8 @@ export async function runService() {
     });
     if (lan) hub.lan = { port: lan.port, addrs: lan.addrs };
   }
+  // Pro is a license check, never a blocker: a failed check keeps the cached verdict.
+  if (hub) refreshHubLicense(hub).catch((err) => console.error(`license check failed: ${err.message}`));
   // The notes AIs leave each other. A note can never hold this server's own keys.
   // A notes file that cannot be opened must not keep the computer from being controlled.
   let memory = null;
@@ -248,8 +251,10 @@ const fileHash = (file) => createHash('sha256').update(fs.readFileSync(file)).di
 // Called after stopService: a running service holds the old copy open, hence the retries.
 // An elevated launcher loop that a normal process cannot stop restarts the service
 // within seconds, so the same node.exe already in place is left alone.
+export const runtimeNodePath = () => path.join(homeDir(), 'runtime', 'node.exe');
+
 export function installRuntimeCopy() {
-  const target = path.join(homeDir(), 'runtime', 'node.exe');
+  const target = runtimeNodePath();
   if (path.resolve(target).toLowerCase() === path.resolve(process.execPath).toLowerCase()) return target;
   if (fs.existsSync(target) && fs.statSync(target).size === fs.statSync(process.execPath).size
     && fileHash(target) === fileHash(process.execPath)) return target;
@@ -296,13 +301,35 @@ export function isElevated() {
   return IS_WINDOWS && spawnSync('net', ['session'], { stdio: 'ignore', windowsHide: true }).status === 0;
 }
 
+// A PowerShell single-quoted literal; paths may hold apostrophes (C:\Users\O'Brien).
+const psq = (value) => `'${String(value).replace(/'/g, "''")}'`;
+const TASK = psq(TASK_NAME);
+
+// Only members of Administrators can run a task elevated; a standard account that got
+// an administrator's password at the prompt would end up with a task it cannot start.
+function isAdminUser() {
+  if (!IS_WINDOWS) return false;
+  const groups = spawnSync('whoami', ['/groups'], { encoding: 'utf8', windowsHide: true });
+  return groups.status === 0 && groups.stdout.includes('S-1-5-32-544');
+}
+
+const taskRunLevel = () => powershell(`(Get-ScheduledTask -TaskName ${TASK} -ErrorAction SilentlyContinue).Principal.RunLevel`).stdout.trim();
+
+// Stops the task and its launcher loop (found by the launcher path in its command line,
+// killed by PID). Elevated, this also ends a loop that runs with highest privileges.
+const stopTaskScript = (launcher) => `
+Stop-ScheduledTask -TaskName ${TASK} -ErrorAction SilentlyContinue
+Get-CimInstance Win32_Process -Filter "Name='wscript.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains(${psq(launcher)}) } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+`;
+
 // Windows asks for confirmation once here; at each logon the task then starts elevated with no prompt.
 function runElevated(script) {
   const file = path.join(homeDir(), 'elevated-setup.ps1');
   const done = path.join(homeDir(), 'elevated-setup.result');
   fs.rmSync(done, { force: true });
-  fs.writeFileSync(file, `\ufeff${script}\nSet-Content -LiteralPath '${done.replace(/'/g, "''")}' -Value 'ok'\n`);
-  const launch = powershell(`Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File','"${file}"'`);
+  fs.writeFileSync(file, `\ufeff${script}\nSet-Content -LiteralPath ${psq(done)} -Value 'ok'\n`);
+  // The path sits in a single-quoted literal and is passed on in double quotes.
+  const launch = powershell(`Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',${psq(`"${file}"`)}`);
   const ok = launch.status === 0 && fs.existsSync(done);
   fs.rmSync(file, { force: true });
   fs.rmSync(done, { force: true });
@@ -330,25 +357,28 @@ export function writeLauncher(node = process.execPath) {
 }
 
 // COMPUTER_MCP_AUTOSTART=limited skips the administrator prompt (used by tests).
-export function installAutostart({ limited: asked = false, node } = {}) {
-  const limited = asked || process.env.COMPUTER_MCP_AUTOSTART === 'limited';
+//
+// stopFirst: the same (single) elevated step first stops the running task and its
+// launcher loop, so a re-run (joiner repair) can replace files without a loop that a
+// normal process cannot stop bringing the old service back. Call stopService after it.
+export function installAutostart({ limited: asked = false, node, stopFirst = false } = {}) {
+  const limited = asked || process.env.COMPUTER_MCP_AUTOSTART === 'limited' || (IS_WINDOWS && !isAdminUser());
   if (process.platform === 'linux') return installLinuxAutostart();
   if (!IS_WINDOWS) {
     return { installed: false, note: 'Automatic start is not built for this system yet; run `wanji run` from your service manager.' };
   }
   const launcher = writeLauncher(node);
 
-  const quoted = (value) => `'${value.replace(/'/g, "''")}'`;
   // Named now, because an elevated script could be running as a different administrator account.
   const user = `${process.env.USERDOMAIN}\\${process.env.USERNAME}`;
-  const registerAt = (level) => `
+  const registerAt = (level) => `${stopFirst ? stopTaskScript(launcher) : ''}
 $ErrorActionPreference = 'Stop'
-$user = ${quoted(user)}
-$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('"' + ${quoted(launcher)} + '"')
+$user = ${psq(user)}
+$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument ('"' + ${psq(launcher)} + '"')
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
 $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel ${level}
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable
-Register-ScheduledTask -TaskName ${quoted(TASK_NAME)} -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+Register-ScheduledTask -TaskName ${TASK} -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 `;
   if (!limited) {
     if (isElevated()) {
@@ -358,15 +388,21 @@ Register-ScheduledTask -TaskName ${quoted(TASK_NAME)} -Action $action -Trigger $
     }
     if (runElevated(registerAt('Highest'))) return { installed: true, level: 'Highest' };
   }
+  const existing = taskRunLevel();
   const plain = powershell(registerAt('Limited'));
-  if (plain.status !== 0) throw new Error(`could not register the startup task: ${plain.stderr.trim()}`);
+  if (plain.status !== 0) {
+    // A normal process may not replace a task that runs with highest privileges (the
+    // prompt was declined). That task starts the same launcher.vbs, just rewritten, so keep it.
+    if (existing === 'Highest') return { installed: true, level: 'Highest', note: 'Kept the existing startup task (administrator rights were not granted to replace it).' };
+    throw new Error(`could not register the startup task: ${plain.stderr.trim()}`);
+  }
   return { installed: true, level: 'Limited' };
 }
 
 export function startService() {
   if (process.platform === 'linux') return startLinuxService();
   if (!IS_WINDOWS) throw new Error('on this system start it with: wanji run');
-  const result = powershell(`Start-ScheduledTask -TaskName '${TASK_NAME}'`);
+  const result = powershell(`Start-ScheduledTask -TaskName ${TASK}`);
   if (result.status !== 0) throw new Error(`could not start the task: ${result.stderr.trim()}`);
 }
 
@@ -389,7 +425,7 @@ async function askToStop(config) {
 }
 
 export async function stopService() {
-  if (IS_WINDOWS) powershell(`Stop-ScheduledTask -TaskName '${TASK_NAME}' -ErrorAction SilentlyContinue`);
+  if (IS_WINDOWS) powershell(`Stop-ScheduledTask -TaskName ${TASK} -ErrorAction SilentlyContinue`);
   // Stopped through systemd first, or Restart=always would bring it straight back.
   if (process.platform === 'linux') stopLinuxService();
   const config = loadConfig();
@@ -411,22 +447,21 @@ export function removeAutostart() {
   if (process.platform === 'linux') return removeLinuxAutostart();
   if (!IS_WINDOWS) return true;
   const launcher = path.join(homeDir(), 'launcher.vbs');
-  const script = `
-Stop-ScheduledTask -TaskName '${TASK_NAME}' -ErrorAction SilentlyContinue
-Get-CimInstance Win32_Process -Filter "Name='wscript.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${launcher.replace(/'/g, "''")}') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-Unregister-ScheduledTask -TaskName '${TASK_NAME}' -Confirm:$false -ErrorAction SilentlyContinue
+  const script = `${stopTaskScript(launcher)}
+Unregister-ScheduledTask -TaskName ${TASK} -Confirm:$false -ErrorAction SilentlyContinue
 `;
-  const level = powershell(`(Get-ScheduledTask -TaskName '${TASK_NAME}' -ErrorAction SilentlyContinue).Principal.RunLevel`).stdout.trim();
-  if (level === 'Highest' && !isElevated()) runElevated(script);
+  if (taskRunLevel() === 'Highest' && !isElevated()) runElevated(script);
   // Also unelevated: covers a Limited task, and whatever a declined prompt left.
   powershell(script);
-  fs.rmSync(launcher, { force: true });
-  return powershell(`[bool](Get-ScheduledTask -TaskName '${TASK_NAME}' -ErrorAction SilentlyContinue)`).stdout.trim() !== 'True';
+  const gone = powershell(`[bool](Get-ScheduledTask -TaskName ${TASK} -ErrorAction SilentlyContinue)`).stdout.trim() !== 'True';
+  // A task left in place still points at the launcher; without it every logon shows a script error.
+  if (gone) fs.rmSync(launcher, { force: true });
+  return gone;
 }
 
 export function autostartState() {
   if (process.platform === 'linux') return linuxAutostartState();
   if (!IS_WINDOWS) return 'not supported';
-  const result = powershell(`(Get-ScheduledTask -TaskName '${TASK_NAME}' -ErrorAction SilentlyContinue | ForEach-Object { "$($_.State), run level $($_.Principal.RunLevel)" })`);
+  const result = powershell(`(Get-ScheduledTask -TaskName ${TASK} -ErrorAction SilentlyContinue | ForEach-Object { "$($_.State), run level $($_.Principal.RunLevel)" })`);
   return result.stdout.trim() || 'not installed';
 }

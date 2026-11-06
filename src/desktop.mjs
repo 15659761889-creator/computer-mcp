@@ -19,18 +19,28 @@ function venvPython() {
   return process.env.COMPUTER_MCP_PYTHON || path.join(venvDir(), 'Scripts', 'python.exe');
 }
 
-export const desktopInstalled = () => fs.existsSync(venvPython());
+// Present while an install runs and left behind if it fails or is cut off, so a
+// half-made environment does not count as installed and the next install starts clean.
+const unfinishedMark = () => path.join(venvDir(), '.wanji-installing');
+
+export const desktopInstalled = () => fs.existsSync(venvPython())
+  && (Boolean(process.env.COMPUTER_MCP_PYTHON) || !fs.existsSync(unfinishedMark()));
+
+// Prints the interpreter only for 64-bit x86: onnxruntime-directml has wheels for
+// win_amd64 alone, so an ARM64 or 32-bit Python could never install desktop control.
+const PYTHON_PROBE = "import sys,platform;print(sys.executable if sys.maxsize>2**32 and platform.machine() in ('AMD64','x86_64') else '')";
 
 function systemPython() {
   for (const version of PYTHON_VERSIONS) {
-    const result = spawnSync('py', [`-${version}`, '-c', 'import sys;print(sys.executable)'], { encoding: 'utf8', windowsHide: true });
-    if (result.status === 0) return result.stdout.trim();
+    const result = spawnSync('py', [`-${version}`, '-c', PYTHON_PROBE], { encoding: 'utf8', windowsHide: true });
+    if (result.status === 0 && result.stdout.trim()) return result.stdout.trim();
   }
   // On a fresh Windows `python` is the Store alias, which exits 9009 when given arguments.
-  const result = spawnSync('python', ['-c', 'import sys;print(sys.version_info[0],sys.version_info[1],sys.executable)'], { encoding: 'utf8', windowsHide: true });
+  const result = spawnSync('python', ['-c', `import sys;print(sys.version_info[0],sys.version_info[1]);${PYTHON_PROBE}`], { encoding: 'utf8', windowsHide: true });
   if (result.status === 0) {
-    const [major, minor, ...exe] = result.stdout.trim().split(' ');
-    if (Number(major) === 3 && Number(minor) >= 10 && Number(minor) <= 13) return exe.join(' ');
+    const [versionLine, exe] = result.stdout.trim().split(/\r?\n/);
+    const [major, minor] = versionLine.split(' ').map(Number);
+    if (major === 3 && minor >= 10 && minor <= 13 && exe?.trim()) return exe.trim();
   }
   return null;
 }
@@ -102,12 +112,18 @@ const PIP_MIRROR = 'https://pypi.tuna.tsinghua.edu.cn/simple';
 // Installs the engine and downloads the OCR models now, so the first look is not a long wait.
 export async function installDesktop({ proxy } = {}) {
   if (!IS_WINDOWS) throw new Error('desktop control is Windows-only so far');
-  if (!fs.existsSync(path.join(venvDir(), 'Scripts', 'python.exe'))) {
+  const python = path.join(venvDir(), 'Scripts', 'python.exe');
+  // An earlier attempt was cut off: keep its environment only if pip still runs in it.
+  if (fs.existsSync(unfinishedMark()) && spawnSync(python, ['-m', 'pip', '--version'], { stdio: 'ignore', windowsHide: true }).status !== 0) {
+    fs.rmSync(venvDir(), { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
+  }
+  fs.mkdirSync(venvDir(), { recursive: true });
+  fs.writeFileSync(unfinishedMark(), '');
+  if (!fs.existsSync(python)) {
     const base = await findPython(proxy);
     console.log('Creating the desktop control environment...');
     runStep(base, ['-m', 'venv', venvDir()], proxy);
   }
-  const python = path.join(venvDir(), 'Scripts', 'python.exe');
   console.log('Installing desktop control packages (about 500 MB)...');
   const pip = ['-m', 'pip', 'install', '-q', '--disable-pip-version-check', '-r', path.join(DESKTOP_DIR, 'requirements.txt')];
   try {
@@ -127,6 +143,7 @@ export async function installDesktop({ proxy } = {}) {
   if (!check.stdout?.includes('"text": "ok"')) {
     throw new Error(`desktop control did not start: ${(check.stdout || '').slice(-300)} ${(check.stderr || '').slice(-600)}`);
   }
+  fs.rmSync(unfinishedMark(), { force: true });
   console.log('Desktop control is ready.');
 }
 

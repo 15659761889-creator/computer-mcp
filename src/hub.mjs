@@ -9,6 +9,7 @@ import { availableShells } from './shell.mjs';
 import { ROUTES, nodePsk } from './lan.mjs';
 import { MemoryError } from './memory.mjs';
 import { entryText } from './memory-context.mjs';
+import { refreshHubLicense } from './license.mjs';
 
 const POLL_HOLD_MS = 25000;
 // A node polls again at once, so this much silence means it is gone.
@@ -278,6 +279,25 @@ export class Hub {
 
   hasOthers() {
     return Object.keys(this.state.computers).length > 0;
+  }
+
+  // Pro verdict, from state.license (refreshed on service start and on demand).
+  isPro() {
+    const lic = this.state.license;
+    return Boolean(lic && lic.plan === 'pro' && lic.expiresAt && Date.parse(lic.expiresAt) > Date.now());
+  }
+
+  licenseStatus() {
+    const lic = this.state.license;
+    if (!lic) return { plan: 'free' };
+    return { plan: this.isPro() ? 'pro' : 'free', expiresAt: lic.expiresAt || null };
+  }
+
+  // Free is one computer: this hub's own machine. A second computer needs Pro.
+  // Relay accounts skip this check: their license is enforced per request instead.
+  canAddComputer() {
+    if (!this.selfName) return true;
+    return Object.keys(this.state.computers).length === 0 || this.isPro();
   }
 
   listComputers() {
@@ -606,6 +626,9 @@ export class Hub {
     if (index < 0) {
       this.joinFailures.push(now);
       return { status: 403, body: { error: 'this pairing code is wrong, expired or already used' } };
+    }
+    if (!this.canAddComputer()) {
+      return { status: 403, body: { error: 'adding another computer needs Wanji Pro; run: wanji license <key>' } };
     }
     const invite = this.state.invites[index];
     if (invite.reusable) {
@@ -963,6 +986,7 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
     const token = this.getToken();
     return {
       version: this.version,
+      license: this.licenseStatus(),
       mcp: { full: `${origin}/t/${token}/mcp`, address: `${origin}/mcp`, key: token },
       secretRequests: [...this.secretRequests.values()].map(({ id, computer, hint, part, reason, where }) => ({ id, computer, hint, part, reason, where })),
       vaultAccounts: this.vaultAccounts.size,
@@ -1155,6 +1179,11 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
           reply(res, 200, { active: [...this.activeCalls.values()].reverse(), recent: this.recentCalls });
           return true;
         }
+        if (action === 'license/refresh' && req.method === 'POST') {
+          const verdict = await refreshHubLicense(this);
+          reply(res, 200, { license: this.licenseStatus(), refreshed: verdict.fresh === true, stale: verdict.stale === true });
+          return true;
+        }
         if (action === 'status' && req.method === 'GET') {
           reply(res, 200, this.status());
           return true;
@@ -1184,12 +1213,17 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
           reply(res, 200, { invites: this.listInvites() });
           return true;
         }
-        const inviteId = /^invites(?:\/([a-f0-9]+))?$/.exec(action);
+        // Any id is accepted (case folded); an unknown one just cancels nothing.
+        const inviteId = /^invites(?:\/([^/]+))?$/.exec(action);
         if (inviteId && req.method === 'DELETE') {
-          reply(res, 200, { cancelled: this.cancelInvites(inviteId[1]) });
+          reply(res, 200, { cancelled: this.cancelInvites(inviteId[1] && decodeURIComponent(inviteId[1]).toLowerCase()) });
           return true;
         }
         if (action === 'computers' && req.method === 'POST') {
+          if (!this.canAddComputer()) {
+            reply(res, 403, { error: 'adding another computer needs Wanji Pro; run: wanji license <key>' });
+            return true;
+          }
           const created = this.createComputer((await readJson(req))?.name);
           reply(res, 201, { ...created, origin: this.origin() });
           return true;

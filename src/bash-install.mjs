@@ -49,7 +49,10 @@ export function download(url, target, proxy, redirects = 5) {
           console.log(`  ${percent}% of ${Math.round(total / 1048576)} MB`);
         }
       });
-      res.on('error', reject);
+      // A broken transfer closes the file, so the caller can delete it or try the next source.
+      const fail = (err) => { out.destroy(); reject(err); };
+      res.on('error', fail);
+      res.on('aborted', () => fail(new Error('the download was cut off')));
       out.on('error', reject);
       out.on('finish', () => resolve(hash.digest('hex')));
       res.pipe(out);

@@ -22,6 +22,9 @@ const links = [];
 before(async () => {
   hub = new Hub({ file: path.join(dir, 'hub.json'), selfName: 'main', origin: () => 'https://hub.example.com', getToken: () => TOKEN });
   adminKey = hub.state.adminKey;
+  // These tests pre-register more than one computer, which is Pro: give the test hub a license.
+  hub.state.license = { keyHash: '0'.repeat(64), plan: 'pro', expiresAt: new Date(Date.now() + 86400000).toISOString(), verifiedAt: new Date().toISOString() };
+  hub.save();
   server = createMcpServer({ name: 'main', getToken: () => TOKEN, auditFile: null, hub });
   await new Promise((resolve) => { server.listen(0, '127.0.0.1', resolve); });
   base = `http://127.0.0.1:${server.address().port}`;

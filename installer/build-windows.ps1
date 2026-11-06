@@ -36,7 +36,7 @@ if(Test-Path -LiteralPath $app) { Remove-Item -LiteralPath $app -Recurse -Force 
 New-Item -ItemType Directory -Force -Path $stage,$app,$runtime,$licenses | Out-Null
 $compiler = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 if(-not (Test-Path $compiler)) {throw "Missing Windows .NET Framework 4 C# compiler"}
-& $compiler "/nologo" "/target:winexe" "/optimize+" "/out:$stage\Wanji.exe" "/r:System.Windows.Forms.dll" "/r:System.Drawing.dll" "/r:System.Management.dll" (Join-Path $PSScriptRoot "Manager.cs")
+& $compiler "/nologo" "/codepage:65001" "/target:winexe" "/optimize+" "/out:$stage\Wanji.exe" "/r:System.Windows.Forms.dll" "/r:System.Drawing.dll" "/r:System.Management.dll" (Join-Path $PSScriptRoot "Manager.cs")
 if($LASTEXITCODE -ne 0) {throw "C# manager compilation failed"}
 Copy-Item -LiteralPath $node -Destination (Join-Path $runtime "node.exe") -Force
 Copy-Item -LiteralPath $cloud -Destination (Join-Path $runtime "cloudflared.exe") -Force

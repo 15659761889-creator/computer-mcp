@@ -37,7 +37,21 @@ class JoinerStub {
     } catch { }
   }
 
+  // Two runs at once would both join and overwrite each other's files, so a second one waits out.
   static int Main() {
+    bool first;
+    using (var gate = new System.Threading.Mutex(true, "Local\\WanjiJoiner", out first)) {
+      if (!first) {
+        // Chinese for: "A joiner is already running; wait for it to finish. Press any key to close."
+        Console.WriteLine("\u5df2\u7ecf\u6709\u4e00\u4e2a\u52a0\u5165\u7a0b\u5e8f\u5728\u8fd0\u884c\uff0c\u8bf7\u7b49\u5b83\u5b8c\u6210\u3002\u6309\u4efb\u610f\u952e\u5173\u95ed\u3002");
+        try { Console.ReadKey(true); } catch { }
+        return 1;
+      }
+      try { return Run(); } finally { gate.ReleaseMutex(); }
+    }
+  }
+
+  static int Run() {
     ClearOldRuns();
     string exe = Process.GetCurrentProcess().MainModule.FileName;
     string tempDir = null;
@@ -83,8 +97,8 @@ class JoinerStub {
       }
     } catch (Exception ex) {
       Console.Error.WriteLine("Joiner failed: " + ex.Message);
-      // "加入程序出错，请把这个窗口截图发给给你这个程序的人。按任意键关闭。"
-      Console.WriteLine("加入程序出错，请把这个窗口截图发给给你这个程序的人。按任意键关闭。");
+      // Chinese for: "Joiner failed; send a screenshot of this window to whoever gave you this program. Press any key to close." Escaped, so the file stays ASCII.
+      Console.WriteLine("\u52a0\u5165\u7a0b\u5e8f\u51fa\u9519\uff0c\u8bf7\u628a\u8fd9\u4e2a\u7a97\u53e3\u622a\u56fe\u53d1\u7ed9\u7ed9\u4f60\u8fd9\u4e2a\u7a0b\u5e8f\u7684\u4eba\u3002\u6309\u4efb\u610f\u952e\u5173\u95ed\u3002");
       Console.WriteLine("Press any key to close.");
       try { Console.ReadKey(true); } catch { }
       return 1;

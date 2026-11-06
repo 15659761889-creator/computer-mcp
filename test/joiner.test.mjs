@@ -19,6 +19,9 @@ let adminKey;
 before(async () => {
   hub = new Hub({ file: path.join(dir, 'hub.json'), selfName: 'main', origin: () => 'https://hub.example.com', getToken: () => TOKEN });
   adminKey = hub.state.adminKey;
+  // This test adds many computers with one permanent code, which is Pro: give the test hub a license.
+  hub.state.license = { keyHash: '0'.repeat(64), plan: 'pro', expiresAt: new Date(Date.now() + 86400000).toISOString(), verifiedAt: new Date().toISOString() };
+  hub.save();
   server = createMcpServer({ name: 'main', getToken: () => TOKEN, auditFile: null, hub });
   await new Promise((resolve) => { server.listen(0, '127.0.0.1', resolve); });
   base = `http://127.0.0.1:${server.address().port}`;
@@ -104,6 +107,36 @@ test('a repair run keeps the route the main computer set; a new identity does no
   assert.deepEqual(repaired.joined.hubLan, { port: 8768 });
   const fresh = joinedConfig(existing, { origin: 'https://hub.example.com', id: 'bbbb', key: 'k2', name: 'desk' }, { port: 9000, token: 'new' });
   assert.equal(fresh.joined.route, undefined);
+});
+
+test('invite --cancel ignores case and unknown ids', async () => {
+  const invite = await (await admin('invites', 'POST', { days: 1 })).json();
+  assert.equal((await (await admin('invites/NOT-AN-ID', 'DELETE')).json()).cancelled, 0);
+  assert.equal((await (await admin(`invites/${invite.id.toUpperCase()}`, 'DELETE')).json()).cancelled, 1);
+  assert.equal((await joinWith(invite.code, 'gone')).status, 403);
+});
+
+test('a desktop install that was cut off does not count as installed', async () => {
+  const saved = { home: process.env.COMPUTER_MCP_HOME, python: process.env.COMPUTER_MCP_PYTHON };
+  process.env.COMPUTER_MCP_HOME = path.join(dir, 'desktop-home');
+  delete process.env.COMPUTER_MCP_PYTHON;
+  try {
+    const { desktopInstalled } = await import('../src/desktop.mjs');
+    const scripts = path.join(process.env.COMPUTER_MCP_HOME, 'desktop-venv', 'Scripts');
+    fs.mkdirSync(scripts, { recursive: true });
+    fs.writeFileSync(path.join(scripts, 'python.exe'), '');
+    assert.equal(desktopInstalled(), true, 'an older install without the mark still counts');
+    fs.writeFileSync(path.join(process.env.COMPUTER_MCP_HOME, 'desktop-venv', '.wanji-installing'), '');
+    assert.equal(desktopInstalled(), false);
+  } finally {
+    if (saved.home === undefined) delete process.env.COMPUTER_MCP_HOME; else process.env.COMPUTER_MCP_HOME = saved.home;
+    if (saved.python !== undefined) process.env.COMPUTER_MCP_PYTHON = saved.python;
+  }
+});
+
+test('the joiner stub source is plain ASCII', () => {
+  const bytes = fs.readFileSync(new URL('../src/joiner-stub.cs', import.meta.url));
+  assert.equal(bytes.some((b) => b > 127), false, 'escape non-ASCII text so csc never depends on the code page');
 });
 
 test('readJoinFileAt accepts a one-use code instead of id/key', () => {

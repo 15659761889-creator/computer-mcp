@@ -18,6 +18,9 @@ const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 async function makeHub(name, { lan = true } = {}) {
   const hub = new Hub({ file: path.join(dir, `${name}.json`), selfName: name, origin: () => 'https://hub.example.com', getToken: () => TOKEN });
+  // These tests exercise multi-computer features, which are Pro: give the test hub a license.
+  hub.state.license = { keyHash: '0'.repeat(64), plan: 'pro', expiresAt: new Date(Date.now() + 86400000).toISOString(), verifiedAt: new Date().toISOString() };
+  hub.save();
   hub.transfers = new Transfers({ hub, file: path.join(dir, `${name}.transfers.json`) });
   if (lan) {
     const server = await startLanServer({

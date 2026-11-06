@@ -9,6 +9,7 @@ import { homeDir } from './config.mjs';
 import { Hub, loadHubState } from './hub.mjs';
 import { Transfers, transfersFile } from './transfer.mjs';
 import { sendJson, serveMcp } from './server.mjs';
+import { handleLicenseHttp, keyHash, licenseActive, licensesDir, verifyLicense } from './license.mjs';
 
 // A relay is a hub on a rented server: it has no machine of its own, every computer connects
 // out to it, and it holds one account per person. Self-hosted, it holds exactly one.
@@ -23,6 +24,15 @@ const MAX_JOIN_FAILURES = 20;
 const hash = (value) => createHash('sha256').update(String(value)).digest();
 const sameSecret = (a, b) => typeof a === 'string' && typeof b === 'string' && timingSafeEqual(hash(a), hash(b));
 const bearer = (req) => /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '')?.[1];
+
+// Accounts the operator made (invite/app) have no license attached and are exempt.
+// A license-linked account is served only while its license is active in the store,
+// so a revoke takes effect at once.
+const relayAccountOk = (hub) => {
+  const link = hub.state.license;
+  if (!link?.keyHash) return true;
+  return licenseActive(licensesDir(), link.keyHash).active;
+};
 
 export const relayDir = () => path.join(homeDir(), 'relay');
 const configFile = (dir) => path.join(dir, 'relay.json');
@@ -165,6 +175,27 @@ export class Relay {
     return account;
   }
 
+  // A buyer signs up with a license key instead of an operator invite. The key
+  // owns one account: signing up again returns the same account (a new phone).
+  signupWithLicense(key, machineId) {
+    const verdict = verifyLicense(licensesDir(), key, machineId);
+    if (!verdict.valid) return { error: verdict.reason };
+    const hashHex = keyHash(key);
+    for (const id of listAccounts(this.dir)) {
+      const state = readAccount(this.dir, id);
+      if (state.license?.keyHash === hashHex) {
+        this.sync();
+        return { id, adminKey: state.adminKey };
+      }
+    }
+    const account = createAccount(this.dir);
+    const state = readAccount(this.dir, account.id);
+    state.license = { keyHash: hashHex, plan: verdict.plan || 'pro', expiresAt: verdict.expiresAt };
+    fs.writeFileSync(accountFile(this.dir, account.id), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    this.sync();
+    return account;
+  }
+
   async handle(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, GET, DELETE, OPTIONS');
@@ -177,15 +208,39 @@ export class Relay {
         res.end();
         return;
       }
+      if (pathname === '/license/verify' || pathname === '/license/webhook') {
+        await handleLicenseHttp(req, res, pathname, licensesDir());
+        return;
+      }
       if (pathname === '/healthz') {
         sendJson(res, 200, { ok: true, service: 'wanji-relay' });
         return;
       }
       if (pathname === '/relay/signup' && req.method === 'POST') {
         const body = await readSmallJson(req);
+        const en = String(req.headers['x-app-lang'] || '').toLowerCase().startsWith('en');
+        if (body.licenseKey) {
+          if (!this.config.shared) {
+            sendJson(res, 403, { error: en ? 'This relay serves one person' : '这个中继只服务一个人' });
+            return;
+          }
+          const result = this.signupWithLicense(body.licenseKey, body.machineId);
+          if (result.error) {
+            const why = {
+              invalid: en ? 'This license key is not valid' : '这个许可证密钥无效',
+              expired: en ? 'This license has expired' : '这个许可证已过期',
+              revoked: en ? 'This license was revoked' : '这个许可证已被作废',
+              'too-many-machines': en ? 'This license is already used on too many computers' : '这个许可证已在太多台电脑上用过',
+            }[result.error] || (en ? 'This license key is not valid' : '这个许可证密钥无效');
+            sendJson(res, 403, { error: why });
+            return;
+          }
+          sendJson(res, 200, { adminKey: result.adminKey });
+          return;
+        }
         const account = this.config.shared ? this.signup(body.code) : null;
         if (account) sendJson(res, 200, { adminKey: account.adminKey });
-        else sendJson(res, 403, { error: String(req.headers['x-app-lang'] || '').toLowerCase().startsWith('en')
+        else sendJson(res, 403, { error: en
           ? 'This invite has expired or was already used. Ask the service provider for a new one'
           : '这个邀请已失效或已被使用，请向服务提供者重新要一个' });
         return;
@@ -197,14 +252,28 @@ export class Relay {
       if (pathname.startsWith('/hub/node/')) {
         const key = bearer(req);
         const hub = key && this.hubBy((h) => h.nodeFor(req));
-        if (hub) await hub.handle(req, res, pathname);
-        else sendJson(res, 401, { error: 'this computer has been removed' });
+        if (!hub) {
+          sendJson(res, 401, { error: 'this computer has been removed' });
+          return;
+        }
+        if (!relayAccountOk(hub)) {
+          sendJson(res, 402, { error: "this account's license has expired or was revoked" });
+          return;
+        }
+        await hub.handle(req, res, pathname);
         return;
       }
       if (pathname.startsWith('/hub/api/')) {
         const hub = this.hubBy((h) => h.isAdmin(req));
-        if (hub) await hub.handle(req, res, pathname);
-        else sendJson(res, 401, { error: 'unauthorized' });
+        if (!hub) {
+          sendJson(res, 401, { error: 'unauthorized' });
+          return;
+        }
+        if (!relayAccountOk(hub)) {
+          sendJson(res, 402, { error: "this account's license has expired or was revoked" });
+          return;
+        }
+        await hub.handle(req, res, pathname);
         return;
       }
       const pathToken = /^\/t\/([^/]+)\/mcp\/?$/.exec(pathname)?.[1];
@@ -213,6 +282,10 @@ export class Relay {
         const hub = this.hubBy((h) => sameSecret(token, h.state.mcpToken));
         if (!hub) {
           sendJson(res, pathToken ? 404 : 401, { error: pathToken ? 'not found' : 'unauthorized' });
+          return;
+        }
+        if (!relayAccountOk(hub)) {
+          sendJson(res, 402, { error: "this account's license has expired or was revoked" });
           return;
         }
         // No audit log here: what people run on their own computers is not the relay's to keep.
@@ -243,6 +316,10 @@ export class Relay {
     if (!hub) {
       this.joinFailures.push(now);
       sendJson(res, 403, { error: 'this pairing code is wrong, expired or already used' });
+      return;
+    }
+    if (!relayAccountOk(hub)) {
+      sendJson(res, 402, { error: "this account's license has expired or was revoked" });
       return;
     }
     const result = hub.join(body);

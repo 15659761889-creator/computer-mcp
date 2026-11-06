@@ -13,6 +13,7 @@ import { TaskStore, TASK_TOOLS, TASK_NAMES } from './tasks.mjs';
 import { availableShells, defaultShell, findBash } from './shell.mjs';
 import { ALL_TOOLS, callTool, hasTool, summarizeArgs, TOOLS } from './tools.mjs';
 import { TRANSFER_TOOL } from './transfer.mjs';
+import { handleLicenseHttp, licensesDir } from './license.mjs';
 
 const VERSION = '0.6.8';
 const SUPPORTED_PROTOCOLS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
@@ -497,6 +498,11 @@ export function createMcpServer({ name, getToken, auditFile, allowSse = true, on
       const { pathname } = new URL(req.url, 'http://localhost');
       if (pathname === '/handoff' || pathname.startsWith('/handoff/api/')) {
         await handoff.handle(req, res, pathname);
+        return;
+      }
+      // The license server's routes: verifying a key needs no login.
+      if (pathname === '/license/verify' || pathname === '/license/webhook') {
+        await handleLicenseHttp(req, res, pathname, licensesDir());
         return;
       }
       if (req.method === 'OPTIONS') {
