@@ -22,6 +22,15 @@
 - `COMPUTER_MCP_HOME` is written into launcher.vbs; `COMPUTER_MCP_TASK` and
   `COMPUTER_MCP_AUTOSTART=limited` let a test install beside the real service.
 
+### Fixes
+- Windows manager: CLI output is read as UTF-8; before, every Chinese result message
+  (join file, joiner EXE, revoke) showed as mojibake. "Install desktop control" now runs
+  `wanji desktop` (which fetches Python itself) instead of a `py || winget` chain.
+- Uninstall and `autostart off` stop the launcher loop and remove the task before stopping
+  the service, elevating once when the task runs with highest privileges; uninstall stops
+  without deleting anything if the task cannot be removed.
+- Join files and joiner EXEs go to the real Desktop (OneDrive / redirected folders).
+
 ## 0.6.7 (2026-11-05)
 
 ### Audit fixes
