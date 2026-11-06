@@ -34,7 +34,7 @@ class PushService : Service() {
         channels(this)
         val ongoing = NotificationCompat.Builder(this, CHANNEL_WAITING)
             .setSmallIcon(R.drawable.ic_fg)
-            .setContentTitle("万机")
+            .setContentTitle(tr("万机", "Wanji"))
             .setContentText(tr("正在等待 AI 的请求", "Waiting for the AI’s requests"))
             .setOngoing(true)
             .setContentIntent(openApp(this, 0))

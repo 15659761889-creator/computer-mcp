@@ -58,7 +58,7 @@ namespace WanjiWindows {
       Directory.CreateDirectory(stateDir);
       UiLang.Init(stateDir);
 
-      Text = "万机 · Windows";
+      Text = T("万机 · Windows", "Wanji · Windows");
       Width = 700;
       Height = 600;
       MinimumSize = new Size(660, 540);
@@ -68,7 +68,7 @@ namespace WanjiWindows {
       ForeColor = Color.FromArgb(36, 50, 69);
 
       var header = new Panel { Dock = DockStyle.Top, Height = 92, BackColor = Color.FromArgb(33, 56, 89) };
-      var title = new Label { Text = "万机", Font = new Font("Segoe UI", 22, FontStyle.Bold), ForeColor = Color.White, Location = new Point(25, 12), AutoSize = true };
+      var title = new Label { Text = T("万机", "Wanji"), Font = new Font("Segoe UI", 22, FontStyle.Bold), ForeColor = Color.White, Location = new Point(25, 12), AutoSize = true };
       var subtitle = new Label { Text = T("无需安装 Node.js · 一键连接自己的 Windows 电脑", "No Node.js install needed · connect your own Windows computer in one click"), ForeColor = Color.FromArgb(207, 223, 243), Font = new Font("Microsoft YaHei UI", 9), Location = new Point(28, 60), AutoSize = true };
       header.Controls.Add(title); header.Controls.Add(subtitle);
       var langButton = new Button {
@@ -141,7 +141,7 @@ namespace WanjiWindows {
       exeButton.Click += (s, e) => StartCliTask(exePermanent.Checked ? "invite --exe --permanent" : "invite --exe", T("生成一键加入程序", "Generate one-click joiner"));
       var revokeButton = AddButton(area, T("作废所有加入程序和配对码（已加入的电脑不受影响）", "Revoke all joiners and pairing codes (joined computers stay)"), 15, 770, 600, Color.FromArgb(94, 109, 127));
       revokeButton.Click += (s, e) => {
-        if (MessageBox.Show(this, T("确定作废所有还能用的加入程序和配对码吗？", "Revoke every joiner EXE and pairing code that still works?"), "万机", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+        if (MessageBox.Show(this, T("确定作废所有还能用的加入程序和配对码吗？", "Revoke every joiner EXE and pairing code that still works?"), T("万机", "Wanji"), MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
           StartCliTask("invite --cancel", T("作废加入程序", "Revoke joiners"));
       };
       AddLabel(area, T("这台是新电脑：粘贴手机 App 给的配对码", "This is a new computer: paste the pairing code from the phone app"), 15, 816, false);
@@ -295,7 +295,7 @@ namespace WanjiWindows {
           for (int y = 0; y < size; y++) { var row = lines[y + 1].Trim(); for (int x = 0; x < size; x++) if (row[x] == '1') g.FillRectangle(Brushes.Black, (x + 1) * scale, (y + 1) * scale, scale, scale); }
         }
         form.Controls.Add(new PictureBox { Image = image, SizeMode = PictureBoxSizeMode.CenterImage, Location = new Point(20, 15), Size = new Size(400, 380) });
-        form.Controls.Add(new Label { Text = T("打开手机上的 万机，点“扫码连接”。\n这个二维码等于所有电脑的钥匙，不要给别人看。", "Open 万机 on your phone and tap “Scan to connect”.\nThis QR code is the key to all your computers; don’t show it to anyone."), Location = new Point(20, 405), Size = new Size(400, 50), TextAlign = ContentAlignment.MiddleCenter });
+        form.Controls.Add(new Label { Text = T("打开手机上的 万机，点“扫码连接”。\n这个二维码等于所有电脑的钥匙，不要给别人看。", "Open Wanji on your phone and tap “Scan to connect”.\nThis QR code is the key to all your computers; don’t show it to anyone."), Location = new Point(20, 405), Size = new Size(400, 50), TextAlign = ContentAlignment.MiddleCenter });
         var text = lines[0].Trim();
         var copy = new Button { Text = T("扫不了？复制连接文本", "Can’t scan? Copy the connection text"), Location = new Point(120, 458), Size = new Size(200, 32) };
         copy.Click += (s, e) => { Clipboard.SetText(text); copy.Text = T("已复制", "Copied"); };
@@ -318,7 +318,7 @@ namespace WanjiWindows {
       process.OutputDataReceived += (s, e) => { if (e.Data != null) lock (output) output.AppendLine(e.Data); };
       process.ErrorDataReceived += (s, e) => { if (e.Data != null) lock (errors) errors.AppendLine(e.Data); };
       try {
-        if (!process.Start()) throw new Exception(T("无法启动 万机。", "Couldn’t start 万机."));
+        if (!process.Start()) throw new Exception(T("无法启动 万机。", "Couldn’t start Wanji."));
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
       } catch { process.Dispose(); throw; }
@@ -376,7 +376,7 @@ namespace WanjiWindows {
       StartCliTask(args, T("切换到 Bash", "Switch to Bash"));
     }
     private void InstallDesktop() {
-      var answer = MessageBox.Show(T("完整 OCR / 鼠标键盘控制需要下载约 500 MB，可能要几分钟。\n\n这台电脑没有 Python 3.10–3.13 的话，会自动下载一份只给万机用的 Python，不用你装。需要联网。\n继续？", "Full OCR and mouse/keyboard control download about 500 MB and may take a few minutes.\n\nWithout Python 3.10–3.13 on this computer, a private Python for 万机 is downloaded automatically. It needs internet access.\nContinue?"), T("安装桌面控制", "Install desktop control"), MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+      var answer = MessageBox.Show(T("完整 OCR / 鼠标键盘控制需要下载约 500 MB，可能要几分钟。\n\n这台电脑没有 Python 3.10–3.13 的话，会自动下载一份只给万机用的 Python，不用你装。需要联网。\n继续？", "Full OCR and mouse/keyboard control download about 500 MB and may take a few minutes.\n\nWithout Python 3.10–3.13 on this computer, a private Python for Wanji is downloaded automatically. It needs internet access.\nContinue?"), T("安装桌面控制", "Install desktop control"), MessageBoxButtons.YesNo, MessageBoxIcon.Question);
       if (answer != DialogResult.Yes) return;
       try {
         var args = "desktop";

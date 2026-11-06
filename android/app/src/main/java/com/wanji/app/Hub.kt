@@ -350,7 +350,7 @@ class HubClient(private val connection: Connection) {
         val json = try {
             request("GET", "memory")
         } catch (error: HubException) {
-            if (error.message == "not found") throw HubException(tr("主电脑的 万机 版本太旧，还没有共享记忆，请先升级", "The main computer’s 万机 is too old and has no shared memory yet. Please upgrade it first"))
+            if (error.message == "not found") throw HubException(tr("主电脑的 万机 版本太旧，还没有共享记忆，请先升级", "The main computer’s Wanji is too old and has no shared memory yet. Please upgrade it first"))
             throw error
         }
         val notes = json.getJSONArray("notes")
