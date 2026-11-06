@@ -133,14 +133,22 @@ namespace WanjiWindows {
       appButton.Click += (s, e) => ShowAppQr();
       var inviteButton = AddButton(area, T("一键生成加入文件（加新电脑不用输配对码）", "Generate join file in one click (add a new computer without a pairing code)"), 15, 678, 600, Color.FromArgb(37, 99, 235));
       inviteButton.Click += (s, e) => StartCliTask("invite --file", T("生成加入文件", "Generate join file"));
-      var exeButton = AddButton(area, T("生成一键加入程序（新电脑双击就自动连接）", "Generate one-click joiner (the new computer just runs it)"), 15, 724, 600, Color.FromArgb(37, 99, 235));
-      exeButton.Click += (s, e) => StartCliTask("invite --exe", T("生成一键加入程序", "Generate one-click joiner"));
-      AddLabel(area, T("这台是新电脑：粘贴手机 App 给的配对码", "This is a new computer: paste the pairing code from the phone app"), 15, 770, false);
-      pairCode = new TextBox { Location = new Point(15, 802), Width = 430, Height = 29 };
+      var exeButton = AddButton(area, T("生成一键加入程序（新电脑双击就自动连接）", "Generate one-click joiner (the new computer just runs it)"), 15, 724, 430, Color.FromArgb(37, 99, 235));
+      // Unchecked (the default): permanent, adds any number of computers until revoked.
+      var exeOnce = new CheckBox { Text = T("一次性（用一次就作废）", "One use only"), Location = new Point(456, 732), AutoSize = true, Font = new Font("Microsoft YaHei UI", 9.5f) };
+      area.Controls.Add(exeOnce);
+      exeButton.Click += (s, e) => StartCliTask(exeOnce.Checked ? "invite --exe --once" : "invite --exe", T("生成一键加入程序", "Generate one-click joiner"));
+      var revokeButton = AddButton(area, T("作废所有加入程序和配对码（已加入的电脑不受影响）", "Revoke all joiners and pairing codes (joined computers stay)"), 15, 770, 600, Color.FromArgb(94, 109, 127));
+      revokeButton.Click += (s, e) => {
+        if (MessageBox.Show(this, T("确定作废所有还能用的加入程序和配对码吗？", "Revoke every joiner EXE and pairing code that still works?"), "万机", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+          StartCliTask("invite --cancel", T("作废加入程序", "Revoke joiners"));
+      };
+      AddLabel(area, T("这台是新电脑：粘贴手机 App 给的配对码", "This is a new computer: paste the pairing code from the phone app"), 15, 816, false);
+      pairCode = new TextBox { Location = new Point(15, 848), Width = 430, Height = 29 };
       area.Controls.Add(pairCode);
-      var joinButton = AddButton(area, T("加入主电脑", "Join main computer"), 456, 798, 160, Color.FromArgb(37, 99, 235));
+      var joinButton = AddButton(area, T("加入主电脑", "Join main computer"), 456, 844, 160, Color.FromArgb(37, 99, 235));
       joinButton.Click += (s, e) => JoinHub();
-      area.AutoScrollMinSize = new Size(0, 857);
+      area.AutoScrollMinSize = new Size(0, 903);
 
       ticker = new System.Windows.Forms.Timer { Interval = 3500 };
       ticker.Tick += (s, e) => RefreshStatus();

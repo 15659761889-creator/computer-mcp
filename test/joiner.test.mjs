@@ -5,7 +5,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { Hub } from '../src/hub.mjs';
 import { readJoinFileAt } from '../src/config.mjs';
-import { buildJoinerExe } from '../src/cli.mjs';
+import { buildJoinerExe, joinedConfig } from '../src/cli.mjs';
 import { createMcpServer } from '../src/server.mjs';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wanji-joiner-test-'));
@@ -65,6 +65,45 @@ test('invite --cancel voids unused codes', async () => {
   const res = await (await admin('invites', 'DELETE')).json();
   assert.ok(res.cancelled >= 1);
   assert.equal((await joinWith(invite.code, 'late')).status, 403);
+});
+
+test('a permanent joiner code adds many computers, never expires, and can be revoked alone', async () => {
+  const forever = await (await admin('invites', 'POST', { reusable: true, label: 'Wanji-Join.exe' })).json();
+  assert.equal(forever.reusable, true);
+  assert.equal(forever.expiresIn, null);
+  const other = await (await admin('invites', 'POST', { reusable: true, label: 'other.exe' })).json();
+  const a = await (await joinWith(forever.code, 'desk')).json();
+  const b = await (await joinWith(forever.code, 'desk')).json();
+  assert.equal(a.reusable, true);
+  assert.notEqual(a.id, b.id);
+  assert.equal(b.name, 'desk-2');
+  const listed = (await (await admin('invites')).json()).invites.find((i) => i.id === forever.id);
+  assert.deepEqual({ label: listed.label, reusable: listed.reusable, expires: listed.expires, uses: listed.uses }, { label: 'Wanji-Join.exe', reusable: true, expires: null, uses: 2 });
+  assert.equal(JSON.stringify(await (await admin('invites')).json()).includes('hash'), false);
+  assert.equal((await (await admin(`invites/${forever.id}`, 'DELETE')).json()).cancelled, 1);
+  assert.equal((await joinWith(forever.code, 'late')).status, 403);
+  // Revoking one leaves the others, and joined computers keep their keys.
+  assert.equal((await joinWith(other.code, 'third')).status, 200);
+  assert.ok(hub.state.computers[a.id] && hub.state.computers[b.id]);
+  await admin('invites', 'DELETE');
+  for (const c of Object.values(hub.state.computers)) await admin(`computers/${c.id}`, 'DELETE');
+});
+
+test('a permanent code survives a restart of the main computer', async () => {
+  const forever = await (await admin('invites', 'POST', { reusable: true })).json();
+  const reloaded = new Hub({ file: path.join(dir, 'hub.json'), selfName: 'main', origin: () => 'https://hub.example.com', getToken: () => TOKEN });
+  assert.equal(reloaded.hasInvite(forever.code), true);
+  reloaded.close();
+  await admin('invites', 'DELETE');
+});
+
+test('a repair run keeps the route the main computer set; a new identity does not', () => {
+  const existing = { name: 'desk', port: 9000, token: 'tok', joined: { origin: 'https://hub.example.com', id: 'aaaa', key: 'k', route: 'lan', hubLan: { port: 8768 } } };
+  const repaired = joinedConfig(existing, { ...existing.joined, name: 'desk' }, { port: 9000, token: 'new' });
+  assert.equal(repaired.joined.route, 'lan');
+  assert.deepEqual(repaired.joined.hubLan, { port: 8768 });
+  const fresh = joinedConfig(existing, { origin: 'https://hub.example.com', id: 'bbbb', key: 'k2', name: 'desk' }, { port: 9000, token: 'new' });
+  assert.equal(fresh.joined.route, undefined);
 });
 
 test('readJoinFileAt accepts a one-use code instead of id/key', () => {

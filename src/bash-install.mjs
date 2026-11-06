@@ -20,7 +20,8 @@ const SOURCES = [
   (name) => `https://github.com/git-for-windows/git/releases/download/${TAG}/${name}`,
 ];
 
-function download(url, target, proxy, redirects = 5) {
+// Resolves to the file's SHA-256 (hex); the caller compares it with the pinned one.
+export function download(url, target, proxy, redirects = 5) {
   const agent = new https.Agent(proxy ? { proxyEnv: { HTTPS_PROXY: proxy } } : {});
   return new Promise((resolve, reject) => {
     const req = https.get(url, { agent, timeout: 30000 }, (res) => {

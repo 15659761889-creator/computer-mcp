@@ -3,13 +3,20 @@
 ## 0.6.8 (2026-11-06)
 
 ### One-click joiner EXE (`wanji invite --exe`, manager button)
-- The EXE carries a one-use pairing code (default 7 days, `--days` up to 30), not a
-  computer's key: a used, expired or cancelled EXE is worthless. `wanji invite --cancel`
-  voids every unused code. The hub accepts `days` on POST invites and DELETE invites.
+- Permanent by default: the EXE carries a reusable pairing code that adds any number of
+  computers and never expires until the main computer revokes it. `--once` (manager:
+  "一次性" checkbox) makes a one-use code instead, expiring after `--days` (7, at most 30).
+  `wanji invite --list` shows what still works; `wanji invite --cancel [id]` revokes one or
+  all (manager button). Joined computers stay; the app removes them one by one. Hub API:
+  POST invites `{reusable, days, label}`, GET invites, DELETE invites[/id].
+- Running the EXE on a computer already joined to that main computer repairs it (same
+  identity, route kept) instead of adding it twice; a key the main computer removed joins afresh.
 - `join` runs from the extracted copy and checks first (main computer, used code), so a
   refused run changes nothing; only then it stops an old service and copies node and the app.
-- One autostart step (one administrator prompt) instead of two; Chinese messages; a clear
-  note when desktop control could not be installed (needs Python 3.10-3.13).
+- One autostart step (one administrator prompt) instead of two; Chinese messages.
+- No Python 3.10-3.13 on the computer: desktop control downloads a private CPython 3.12.10
+  (the official NuGet package, SHA-256 pinned, no installer or admin) into the Wanji folder;
+  pip retries from the Tsinghua mirror when PyPI fails.
 - Joined computers get an entry in Settings > Apps that runs `wanji uninstall --purge`.
 - `COMPUTER_MCP_HOME` is written into launcher.vbs; `COMPUTER_MCP_TASK` and
   `COMPUTER_MCP_AUTOSTART=limited` let a test install beside the real service.

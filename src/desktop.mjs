@@ -4,6 +4,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { homeDir } from './config.mjs';
+import { download } from './bash-install.mjs';
 
 const IS_WINDOWS = process.platform === 'win32';
 const DESKTOP_DIR = fileURLToPath(new URL('../desktop/', import.meta.url));
@@ -20,17 +21,73 @@ function venvPython() {
 
 export const desktopInstalled = () => fs.existsSync(venvPython());
 
-function findPython() {
+function systemPython() {
   for (const version of PYTHON_VERSIONS) {
     const result = spawnSync('py', [`-${version}`, '-c', 'import sys;print(sys.executable)'], { encoding: 'utf8', windowsHide: true });
     if (result.status === 0) return result.stdout.trim();
   }
+  // On a fresh Windows `python` is the Store alias, which exits 9009 when given arguments.
   const result = spawnSync('python', ['-c', 'import sys;print(sys.version_info[0],sys.version_info[1],sys.executable)'], { encoding: 'utf8', windowsHide: true });
   if (result.status === 0) {
     const [major, minor, ...exe] = result.stdout.trim().split(' ');
     if (Number(major) === 3 && Number(minor) >= 10 && Number(minor) <= 13) return exe.join(' ');
   }
-  throw new Error('desktop control needs Python 3.10-3.13; install it from python.org, then run: wanji desktop');
+  return null;
+}
+
+// No usable Python: a private one, the official CPython build that python.org publishes
+// as the NuGet package "python" (a plain zip, no installer, no registry, no admin).
+// Pinned by SHA-256; x64 also runs on ARM64 Windows.
+const PORTABLE_PYTHON = { version: '3.12.10', sha256: '0eb85c2dfccccf1b17352de4c397f69194035b7d37149eacc16f1147d93de3b8' };
+const PYTHON_SOURCES = [
+  (v) => `https://www.nuget.org/api/v2/package/python/${v}`,
+  (v) => `https://globalcdn.nuget.org/packages/python.${v}.nupkg`,
+];
+export const portablePythonDir = () => path.join(homeDir(), 'python');
+
+export async function installPortablePython({ proxy } = {}) {
+  const dir = portablePythonDir();
+  const python = path.join(dir, 'python.exe');
+  if (fs.existsSync(python)) return python;
+  const partial = `${dir}.partial`;
+  const archive = `${dir}.download.zip`;
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  fs.rmSync(partial, { recursive: true, force: true });
+  let ok = false;
+  for (const source of PYTHON_SOURCES) {
+    const url = source(PORTABLE_PYTHON.version);
+    console.log(`No Python found; downloading Python ${PORTABLE_PYTHON.version} (about 15 MB) from ${new URL(url).host}...`);
+    try {
+      if (await download(url, archive, proxy) === PORTABLE_PYTHON.sha256) {
+        ok = true;
+        break;
+      }
+      console.log('  the file does not match the pinned checksum; trying the next source');
+    } catch (err) {
+      console.log(`  failed: ${err.message}`);
+    }
+  }
+  if (!ok) {
+    fs.rmSync(archive, { force: true });
+    throw new Error('could not download Python; if this network needs a proxy, retry with: wanji desktop --proxy http://host:port');
+  }
+  const quoted = (value) => `'${value.replace(/'/g, "''")}'`;
+  const script = `Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory(${quoted(archive)}, ${quoted(partial)})`;
+  const unpack = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { encoding: 'utf8', windowsHide: true, timeout: 300000 });
+  fs.rmSync(archive, { force: true });
+  const tools = path.join(partial, 'tools');
+  if (unpack.status !== 0 || !fs.existsSync(path.join(tools, 'python.exe'))) {
+    fs.rmSync(partial, { recursive: true, force: true });
+    throw new Error(`unpacking Python failed: ${(unpack.stderr || '').trim().slice(-300)}`);
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.renameSync(tools, dir);
+  fs.rmSync(partial, { recursive: true, force: true });
+  return python;
+}
+
+async function findPython(proxy) {
+  return systemPython() || installPortablePython({ proxy });
 }
 
 function runStep(exe, args, proxy) {
@@ -39,16 +96,26 @@ function runStep(exe, args, proxy) {
   if (result.status !== 0) throw new Error(`failed: ${path.basename(exe)} ${args.join(' ')}`);
 }
 
+// PyPI is often slow or cut off in mainland China; a failed install retries from a mirror there.
+const PIP_MIRROR = 'https://pypi.tuna.tsinghua.edu.cn/simple';
+
 // Installs the engine and downloads the OCR models now, so the first look is not a long wait.
-export function installDesktop({ proxy } = {}) {
+export async function installDesktop({ proxy } = {}) {
   if (!IS_WINDOWS) throw new Error('desktop control is Windows-only so far');
   if (!fs.existsSync(path.join(venvDir(), 'Scripts', 'python.exe'))) {
+    const base = await findPython(proxy);
     console.log('Creating the desktop control environment...');
-    runStep(findPython(), ['-m', 'venv', venvDir()], proxy);
+    runStep(base, ['-m', 'venv', venvDir()], proxy);
   }
   const python = path.join(venvDir(), 'Scripts', 'python.exe');
   console.log('Installing desktop control packages (about 500 MB)...');
-  runStep(python, ['-m', 'pip', 'install', '-q', '--disable-pip-version-check', '-r', path.join(DESKTOP_DIR, 'requirements.txt')], proxy);
+  const pip = ['-m', 'pip', 'install', '-q', '--disable-pip-version-check', '-r', path.join(DESKTOP_DIR, 'requirements.txt')];
+  try {
+    runStep(python, pip, proxy);
+  } catch {
+    console.log(`  retrying from ${new URL(PIP_MIRROR).host}...`);
+    runStep(python, [...pip, '-i', PIP_MIRROR], proxy);
+  }
   console.log('Downloading OCR models and checking they load...');
   const check = spawnSync(python, [path.join(DESKTOP_DIR, 'helper.py')], {
     input: `${JSON.stringify({ id: 1, method: 'ping' })}\n`,

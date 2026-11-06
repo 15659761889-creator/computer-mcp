@@ -54,9 +54,11 @@ const HELP = `wanji: give this computer its own fixed MCP link
   wanji invite         make a one-time pairing code for adding another computer
       --file [path]           instead, pre-register a computer and write a join file (default: Desktop\join.json)
       --exe [path]            instead, build a one-click joiner EXE the new computer just runs (default: Desktop\Wanji-Join.exe);
-                              it holds a one-use code that expires after --days (default 7, at most 30)
-      --name <name>           name the new computer (default: computer, or computer-2 ...; with --exe: the new computer's own name)
-      --cancel                void every unused pairing code and joiner EXE
+                              permanent: it adds any number of computers until revoked
+      --once                  with --exe: one use only, expiring after --days (default 7, at most 30)
+      --name <name>           name the new computer (default: computer, or computer-2 ...; with --exe: each computer's own name)
+      --list                  list the pairing codes and joiner EXEs that still work
+      --cancel [id]           revoke one of them, or all with no id; computers already joined stay
   wanji join <code>    add this computer to a main computer; it then starts by itself
       --file [path]           join from a join file instead of a pairing code
                               (no path: join.json in this computer's config folder)
@@ -180,7 +182,7 @@ async function setup({ flags, positional }) {
   installAppCopy();
   if (desktopSupported && !flags['no-desktop'] && !desktopInstalled()) {
     try {
-      installDesktop({ proxy });
+      await installDesktop({ proxy });
     } catch (err) {
       console.log(`Warning: desktop control was not installed: ${err.message}`);
     }
@@ -409,32 +411,63 @@ function freeName(dir, base) {
   }
 }
 
+// Permanent by default (the owner's choice): the EXE can add any number of computers
+// and never expires, until the main computer revokes it. --once: one use, --days (7).
 async function inviteExeCommand(flags) {
   if (process.platform !== 'win32') throw new Error('wanji invite --exe only builds a Windows joiner; run it on a Windows main computer');
   const name = typeof flags.name === 'string' && flags.name ? flags.name : undefined;
+  const once = flags.once === true;
   const days = flags.days === undefined || flags.days === true ? 7 : Number(flags.days);
-  if (!Number.isFinite(days) || days <= 0 || days > 30) throw new Error('--days must be between 1 and 30');
+  if (once && (!Number.isFinite(days) || days <= 0 || days > 30)) throw new Error('--days must be between 1 and 30');
   const target = typeof flags.exe === 'string' && flags.exe
     ? path.resolve(flags.exe)
     : freeName(path.join(os.homedir(), 'Desktop'), name ? `Wanji-Join-${name.replace(/[\\/:*?"<>|\s]+/g, '-')}` : 'Wanji-Join');
-  const invite = await hubApi('invites', { method: 'POST', body: { days } });
-  if (!invite.origin) throw new Error('the running service is too old for joiner EXEs; run wanji update first');
-  // If the build fails, the code was never shown anywhere and simply expires.
-  buildJoinerExe({ join: { origin: invite.origin, code: invite.code, ...(name ? { name } : {}) }, target });
-  const valid = Math.round(invite.expiresIn / 86400);
-  console.log(`一键加入程序已生成：${target}\n\n把这个文件发到新电脑上，双击运行，它会自动安装并连接，不用输配对码、不用复制文件。\n${name ? `新电脑的名字是 ${name}。` : '新电脑会用它自己的电脑名，之后可以在手机 App 里改。'}\n\n这个程序只能用一次，${valid} 天内有效；用过、过期就作废了。\n如果发错了人，在这台电脑上运行 wanji invite --cancel，所有还没用过的配对码和加入程序都会立刻作废。`);
+  const invite = await hubApi('invites', {
+    method: 'POST', body: once ? { days, label: path.basename(target) } : { reusable: true, label: path.basename(target) },
+  });
+  if (!invite.origin || (!once && !invite.reusable)) throw new Error('the running service is too old for joiner EXEs; run wanji update first');
+  try {
+    buildJoinerExe({ join: { origin: invite.origin, code: invite.code, ...(name ? { name } : {}) }, target });
+  } catch (err) {
+    await hubApi(`invites/${invite.id}`, { method: 'DELETE' }).catch(() => {});
+    throw err;
+  }
+  const named = name ? `加进来的电脑叫 ${name}${once ? '' : '（第二台起是 ' + name + '-2、-3……）'}。` : '每台电脑会用它自己的电脑名，之后可以在手机 App 里改。';
+  if (once) {
+    console.log(`一键加入程序已生成：${target}\n\n把这个文件发到新电脑上，双击运行，它会自动安装并连接，不用输配对码、不用复制文件。\n${named}\n\n这个程序只能用一次，${Math.round(invite.expiresIn / 86400)} 天内有效；用过、过期就作废了。\n要提前作废：wanji invite --cancel ${invite.id}`);
+    return;
+  }
+  console.log(`一键加入程序已生成：${target}\n\n把这个文件发到要加入的电脑上，双击运行，它会自动安装并连接，不用输配对码、不用复制文件。\n这个程序一直有效，可以反复用，加多少台电脑都行。${named}\n在已经加入的电脑上再运行一次，只会更新程序并重新启动，不会重复添加。\n\n注意：拿到这个程序的人都能把电脑加进来，别外传。\n要作废它：wanji invite --cancel ${invite.id}（或在万机管理器里点“作废加入程序”）。\n已经加进来的电脑不受影响，可以在手机 App 里单独删除。`);
 }
 
-async function inviteCancelCommand() {
-  const { cancelled } = await hubApi('invites', { method: 'DELETE' });
-  console.log(`已作废 ${cancelled} 个还没用过的配对码 / 加入程序。`);
+async function inviteCancelCommand(id) {
+  const { cancelled } = await hubApi(typeof id === 'string' && id ? `invites/${id}` : 'invites', { method: 'DELETE' });
+  console.log(cancelled ? `已作废 ${cancelled} 个配对码 / 加入程序。` : '没有找到要作废的配对码或加入程序。');
+}
+
+async function invitesCommand() {
+  const { invites } = await hubApi('invites');
+  if (!invites.length) {
+    console.log('没有还能用的配对码或加入程序。');
+    return;
+  }
+  for (const invite of invites) {
+    const kind = invite.reusable ? '永久，可反复用' : `一次性，${new Date(invite.expires).toLocaleString()} 前有效`;
+    console.log(`${invite.id}  ${invite.label || '配对码'}  （${kind}；已加入 ${invite.uses || 0} 台）  创建于 ${new Date(invite.createdAt).toLocaleString()}`);
+  }
+  console.log('\n作废其中一个：wanji invite --cancel <编号>；全部作废：wanji invite --cancel');
 }
 
 // The config a joined computer saves; kept separate so it can be tested
 // without stopping services or installing anything.
 export function joinedConfig(existing, joined, { port, proxy, token }) {
   return {
-    name: joined.name, port, proxy, token: existing?.token || token, joined: { origin: joined.origin, id: joined.id, key: joined.key },
+    name: joined.name,
+    port,
+    proxy,
+    token: existing?.token || token,
+    // A repair run keeps what the main computer last said (route, LAN address).
+    joined: { ...(existing?.joined?.id === joined.id ? existing.joined : {}), origin: joined.origin, id: joined.id, key: joined.key },
   };
 }
 
@@ -458,9 +491,9 @@ async function finishJoin(existing, joined, flags, joinFile) {
   const cli = path.join(homeDir(), 'app', 'bin', 'wanji.mjs');
   let desktopProblem = null;
   if (desktopSupported && !flags['no-desktop'] && !desktopInstalled()) {
-    say('[3/4] 安装桌面控制（看屏幕、点鼠标）...', 'Installing desktop control...');
+    say('[3/4] 安装桌面控制（看屏幕、点鼠标）：要下载约 500 MB，可能要几分钟，请不要关闭窗口...', 'Installing desktop control...');
     try {
-      installDesktop({ proxy });
+      await installDesktop({ proxy });
     } catch (err) {
       desktopProblem = err.message;
       say(`警告：桌面控制没有装好：${err.message}`, `Warning: desktop control was not installed: ${err.message}`);
@@ -481,11 +514,14 @@ async function finishJoin(existing, joined, flags, joinFile) {
     console.log(`\nDone. This computer is now "${joined.name}". It starts by itself and appears in the phone app.`);
     return;
   }
-  console.log(`\n完成。这台电脑已经连上主电脑，名字是“${joined.name}”，以后每次登录都会自动连接，手机 App 里能看到它。`);
+  console.log(joined.repaired
+    ? `\n完成。这台电脑之前已经加入过（名字“${joined.name}”），这次更新了程序并重新启动，没有重复添加。`
+    : `\n完成。这台电脑已经连上主电脑，名字是“${joined.name}”，以后每次登录都会自动连接，手机 App 里能看到它。`);
   if (desktopProblem) {
-    console.log(`\n注意：AI 现在可以在这台电脑上运行命令、读写文件，但还不能看屏幕、点鼠标。\n要开启这项功能：先从 python.org 安装 Python 3.12，再运行：\n  "${node}" "${cli}" desktop`);
+    console.log(`\n注意：AI 现在可以在这台电脑上运行命令、读写文件，但还不能看屏幕、点鼠标。\n检查网络后，运行下面这行重试：\n  "${node}" "${cli}" desktop`);
   }
-  console.log('\n以后不想用了：在“设置 > 应用 > 已安装的应用”里找到“万机”卸载即可。\n这个加入程序已经用过了，不能再用，可以删掉。');
+  console.log('\n以后不想用了：在“设置 > 应用 > 已安装的应用”里找到“万机”卸载即可。');
+  if (joined.reusable === false) console.log('这个加入程序是一次性的，已经用过了，可以删掉。');
 }
 
 async function joinCommand({ flags, positional }) {
@@ -512,16 +548,25 @@ async function joinSteps({ flags, positional }) {
     if (!joined) throw new Error(`no join file at ${file}; ask the main computer for one (wanji invite --file <path>)`);
     const name = joined.name || (typeof flags.name === 'string' ? flags.name : os.hostname().toLowerCase());
     if (joined.code) {
-      // A one-use code: the main computer creates this computer now. Nothing on this
+      // A pairing code: the main computer creates this computer now. Nothing on this
       // computer has been touched yet if this fails.
       if (flags.joiner) console.log('[1/4] 连接主电脑...');
       const proxy = flags.proxy === true ? undefined : flags.proxy || existing?.proxy;
+      // Already joined to this main computer: a repair run keeps its identity, so a
+      // permanent EXE run twice does not add the computer twice. Only a key the main
+      // computer has removed means joining afresh.
+      if (existing?.joined?.origin === joined.origin) {
+        const answer = await hubClient(joined.origin, proxy)('/hub/node/ping', { key: existing.joined.key, body: {}, timeoutMs: 20000 }).catch(() => null);
+        if (answer?.status !== 401) {
+          return finishJoin(existing, { ...existing.joined, name: existing.name, repaired: true }, flags, null);
+        }
+      }
       let created;
       try {
         created = await joinHub({ origin: joined.origin, code: joined.code, proxy, name });
       } catch (err) {
         if (flags.joiner && /wrong, expired or already used/.test(err.message)) {
-          throw new Error('这个加入程序已经用过、过期或被作废了。\n如果这台电脑之前已经用它加入过，就不用再运行了；否则请让主电脑重新生成一个。');
+          throw new Error('这个加入程序已经失效：一次性的已经用过或过期，或者被主电脑作废了。\n请让主电脑重新生成一个。');
         }
         throw err;
       }
@@ -837,7 +882,8 @@ export async function main(argv) {
     case 'app':
       return appCommand(parsed.flags);
     case 'invite': {
-      if (parsed.flags.cancel) return inviteCancelCommand();
+      if (parsed.flags.cancel) return inviteCancelCommand(parsed.flags.cancel);
+      if (parsed.flags.list) return invitesCommand();
       if (parsed.flags.exe) return inviteExeCommand(parsed.flags);
       if (parsed.flags.file) return inviteFileCommand(parsed.flags);
       const invite = await hubApi('invites', { method: 'POST' });
@@ -874,7 +920,7 @@ export async function main(argv) {
       await installBrowser({ proxy: parsed.flags.proxy === true ? undefined : parsed.flags.proxy || loadConfig()?.proxy });
       return undefined;
     case 'desktop':
-      installDesktop({ proxy: parsed.flags.proxy === true ? undefined : parsed.flags.proxy || loadConfig()?.proxy });
+      await installDesktop({ proxy: parsed.flags.proxy === true ? undefined : parsed.flags.proxy || loadConfig()?.proxy });
       return undefined;
     case 'update':
       requireConfig();

@@ -15,6 +15,8 @@ const POLL_HOLD_MS = 25000;
 const OFFLINE_MS = 45000;
 const INVITE_MS = 10 * 60 * 1000;
 const MAX_INVITE_DAYS = 30;
+// A permanent (reusable) invite has no expiry.
+const inviteLive = (invite, now) => invite.expires === null || invite.expires > now;
 const JOIN_WINDOW_MS = 10 * 60 * 1000;
 const MAX_JOIN_FAILURES = 10;
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
@@ -520,25 +522,49 @@ export class Hub {
 
   // ---- Pairing and management ----
 
-  // One use either way. `days` is for the one-click joiner EXE, which may sit in a
-  // chat for a while before the new computer runs it; the phone's codes stay 10 minutes.
-  createInvite({ days } = {}) {
+  // The phone's codes: one use, 10 minutes. `days`: a one-use joiner EXE, which may sit
+  // in a chat for a while. `reusable`: a permanent joiner EXE that adds any number of
+  // computers until the owner revokes it (the owner's choice; it is a standing credential).
+  createInvite({ days, reusable = false, label } = {}) {
     const now = Date.now();
     const code = newCode();
     const ttl = Number.isFinite(days) && days > 0 ? Math.min(days, MAX_INVITE_DAYS) * 86400000 : INVITE_MS;
-    this.state.invites = this.state.invites.filter((invite) => invite.expires > now);
-    this.state.invites.push({ hash: hashText(code), expires: now + ttl });
+    const invite = {
+      id: randomBytes(4).toString('hex'),
+      hash: hashText(code),
+      expires: reusable ? null : now + ttl,
+      reusable: Boolean(reusable),
+      label: typeof label === 'string' ? label.slice(0, 80) : '',
+      createdAt: now,
+      uses: 0,
+    };
+    this.state.invites = this.state.invites.filter((entry) => inviteLive(entry, now));
+    this.state.invites.push(invite);
     this.save();
     const { host } = new URL(this.origin());
-    return { code, host, origin: this.origin(), pair: formatPair(host, code), expiresIn: Math.round(ttl / 1000) };
+    return {
+      id: invite.id, code, host, origin: this.origin(), pair: formatPair(host, code), reusable: invite.reusable,
+      expiresIn: reusable ? null : Math.round(ttl / 1000),
+    };
   }
 
-  // Voids every unused pairing code, e.g. a joiner EXE sent to the wrong person.
-  cancelInvites() {
-    const count = this.state.invites.filter((invite) => invite.expires > Date.now()).length;
-    this.state.invites = [];
+  // What still works, without the code hashes.
+  listInvites() {
+    const now = Date.now();
+    return this.state.invites.filter((entry) => inviteLive(entry, now)).map(({ id, label, reusable, createdAt, expires, uses }) => ({
+      id: id || null, label: label || '', reusable: Boolean(reusable), createdAt: createdAt || null, expires: expires ?? null, uses: uses || 0,
+    }));
+  }
+
+  // Revokes one invite, or every one when no id is given (e.g. an EXE sent to the wrong
+  // person). Computers that already joined keep working; the app removes those one by one.
+  cancelInvites(id) {
+    const now = Date.now();
+    const live = this.state.invites.filter((entry) => inviteLive(entry, now));
+    const kept = id ? live.filter((entry) => entry.id !== id) : [];
+    this.state.invites = kept;
     this.save();
-    return count;
+    return live.length - kept.length;
   }
 
   uniqueName(wanted) {
@@ -566,7 +592,7 @@ export class Hub {
 
   hasInvite(code) {
     const wanted = hashText(String(code ?? '').replace(/-/g, '').toUpperCase());
-    return this.state.invites.some((invite) => invite.expires > Date.now() && invite.hash === wanted);
+    return this.state.invites.some((invite) => inviteLive(invite, Date.now()) && invite.hash === wanted);
   }
 
   join(body) {
@@ -576,14 +602,21 @@ export class Hub {
       return { status: 429, body: { error: 'too many wrong codes; try again in 10 minutes' } };
     }
     const wanted = hashText(String(body.code ?? '').replace(/-/g, '').toUpperCase());
-    const index = this.state.invites.findIndex((invite) => invite.expires > now && invite.hash === wanted);
+    const index = this.state.invites.findIndex((invite) => inviteLive(invite, now) && invite.hash === wanted);
     if (index < 0) {
       this.joinFailures.push(now);
       return { status: 403, body: { error: 'this pairing code is wrong, expired or already used' } };
     }
-    this.state.invites.splice(index, 1);
+    const invite = this.state.invites[index];
+    if (invite.reusable) {
+      invite.uses = (invite.uses || 0) + 1;
+      invite.lastUsedAt = now;
+    } else {
+      this.state.invites.splice(index, 1);
+    }
+    // createComputer saves the invite change too.
     const { id, key, name } = this.createComputer(body.name, body.info);
-    return { status: 200, body: { id, key, name } };
+    return { status: 200, body: { id, key, name, reusable: Boolean(invite.reusable) } };
   }
 
   nodeFor(req) {
@@ -1143,11 +1176,17 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
           return true;
         }
         if (action === 'invites' && req.method === 'POST') {
-          reply(res, 200, this.createInvite({ days: (await readJson(req))?.days }));
+          const body = await readJson(req);
+          reply(res, 200, this.createInvite({ days: body?.days, reusable: body?.reusable === true, label: body?.label }));
           return true;
         }
-        if (action === 'invites' && req.method === 'DELETE') {
-          reply(res, 200, { cancelled: this.cancelInvites() });
+        if (action === 'invites' && req.method === 'GET') {
+          reply(res, 200, { invites: this.listInvites() });
+          return true;
+        }
+        const inviteId = /^invites(?:\/([a-f0-9]+))?$/.exec(action);
+        if (inviteId && req.method === 'DELETE') {
+          reply(res, 200, { cancelled: this.cancelInvites(inviteId[1]) });
           return true;
         }
         if (action === 'computers' && req.method === 'POST') {
