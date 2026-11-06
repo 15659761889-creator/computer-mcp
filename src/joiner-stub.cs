@@ -2,7 +2,16 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Reflection;
 using System.Text;
+
+// Shown in the file's Properties; an EXE with no version details looks more suspicious.
+[assembly: AssemblyTitle("Wanji joiner")]
+[assembly: AssemblyDescription("Connects this computer to a Wanji main computer")]
+[assembly: AssemblyProduct("Wanji")]
+[assembly: AssemblyCompany("Wanji")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
 
 // Wanji one-click joiner stub.
 // The built joiner EXE is this stub plus an appended ZIP (node.exe, app/, join.json,
@@ -10,7 +19,20 @@ using System.Text;
 // offset where the ZIP starts. The stub extracts the ZIP to a temp folder and runs
 // bootstrap.cmd there, then cleans the temp folder up.
 class JoinerStub {
+  // A run whose window was closed early never reaches the finally below; its folder
+  // is cleared on the next run. Recent ones are left alone, another run may own them.
+  static void ClearOldRuns() {
+    try {
+      foreach (var dir in Directory.GetDirectories(Path.GetTempPath(), "wanji-join-*")) {
+        try {
+          if (DateTime.UtcNow - Directory.GetCreationTimeUtc(dir) > TimeSpan.FromHours(1)) Directory.Delete(dir, true);
+        } catch { }
+      }
+    } catch { }
+  }
+
   static int Main() {
+    ClearOldRuns();
     string exe = Process.GetCurrentProcess().MainModule.FileName;
     string tempDir = null;
     try {
@@ -44,7 +66,8 @@ class JoinerStub {
       }
       string bootstrap = Path.Combine(tempDir, "bootstrap.cmd");
       if (!File.Exists(bootstrap)) throw new Exception("bootstrap.cmd is missing from the joiner");
-      var psi = new ProcessStartInfo("cmd.exe", "/c \"" + bootstrap + "\"") {
+      // Doubled outer quotes: cmd /c strips one pair, so a path with ( ) or & still works.
+      var psi = new ProcessStartInfo("cmd.exe", "/d /c \"\"" + bootstrap + "\"\"") {
         WorkingDirectory = tempDir,
         UseShellExecute = false,
       };
@@ -54,6 +77,8 @@ class JoinerStub {
       }
     } catch (Exception ex) {
       Console.Error.WriteLine("Joiner failed: " + ex.Message);
+      // "加入程序出错，请把这个窗口截图发给给你这个程序的人。按任意键关闭。"
+      Console.WriteLine("加入程序出错，请把这个窗口截图发给给你这个程序的人。按任意键关闭。");
       Console.WriteLine("Press any key to close.");
       try { Console.ReadKey(true); } catch { }
       return 1;

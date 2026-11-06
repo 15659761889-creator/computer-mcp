@@ -2,7 +2,7 @@ import readline from 'node:readline/promises';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import qrcode from './vendor/qrcode.mjs';
 import {
@@ -10,8 +10,8 @@ import {
 } from './config.mjs';
 import { MemoryStore, renderLine } from './memory.mjs';
 import {
-  autostartState, installAppCopy, installAutostart, removeAutostart, runService, startService, stopService,
-  writeLauncher,
+  autostartState, installAppCopy, installAutostart, installRuntimeCopy, registerUninstallEntry, removeAutostart,
+  removeUninstallEntry, runService, startService, stopService, writeLauncher,
 } from './service.mjs';
 import { desktopInstalled, desktopSupported, installDesktop } from './desktop.mjs';
 import { browserInstalled, installBrowser } from './browser.mjs';
@@ -53,8 +53,10 @@ const HELP = `wanji: give this computer its own fixed MCP link
       --rows                  print the connection text and QR rows (for the Windows manager)
   wanji invite         make a one-time pairing code for adding another computer
       --file [path]           instead, pre-register a computer and write a join file (default: Desktop\join.json)
-      --exe [path]            instead, build a one-click joiner EXE the new computer just runs (default: Desktop\Wanji-Join-<name>.exe)
-      --name <name>           name the new computer (default: computer, or computer-2 ...)
+      --exe [path]            instead, build a one-click joiner EXE the new computer just runs (default: Desktop\Wanji-Join.exe);
+                              it holds a one-use code that expires after --days (default 7, at most 30)
+      --name <name>           name the new computer (default: computer, or computer-2 ...; with --exe: the new computer's own name)
+      --cancel                void every unused pairing code and joiner EXE
   wanji join <code>    add this computer to a main computer; it then starts by itself
       --file [path]           join from a join file instead of a pairing code
                               (no path: join.json in this computer's config folder)
@@ -353,55 +355,79 @@ async function inviteFileCommand(flags) {
   console.log(`加入文件已保存到：${target}\n\n把这个文件复制到新电脑的 %APPDATA%\\computer-mcp\\join.json，\n再在新电脑上打开 万机 管理器，确认后就会加入，不用输配对码\n（或者在新电脑上运行：wanji join --file <文件路径>）。\n\n注意：这个文件就是凭证，别泄露；加入成功后会自动删除。`);
 }
 
+const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const appVersion = () => JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version;
+
 // One-click joiner: a single EXE the new computer just runs. It is the joiner stub
 // (src/joiner-stub.cs) plus an appended ZIP (node.exe, app/, join.json, bootstrap.cmd)
 // and a 16-byte footer (magic "WANJISFX" + ZIP offset). The stub extracts the ZIP and
-// runs bootstrap.cmd, which installs the app, joins, sets up autostart and starts the
-// service. Nothing to copy or type on the new computer.
-async function inviteExeCommand(flags) {
-  if (process.platform !== 'win32') throw new Error('wanji invite --exe only builds a Windows joiner; run it on a Windows main computer');
-  const created = await hubApi('computers', { method: 'POST', body: { name: typeof flags.name === 'string' ? flags.name : undefined } });
-  const outName = `Wanji-Join-${created.name}.exe`;
-  const target = typeof flags.exe === 'string' && flags.exe
-    ? path.resolve(flags.exe)
-    : path.join(os.homedir(), 'Desktop', outName);
-  const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'wanji-joiner-'));
+// runs bootstrap.cmd, which runs `join` from the extracted copy; join checks first,
+// then installs. join.json holds a one-use pairing code, not a computer's key, so a
+// used, expired or cancelled EXE is worthless.
+export function buildJoinerExe({ join, target, appRoot = APP_ROOT, node = process.execPath }) {
+  const csc = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
+  if (!fs.existsSync(csc)) throw new Error('cannot find the C# compiler (csc.exe); the joiner needs .NET Framework 4 on this computer');
+  if (!fs.existsSync(node)) throw new Error(`cannot find the Node runtime at ${node}`);
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'wanji-joiner-'));
+  const stage = path.join(work, 'payload');
   try {
-    // Stage the payload: node runtime, the app, the join credentials, the bootstrap.
-    const nodeExe = process.execPath;
-    if (!fs.existsSync(nodeExe)) throw new Error(`cannot find the Node runtime at ${nodeExe}`);
-    fs.copyFileSync(nodeExe, path.join(stage, 'node.exe'));
-    const appDir = path.join(stage, 'app');
-    fs.mkdirSync(appDir, { recursive: true });
+    fs.mkdirSync(path.join(stage, 'app'), { recursive: true });
+    fs.copyFileSync(node, path.join(stage, 'node.exe'));
     for (const entry of ['bin', 'src', 'desktop', 'web', 'package.json']) {
       const src = path.join(appRoot, entry);
-      if (fs.existsSync(src)) fs.cpSync(src, path.join(appDir, entry), { recursive: true });
+      if (fs.existsSync(src)) fs.cpSync(src, path.join(stage, 'app', entry), { recursive: true });
     }
-    fs.writeFileSync(path.join(stage, 'join.json'), `${JSON.stringify({ origin: created.origin, id: created.id, key: created.key, name: created.name }, null, 2)}\n`, { mode: 0o600 });
+    fs.writeFileSync(path.join(stage, 'join.json'), `${JSON.stringify(join, null, 2)}\n`, { mode: 0o600 });
     fs.copyFileSync(path.join(appRoot, 'src', 'joiner-bootstrap.cmd'), path.join(stage, 'bootstrap.cmd'));
-    // Compile the stub, then zip the payload.
-    const csc = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
-    if (!fs.existsSync(csc)) throw new Error('cannot find the C# compiler (csc.exe); the joiner needs .NET Framework 4 on this computer');
-    const stubExe = path.join(stage, 'stub.exe');
+    // The stub and the ZIP are built next to the payload, not inside it.
+    const stubExe = path.join(work, 'stub.exe');
     const cscRes = spawnSync(csc, ['/nologo', '/target:exe', '/optimize+', `/out:${stubExe}`, '/r:System.IO.Compression.dll', '/r:System.IO.Compression.FileSystem.dll', path.join(appRoot, 'src', 'joiner-stub.cs')], { encoding: 'utf8', windowsHide: true });
     if (cscRes.status !== 0) throw new Error(`could not compile the joiner stub: ${(cscRes.stderr || cscRes.stdout || '').trim()}`);
-    const zipPath = path.join(stage, 'payload.zip');
-    const zipScript = `Compress-Archive -Path '${stage}\\*' -DestinationPath '${zipPath}' -Force`;
+    const zipPath = path.join(work, 'payload.zip');
+    const quoted = (value) => `'${value.replace(/'/g, "''")}'`;
+    const zipScript = `Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::CreateFromDirectory(${quoted(stage)}, ${quoted(zipPath)})`;
     const zipRes = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(zipScript, 'utf16le').toString('base64')], { encoding: 'utf8', windowsHide: true });
-    if (zipRes.status !== 0) throw new Error(`could not zip the joiner payload: ${(zipRes.stderr || zipRes.stdout || '').trim()}`);
-    // Append ZIP + footer to the stub: [stub][zip][magic 8B][zip offset 8B LE].
+    if (zipRes.status !== 0 || !fs.existsSync(zipPath)) throw new Error(`could not zip the joiner payload: ${(zipRes.stderr || zipRes.stdout || '').trim()}`);
+    // [stub][zip][magic 8B][zip offset 8B LE].
     const stub = fs.readFileSync(stubExe);
-    const zip = fs.readFileSync(zipPath);
     const footer = Buffer.alloc(16);
     footer.write('WANJISFX', 0, 'ascii');
     footer.writeBigInt64LE(BigInt(stub.length), 8);
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, Buffer.concat([stub, zip, footer]));
-    console.log(`一键加入程序已生成：${target}\n\n把这个文件发到新电脑上，双击运行，它会自动安装并连接，不用输配对码、不用复制文件。\n新电脑的名字是 ${created.name}。\n\n注意：这个程序里有连接凭证，别发给别人；新电脑加入成功后可以把它删掉。`);
+    fs.writeFileSync(target, Buffer.concat([stub, fs.readFileSync(zipPath), footer]));
+    return target;
   } finally {
-    fs.rmSync(stage, { recursive: true, force: true });
+    fs.rmSync(work, { recursive: true, force: true });
   }
+}
+
+// A name not already on the Desktop, so an earlier EXE that may still be valid is not overwritten unseen.
+function freeName(dir, base) {
+  for (let i = 1; ; i += 1) {
+    const file = path.join(dir, `${base}${i === 1 ? '' : `-${i}`}.exe`);
+    if (!fs.existsSync(file)) return file;
+  }
+}
+
+async function inviteExeCommand(flags) {
+  if (process.platform !== 'win32') throw new Error('wanji invite --exe only builds a Windows joiner; run it on a Windows main computer');
+  const name = typeof flags.name === 'string' && flags.name ? flags.name : undefined;
+  const days = flags.days === undefined || flags.days === true ? 7 : Number(flags.days);
+  if (!Number.isFinite(days) || days <= 0 || days > 30) throw new Error('--days must be between 1 and 30');
+  const target = typeof flags.exe === 'string' && flags.exe
+    ? path.resolve(flags.exe)
+    : freeName(path.join(os.homedir(), 'Desktop'), name ? `Wanji-Join-${name.replace(/[\\/:*?"<>|\s]+/g, '-')}` : 'Wanji-Join');
+  const invite = await hubApi('invites', { method: 'POST', body: { days } });
+  if (!invite.origin) throw new Error('the running service is too old for joiner EXEs; run wanji update first');
+  // If the build fails, the code was never shown anywhere and simply expires.
+  buildJoinerExe({ join: { origin: invite.origin, code: invite.code, ...(name ? { name } : {}) }, target });
+  const valid = Math.round(invite.expiresIn / 86400);
+  console.log(`一键加入程序已生成：${target}\n\n把这个文件发到新电脑上，双击运行，它会自动安装并连接，不用输配对码、不用复制文件。\n${name ? `新电脑的名字是 ${name}。` : '新电脑会用它自己的电脑名，之后可以在手机 App 里改。'}\n\n这个程序只能用一次，${valid} 天内有效；用过、过期就作废了。\n如果发错了人，在这台电脑上运行 wanji invite --cancel，所有还没用过的配对码和加入程序都会立刻作废。`);
+}
+
+async function inviteCancelCommand() {
+  const { cancelled } = await hubApi('invites', { method: 'DELETE' });
+  console.log(`已作废 ${cancelled} 个还没用过的配对码 / 加入程序。`);
 }
 
 // The config a joined computer saves; kept separate so it can be tested
@@ -415,35 +441,92 @@ export function joinedConfig(existing, joined, { port, proxy, token }) {
 // The shared tail of joining: save the credentials, install the app copy and
 // desktop control, set up autostart, and start the service. A join file is
 // deleted only once its credentials are saved, so a failure cannot lose them.
+//
+// --install-runtime (the joiner EXE): node runs from a temp folder, so it is copied
+// into the 万机 folder after the old service has stopped, and the computer gets an
+// entry in Settings > Apps. --joiner: messages in Chinese for whoever runs the EXE.
 async function finishJoin(existing, joined, flags, joinFile) {
+  const say = (zh, en) => console.log(flags.joiner ? zh : en);
   const proxy = flags.proxy === true ? undefined : flags.proxy || existing?.proxy;
   await stopService();
   const port = existing?.port || await choosePort();
   saveConfig(joinedConfig(existing, joined, { port, proxy, token: newToken() }));
   if (joinFile) fs.rmSync(joinFile, { force: true });
+  say('[2/4] 安装程序文件...', 'Installing the program files...');
+  const node = flags['install-runtime'] ? installRuntimeCopy() : process.execPath;
   installAppCopy();
+  const cli = path.join(homeDir(), 'app', 'bin', 'wanji.mjs');
+  let desktopProblem = null;
   if (desktopSupported && !flags['no-desktop'] && !desktopInstalled()) {
+    say('[3/4] 安装桌面控制（看屏幕、点鼠标）...', 'Installing desktop control...');
     try {
       installDesktop({ proxy });
     } catch (err) {
-      console.log(`Warning: desktop control was not installed: ${err.message}`);
+      desktopProblem = err.message;
+      say(`警告：桌面控制没有装好：${err.message}`, `Warning: desktop control was not installed: ${err.message}`);
     }
   }
-  const autostart = installAutostart({ limited: flags.limited === true });
+  say('[4/4] 设置开机自动启动...', 'Setting up automatic start...');
+  const autostart = installAutostart({ limited: flags.limited === true, node });
   if (autostart.installed) startService();
   if (autostart.note) console.log(autostart.note);
-  console.log(`\nDone. This computer is now "${joined.name}". It starts by itself and appears in the phone app.`);
+  if (flags['install-runtime']) {
+    try {
+      registerUninstallEntry({ node, displayName: `万机（${joined.name}）`, version: appVersion() });
+    } catch (err) {
+      say(`警告：没能在“设置 > 应用”里添加卸载项：${err.message}`, `Warning: no uninstall entry was added: ${err.message}`);
+    }
+  }
+  if (!flags.joiner) {
+    console.log(`\nDone. This computer is now "${joined.name}". It starts by itself and appears in the phone app.`);
+    return;
+  }
+  console.log(`\n完成。这台电脑已经连上主电脑，名字是“${joined.name}”，以后每次登录都会自动连接，手机 App 里能看到它。`);
+  if (desktopProblem) {
+    console.log(`\n注意：AI 现在可以在这台电脑上运行命令、读写文件，但还不能看屏幕、点鼠标。\n要开启这项功能：先从 python.org 安装 Python 3.12，再运行：\n  "${node}" "${cli}" desktop`);
+  }
+  console.log('\n以后不想用了：在“设置 > 应用 > 已安装的应用”里找到“万机”卸载即可。\n这个加入程序已经用过了，不能再用，可以删掉。');
 }
 
 async function joinCommand({ flags, positional }) {
+  try {
+    return await joinSteps({ flags, positional });
+  } catch (err) {
+    if (flags.joiner) {
+      err.message = `${err.message}\n\n没有加入成功。请把这个窗口截图发给给你这个程序的人。`;
+    }
+    throw err;
+  }
+}
+
+async function joinSteps({ flags, positional }) {
   const existing = loadConfig();
-  if (existing?.hostname) throw new Error(`this computer already has its own link as "${existing.name}"; run wanji uninstall --delete-tunnel --purge first`);
+  if (existing?.hostname) {
+    if (flags.joiner) throw new Error(`这台电脑本身就是主电脑（“${existing.name}”），不能再加入别的电脑。这个程序应该在新电脑上运行。`);
+    throw new Error(`this computer already has its own link as "${existing.name}"; run wanji uninstall --delete-tunnel --purge first`);
+  }
   if (flags.file) {
     // --file alone means the join.json in this computer's config folder.
     const file = typeof flags.file === 'string' ? path.resolve(flags.file) : joinFilePath();
     const joined = readJoinFileAt(file);
     if (!joined) throw new Error(`no join file at ${file}; ask the main computer for one (wanji invite --file <path>)`);
     const name = joined.name || (typeof flags.name === 'string' ? flags.name : os.hostname().toLowerCase());
+    if (joined.code) {
+      // A one-use code: the main computer creates this computer now. Nothing on this
+      // computer has been touched yet if this fails.
+      if (flags.joiner) console.log('[1/4] 连接主电脑...');
+      const proxy = flags.proxy === true ? undefined : flags.proxy || existing?.proxy;
+      let created;
+      try {
+        created = await joinHub({ origin: joined.origin, code: joined.code, proxy, name });
+      } catch (err) {
+        if (flags.joiner && /wrong, expired or already used/.test(err.message)) {
+          throw new Error('这个加入程序已经用过、过期或被作废了。\n如果这台电脑之前已经用它加入过，就不用再运行了；否则请让主电脑重新生成一个。');
+        }
+        throw err;
+      }
+      return finishJoin(existing, { ...created, origin: joined.origin }, flags, file);
+    }
     return finishJoin(existing, { ...joined, name }, flags, file);
   }
   const { origin, code } = parsePair(positional.join(' '));
@@ -713,11 +796,31 @@ async function uninstall({ flags }) {
     deleteTunnel({ cloudflared: config.cloudflared, name: config.name, proxy: config.proxy });
     console.log(`Tunnel deleted. The DNS record ${config.hostname} remains; remove it in the Cloudflare dashboard if you no longer need the name.`);
   }
+  removeUninstallEntry();
   if (flags.purge) {
-    fs.rmSync(homeDir(), { recursive: true, force: true });
+    const home = path.resolve(homeDir());
+    const running = path.resolve(process.execPath);
+    if (process.platform === 'win32' && running.toLowerCase().startsWith(`${home.toLowerCase()}${path.sep}`)) {
+      // Removed from Settings > Apps: this very node.exe lives in the folder and stays
+      // locked until it exits, so everything else goes now and a short-lived cmd takes the rest.
+      for (const entry of fs.readdirSync(home)) {
+        if (path.join(home, entry).toLowerCase() !== path.dirname(running).toLowerCase()) fs.rmSync(path.join(home, entry), { recursive: true, force: true });
+      }
+      // Verbatim, because cmd does not understand the \" quoting node would add.
+      // Retried for up to a minute, since this process may linger a few seconds.
+      spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/c', `for /l %i in (1,1,30) do @(ping -n 3 127.0.0.1 >nul & rmdir /s /q "${home}" 2>nul & if not exist "${home}" exit /b 0)`], {
+        detached: true, stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true,
+      }).unref();
+    } else {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
     console.log('Local settings, logs and the secret are deleted.');
   }
   console.log('Automatic start removed and service stopped.');
+  if (flags['from-settings']) {
+    console.log('\n万机已从这台电脑移除。如果主电脑的手机 App 里还显示这台电脑，在那里删掉它即可。');
+    await new Promise((resolve) => { setTimeout(resolve, 4000); });
+  }
 }
 
 export async function main(argv) {
@@ -734,6 +837,7 @@ export async function main(argv) {
     case 'app':
       return appCommand(parsed.flags);
     case 'invite': {
+      if (parsed.flags.cancel) return inviteCancelCommand();
       if (parsed.flags.exe) return inviteExeCommand(parsed.flags);
       if (parsed.flags.file) return inviteFileCommand(parsed.flags);
       const invite = await hubApi('invites', { method: 'POST' });

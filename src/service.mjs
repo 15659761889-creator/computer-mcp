@@ -19,7 +19,9 @@ import {
 } from './autostart-linux.mjs';
 
 const IS_WINDOWS = process.platform === 'win32';
-const TASK_NAME = 'ComputerMCP';
+// COMPUTER_MCP_TASK lets a test install next to the real service without touching it.
+const TASK_NAME = process.env.COMPUTER_MCP_TASK || 'ComputerMCP';
+const UNINSTALL_KEY = `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Wanji-${TASK_NAME}`;
 const PACKAGE_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 function powershell(script) {
@@ -239,6 +241,49 @@ export function installAppCopy() {
   return app;
 }
 
+// The joiner EXE runs node from a temp folder, so the service gets its own copy.
+// Called after stopService: a running service holds the old copy open, hence the retries.
+export function installRuntimeCopy() {
+  const target = path.join(homeDir(), 'runtime', 'node.exe');
+  if (path.resolve(target).toLowerCase() === path.resolve(process.execPath).toLowerCase()) return target;
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      fs.copyFileSync(process.execPath, target);
+      return target;
+    } catch (err) {
+      if (attempt >= 10 || !['EBUSY', 'EPERM', 'EACCES'].includes(err.code)) throw new Error(`could not copy node.exe to ${target}: ${err.message}`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+    }
+  }
+}
+
+// A computer set up by the joiner EXE has no installer, so it gets its own entry
+// in Settings > Apps; removing it there runs `wanji uninstall --purge`.
+export function registerUninstallEntry({ node, displayName, version }) {
+  if (!IS_WINDOWS) return;
+  const cli = path.join(homeDir(), 'app', 'bin', 'wanji.mjs');
+  const values = [
+    ['DisplayName', 'REG_SZ', displayName],
+    ['DisplayVersion', 'REG_SZ', version],
+    ['Publisher', 'REG_SZ', '万机'],
+    ['InstallLocation', 'REG_SZ', homeDir()],
+    ['DisplayIcon', 'REG_SZ', node],
+    ['UninstallString', 'REG_SZ', `"${node}" "${cli}" uninstall --purge --from-settings`],
+    ['NoModify', 'REG_DWORD', '1'],
+    ['NoRepair', 'REG_DWORD', '1'],
+  ];
+  for (const [name, type, data] of values) {
+    const result = spawnSync('reg.exe', ['add', UNINSTALL_KEY, '/v', name, '/t', type, '/d', data, '/f'], { encoding: 'utf8', windowsHide: true });
+    if (result.status !== 0) throw new Error(`could not add the uninstall entry: ${(result.stderr || result.stdout).trim()}`);
+  }
+}
+
+export function removeUninstallEntry() {
+  if (!IS_WINDOWS) return;
+  spawnSync('reg.exe', ['delete', UNINSTALL_KEY, '/f'], { stdio: 'ignore', windowsHide: true });
+}
+
 // The check Windows itself uses: only an elevated process may run this.
 export function isElevated() {
   return IS_WINDOWS && spawnSync('net', ['session'], { stdio: 'ignore', windowsHide: true }).status === 0;
@@ -259,14 +304,16 @@ function runElevated(script) {
 
 // Writes the logon launcher that starts the service; `update` rewrites it too,
 // so a renamed entry file does not leave the old launcher pointing nowhere.
-export function writeLauncher() {
+export function writeLauncher(node = process.execPath) {
   const cli = path.join(homeDir(), 'app', 'bin', 'wanji.mjs');
   const launcher = path.join(homeDir(), 'launcher.vbs');
   // wscript starts node without a window; the loop brings the service back if it ever dies.
+  // A custom home must reach the service too, or it would run on the default home's config.
   const vbs = [
     'Set shell = CreateObject("WScript.Shell")',
+    ...(process.env.COMPUTER_MCP_HOME ? [`shell.Environment("PROCESS")("COMPUTER_MCP_HOME") = "${process.env.COMPUTER_MCP_HOME.replace(/"/g, '""')}"`] : []),
     'Do',
-    `  shell.Run """${process.execPath}"" ""${cli}"" run", 0, True`,
+    `  shell.Run """${node}"" ""${cli}"" run", 0, True`,
     '  WScript.Sleep 5000',
     'Loop',
     '',
@@ -275,12 +322,14 @@ export function writeLauncher() {
   return launcher;
 }
 
-export function installAutostart({ limited = false } = {}) {
+// COMPUTER_MCP_AUTOSTART=limited skips the administrator prompt (used by tests).
+export function installAutostart({ limited: asked = false, node } = {}) {
+  const limited = asked || process.env.COMPUTER_MCP_AUTOSTART === 'limited';
   if (process.platform === 'linux') return installLinuxAutostart();
   if (!IS_WINDOWS) {
     return { installed: false, note: 'Automatic start is not built for this system yet; run `wanji run` from your service manager.' };
   }
-  const launcher = writeLauncher();
+  const launcher = writeLauncher(node);
 
   const quoted = (value) => `'${value.replace(/'/g, "''")}'`;
   // Named now, because an elevated script could be running as a different administrator account.

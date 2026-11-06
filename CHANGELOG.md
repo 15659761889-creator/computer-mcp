@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.8 (2026-11-06)
+
+### One-click joiner EXE (`wanji invite --exe`, manager button)
+- The EXE carries a one-use pairing code (default 7 days, `--days` up to 30), not a
+  computer's key: a used, expired or cancelled EXE is worthless. `wanji invite --cancel`
+  voids every unused code. The hub accepts `days` on POST invites and DELETE invites.
+- `join` runs from the extracted copy and checks first (main computer, used code), so a
+  refused run changes nothing; only then it stops an old service and copies node and the app.
+- One autostart step (one administrator prompt) instead of two; Chinese messages; a clear
+  note when desktop control could not be installed (needs Python 3.10-3.13).
+- Joined computers get an entry in Settings > Apps that runs `wanji uninstall --purge`.
+- `COMPUTER_MCP_HOME` is written into launcher.vbs; `COMPUTER_MCP_TASK` and
+  `COMPUTER_MCP_AUTOSTART=limited` let a test install beside the real service.
+
 ## 0.6.7 (2026-11-05)
 
 ### Audit fixes

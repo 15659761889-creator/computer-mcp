@@ -14,6 +14,7 @@ const POLL_HOLD_MS = 25000;
 // A node polls again at once, so this much silence means it is gone.
 const OFFLINE_MS = 45000;
 const INVITE_MS = 10 * 60 * 1000;
+const MAX_INVITE_DAYS = 30;
 const JOIN_WINDOW_MS = 10 * 60 * 1000;
 const MAX_JOIN_FAILURES = 10;
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
@@ -519,14 +520,25 @@ export class Hub {
 
   // ---- Pairing and management ----
 
-  createInvite() {
+  // One use either way. `days` is for the one-click joiner EXE, which may sit in a
+  // chat for a while before the new computer runs it; the phone's codes stay 10 minutes.
+  createInvite({ days } = {}) {
     const now = Date.now();
     const code = newCode();
+    const ttl = Number.isFinite(days) && days > 0 ? Math.min(days, MAX_INVITE_DAYS) * 86400000 : INVITE_MS;
     this.state.invites = this.state.invites.filter((invite) => invite.expires > now);
-    this.state.invites.push({ hash: hashText(code), expires: now + INVITE_MS });
+    this.state.invites.push({ hash: hashText(code), expires: now + ttl });
     this.save();
     const { host } = new URL(this.origin());
-    return { code, host, pair: formatPair(host, code), expiresIn: INVITE_MS / 1000 };
+    return { code, host, origin: this.origin(), pair: formatPair(host, code), expiresIn: Math.round(ttl / 1000) };
+  }
+
+  // Voids every unused pairing code, e.g. a joiner EXE sent to the wrong person.
+  cancelInvites() {
+    const count = this.state.invites.filter((invite) => invite.expires > Date.now()).length;
+    this.state.invites = [];
+    this.save();
+    return count;
   }
 
   uniqueName(wanted) {
@@ -1131,7 +1143,11 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
           return true;
         }
         if (action === 'invites' && req.method === 'POST') {
-          reply(res, 200, this.createInvite());
+          reply(res, 200, this.createInvite({ days: (await readJson(req))?.days }));
+          return true;
+        }
+        if (action === 'invites' && req.method === 'DELETE') {
+          reply(res, 200, { cancelled: this.cancelInvites() });
           return true;
         }
         if (action === 'computers' && req.method === 'POST') {

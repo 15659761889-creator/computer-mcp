@@ -58,8 +58,11 @@ export function readJoinFileAt(file) {
   } catch {
     throw new Error('加入文件无效：不是有效的 JSON');
   }
-  const { origin, id, key, name } = parsed ?? {};
-  if (typeof origin !== 'string' || !origin || typeof id !== 'string' || !id || typeof key !== 'string' || !key) {
+  const { origin, id, key, code, name } = parsed ?? {};
+  // Either pre-registered credentials (id/key) or a one-use pairing code (the joiner EXE).
+  const hasKey = typeof id === 'string' && id && typeof key === 'string' && key;
+  const hasCode = typeof code === 'string' && code;
+  if (typeof origin !== 'string' || !origin || (!hasKey && !hasCode)) {
     throw new Error('加入文件无效：缺少 origin/id/key');
   }
   let url;
@@ -71,7 +74,8 @@ export function readJoinFileAt(file) {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error('加入文件无效：origin 必须是 http:// 或 https:// 开头');
   }
-  return { origin, id, key, name: typeof name === 'string' && name ? name : undefined };
+  const wanted = typeof name === 'string' && name ? name : undefined;
+  return hasKey ? { origin, id, key, name: wanted } : { origin, code, name: wanted };
 }
 
 export function loadConfig() {
