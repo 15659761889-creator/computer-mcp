@@ -11,7 +11,7 @@ export const LAN_PORT = 8766;
 export const DISCOVERY_PORT = 8767;
 const CIPHERS = 'ECDHE-PSK-CHACHA20-POLY1305';
 const TLS = { ciphers: CIPHERS, minVersion: 'TLSv1.2', maxVersion: 'TLSv1.2' };
-const FIREWALL_RULE = 'Computer MCP LAN';
+const FIREWALL_RULE = '万机 LAN';
 
 export const ROUTES = ['auto', 'lan', 'public'];
 
@@ -119,11 +119,11 @@ export function lanRequest({ host, port, identity, psk, path, method = 'GET', he
 export function lanReason(err, host, port) {
   const where = `${host}:${port}`;
   switch (err.code) {
-    case 'ECONNREFUSED': return `${where} refused the connection (Computer MCP is not running there, or uses another port)`;
+    case 'ECONNREFUSED': return `${where} refused the connection (万机 is not running there, or uses another port)`;
     case 'ETIMEDOUT': case 'ESOCKETTIMEDOUT': return `${where} did not answer (not on this network, or a firewall blocks port ${port})`;
     case 'EHOSTUNREACH': case 'ENETUNREACH': return `${where} cannot be reached from this network`;
     case 'ECONNRESET': return `${where} closed the connection`;
-    case 'EPROTO': case 'ERR_SSL_TLSV1_ALERT_UNKNOWN_PSK_IDENTITY': return `${where} did not accept this computer's key (a different Computer MCP, or this computer was removed)`;
+    case 'EPROTO': case 'ERR_SSL_TLSV1_ALERT_UNKNOWN_PSK_IDENTITY': return `${where} did not accept this computer's key (a different 万机, or this computer was removed)`;
     default: return `${where}: ${err.message}`;
   }
 }

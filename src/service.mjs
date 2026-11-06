@@ -88,7 +88,7 @@ function rememberSettings(changed) {
 }
 
 // A computer joined to a hub opens no tunnel: its only link is the one it makes to the main computer.
-// The local server remains so `computer-mcp stop` can reach an elevated service.
+// The local server remains so `wanji stop` can reach an elevated service.
 async function runJoinedComputer(config) {
   let shutdown = () => {};
   const server = createMcpServer({
@@ -127,7 +127,7 @@ async function runJoinedComputer(config) {
     },
   });
   warmDesktop();
-  console.log(`computer-mcp "${config.name}" joined to ${config.joined.origin}`);
+  console.log(`wanji "${config.name}" joined to ${config.joined.origin}`);
   shutdown = () => {
     link.stop();
     lan?.server.close();
@@ -189,7 +189,7 @@ export async function runService() {
     server.once('error', reject);
     server.listen(config.port, '127.0.0.1', resolve);
   });
-  console.log(`computer-mcp "${config.name}" listening on 127.0.0.1:${config.port}`);
+  console.log(`wanji "${config.name}" listening on 127.0.0.1:${config.port}`);
 
   let tunnel = null;
   let stopping = false;
@@ -253,12 +253,10 @@ function runElevated(script) {
   return ok;
 }
 
-export function installAutostart({ limited = false } = {}) {
-  if (process.platform === 'linux') return installLinuxAutostart();
-  if (!IS_WINDOWS) {
-    return { installed: false, note: 'Automatic start is not built for this system yet; run `computer-mcp run` from your service manager.' };
-  }
-  const cli = path.join(homeDir(), 'app', 'bin', 'computer-mcp.mjs');
+// Writes the logon launcher that starts the service; `update` rewrites it too,
+// so a renamed entry file does not leave the old launcher pointing nowhere.
+export function writeLauncher() {
+  const cli = path.join(homeDir(), 'app', 'bin', 'wanji.mjs');
   const launcher = path.join(homeDir(), 'launcher.vbs');
   // wscript starts node without a window; the loop brings the service back if it ever dies.
   const vbs = [
@@ -270,6 +268,15 @@ export function installAutostart({ limited = false } = {}) {
     '',
   ].join('\r\n');
   fs.writeFileSync(launcher, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(vbs, 'utf16le')]));
+  return launcher;
+}
+
+export function installAutostart({ limited = false } = {}) {
+  if (process.platform === 'linux') return installLinuxAutostart();
+  if (!IS_WINDOWS) {
+    return { installed: false, note: 'Automatic start is not built for this system yet; run `wanji run` from your service manager.' };
+  }
+  const launcher = writeLauncher();
 
   const quoted = (value) => `'${value.replace(/'/g, "''")}'`;
   // Named now, because an elevated script could be running as a different administrator account.
@@ -298,7 +305,7 @@ Register-ScheduledTask -TaskName ${quoted(TASK_NAME)} -Action $action -Trigger $
 
 export function startService() {
   if (process.platform === 'linux') return startLinuxService();
-  if (!IS_WINDOWS) throw new Error('on this system start it with: computer-mcp run');
+  if (!IS_WINDOWS) throw new Error('on this system start it with: wanji run');
   const result = powershell(`Start-ScheduledTask -TaskName '${TASK_NAME}'`);
   if (result.status !== 0) throw new Error(`could not start the task: ${result.stderr.trim()}`);
 }
@@ -328,7 +335,9 @@ export async function stopService() {
   const config = loadConfig();
   if (config) await askToStop(config);
   const state = readState();
-  killIfOurs(state.pid, 'computer-mcp');
+  // The marker changed with the rename; the old one still catches a service
+  // started before the rename, the new one catches everything after it.
+  killIfOurs(state.pid, 'wanji') || killIfOurs(state.pid, 'computer-mcp');
   killIfOurs(state.cloudflaredPid, tunnelConfigPath());
   fs.rmSync(statePath(), { force: true });
 }

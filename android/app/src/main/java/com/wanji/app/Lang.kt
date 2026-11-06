@@ -1,4 +1,4 @@
-package com.computermcp.app
+package com.wanji.app
 
 import android.content.Context
 import java.util.Locale

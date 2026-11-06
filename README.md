@@ -1,6 +1,6 @@
-# Computer MCP
+# 万机
 
-Give any computer its own MCP link, so a model can control it. Requires Node.js >=20. On Windows, Python 3.10-3.13 is needed for desktop control. Bash is optional: without Git for Windows the AI uses PowerShell, and `computer-mcp shell bash` downloads Portable Git (about 60 MB, no administrator rights).
+Give any computer its own MCP link, so a model can control it. Requires Node.js >=20. On Windows, Python 3.10-3.13 is needed for desktop control. Bash is optional: without Git for Windows the AI uses PowerShell, and `wanji shell bash` downloads Portable Git (about 60 MB, no administrator rights).
 
 ## Tools
 
@@ -13,7 +13,7 @@ Give any computer its own MCP link, so a model can control it. Requires Node.js 
 | `edit_file` | Replace exact text, keeping encoding and line endings. Refuses if the match is not unique. |
 | `ui_look` | Windows only. Windows, controls and on-screen text as a numbered list with coordinates, plus a screenshot when needed. |
 | `ui_act` | Windows only. Click, type, press keys, scroll, drag and manage windows by id, text or coordinates, then return the new state. |
-| `browser` | The AI's own browser: headless Chromium with its own profile (logins kept), read as numbered elements and text like `ui_look`. Works on computers without a screen. Install with `computer-mcp browser` (about 300 MB; on Linux it also installs the libraries and Chinese fonts when sudo needs no password). |
+| `browser` | The AI's own browser: headless Chromium with its own profile (logins kept), read as numbered elements and text like `ui_look`. Works on computers without a screen. Install with `wanji browser` (about 300 MB; on Linux it also installs the libraries and Chinese fonts when sudo needs no password). |
 | `transfer` | With several computers: copy a file or folder between them, any size, over the LAN when possible. Resumes after interruptions and checks SHA-256 before putting it in place. |
 | `recent_calls` | Read-only. The latest tool calls from every AI session, newest first, so a new AI can tell what the last one did, whether it finished and where to continue. See "Picking up unfinished work". |
 | `skill_list`, `skill_load` | Discover host-stored skills and load instructions for a named computer, including setup status. |
@@ -59,9 +59,9 @@ AI sessions that use this server can leave notes for each other and for you: `me
 - **Where an AI learns about it.** The server instructions carry only *your* notes; notes other AIs wrote are shown only by `memory_read`, because many clients treat server instructions almost like a system prompt, and an AI's note may have been planted by a web page that AI read. `list_computers` reports the memory too (a server with one computer answers `list_computers` with that one computer). The tool descriptions tell the AI to call it at the start of every task, because not every client hands server instructions to the model. On a hub, every memory write and delete shows in the phone app's activity feed (without the text).
 - **Two kinds of note.** A *fact* has a key and stays true (paths, how a machine is set up, your preferences); writing the same key again replaces it, and only with the `if_rev` of the version the AI read, so two AIs cannot overwrite each other unseen. A *handoff* is what a session leaves when it stops: what was done, what is left. Handoffs older than 60 days are dropped when the file is compacted.
 - **Notes are data, not instructions.** Everything an AI is shown is wrapped in a line saying so, one note per line, with its author and date, and invisible or direction-changing characters are stripped. Notes never change what an AI is allowed to do: nothing in the server reads the memory to decide a permission.
-- **Your notes are locked.** `computer-mcp memory add "text" --key name` saves a note no AI can change or delete. No AI tool has a lock argument, and author names that pose as the owner or the system (`owner`, `admin`, `system`, `主人`…) are refused. Every client holds the same link, so the name an AI gives is only what it says about itself; the server also records the client's user agent and address.
+- **Your notes are locked.** `wanji memory add "text" --key name` saves a note no AI can change or delete. No AI tool has a lock argument, and author names that pose as the owner or the system (`owner`, `admin`, `system`, `主人`…) are refused. Every client holds the same link, so the name an AI gives is only what it says about itself; the server also records the client's user agent and address.
 - **Limits.** 1500 characters per note, 60000 in all, 400 notes, 30 writes per minute per author name and 60 per minute for all AIs together (so changing names does not help). Past 20000 characters the digest asks the AI to merge and delete notes; merging and deleting always work when memory is full. Keys, computer names and tags may be in any language (`电脑2`). Text that looks like an MCP link, a password or a key (including this server's own, and Chinese forms such as `密码：…`) is refused; this is a best-effort filter, not a guarantee.
-- **Undoing.** `computer-mcp memory authors` shows who has written and from where. `computer-mcp memory revoke <author>` undoes everything that AI wrote, including its replacements and deletes of other notes, and wipes its text from the file; `revoke --all --since <date>` does that for every AI write since then, whatever names they gave, which is the reliable clean-up. Undoing one author never touches anyone else's history. The file keeps a week of history when it is compacted, so writes from the last week can still be undone (under very heavy use, a day, then less); older writes are folded into one line per note. `forget` wipes every version of one note; `purge` keeps only the live notes and ends the history.
+- **Undoing.** `wanji memory authors` shows who has written and from where. `wanji memory revoke <author>` undoes everything that AI wrote, including its replacements and deletes of other notes, and wipes its text from the file; `revoke --all --since <date>` does that for every AI write since then, whatever names they gave, which is the reliable clean-up. Undoing one author never touches anyone else's history. The file keeps a week of history when it is compacted, so writes from the last week can still be undone (under very heavy use, a day, then less); older writes are folded into one line per note. `forget` wipes every version of one note; `purge` keeps only the live notes and ends the history.
 - **Shared file.** The owner's CLI and the running service use the same file; changes take a lock file (`memory.jsonl.lock`, taken over after 15 s if a process crashed), and a process notices when another rewrote the file.
 - **Memory off.** If the notes file cannot be opened, the server starts without memory.
 
@@ -71,15 +71,15 @@ The phone app can list and manage notes. Per-note push notifications and an appr
 
 `list_computers` now includes `memory.context`: up to eight owner notes, three project status cards, and two recent handoffs, within 6000 serialized characters. `omitted` counts live notes not included; read the rest with `memory_read`. The summary labels notes as background data and never claims the client actually read them. AI-authored notes still do not enter the server's initialization instructions.
 
-Add an optional lowercase `project` id (1–40 letters, digits, dots, underscores or dashes) to facts and handoffs. `memory_read({project: "computer-mcp"})` returns that project's notes plus global owner notes; combine with `computer`, `kind` or `query` to narrow further. Old untagged AI notes are not silently assigned to a project: find them with `query` or read by id. This does not register active sessions or lock files.
+Add an optional lowercase `project` id (1–40 letters, digits, dots, underscores or dashes) to facts and handoffs. `memory_read({project: "wanji"})` returns that project's notes plus global owner notes; combine with `computer`, `kind` or `query` to narrow further. Old untagged AI notes are not silently assigned to a project: find them with `query` or read by id. This does not register active sessions or lock files.
 
 Keep one current state card per project as a fact under `project.<project>.status`. If one repository has independent deployments, use distinct project ids. Read the card first, then use its `if_rev` for updates. Historical handoffs stay separate and remain searchable. Example (replace timestamps, revisions and evidence with the actual observed values):
 
 ```json
 {
   "kind": "fact",
-  "key": "project.computer-mcp.status",
-  "project": "computer-mcp",
+  "key": "project.wanji.status",
+  "project": "wanji",
   "author": "codex",
   "text": "Memory context implemented; deployment remains pending.",
   "state": {
@@ -116,7 +116,7 @@ When an AI is cut off (a dropped connection, a full context, a closed chat) it o
 
 ## Desktop control
 
-`ui_look` merges UI Automation with OCR (PP-OCRv5 on the GPU through DirectML), so custom-drawn apps such as Blender, Godot and Flutter apps are readable too. It keeps a warm helper process and uses about 500 MB of disk. `computer-mcp setup` installs it; `computer-mcp desktop` installs or repairs it.
+`ui_look` merges UI Automation with OCR (PP-OCRv5 on the GPU through DirectML), so custom-drawn apps such as Blender, Godot and Flutter apps are readable too. It keeps a warm helper process and uses about 500 MB of disk. `wanji setup` installs it; `wanji desktop` installs or repairs it.
 
 Safety built into `ui_act`: nothing happens when a target is ambiguous, gone, disabled or covered, and the reply explains why. Keys and typing go only to the window from the last look. After acting it waits for the screen to change instead of sleeping, and says so if nothing changed. Typing is read back where the control allows it.
 
@@ -126,7 +126,7 @@ Limits: a locked screen, UAC prompt or the time before logon cannot be seen or c
 
 Every computer opens a LAN port (TCP 8766, plus UDP 8767 for finding the main computer after its address changes), encrypted and authenticated with TLS-PSK from the key it got when it joined: nothing extra to set up, and other devices on the same Wi-Fi cannot connect. The service adds a Windows Firewall rule for it. Only a computer's own polling and file copies are served there, never the MCP link or the phone API.
 
-Each joined computer has a route, set in the phone app or with `computer-mcp route <name> auto|lan|public` on the main computer (`computer-mcp route auto|lan|public` on the joined one):
+Each joined computer has a route, set in the phone app or with `wanji route <name> auto|lan|public` on the main computer (`wanji route auto|lan|public` on the joined one):
 
 - `auto` (default): talk to the main computer and copy files over the LAN when it answers, otherwise over the internet, and keep checking for the LAN.
 - `lan`: never send work or files over the internet. When the LAN does not work the computer shows as offline with the reason, and transfers fail with it. It still asks over the internet whether its route changed, so it can be switched back.
@@ -136,26 +136,26 @@ Each joined computer has a route, set in the phone app or with `computer-mcp rou
 
 ## Linux
 
-The same package runs on Linux as a joined computer or a relay: shell (bash), files, jobs, `browser` and `transfer`; `ui_look` and `ui_act` are Windows-only. `computer-mcp join` (or `computer-mcp autostart`) installs a systemd user service with lingering, so it starts at boot. Inside WSL it also puts a small hidden script in the Windows Startup folder that keeps the distro running from logon, because WSL stops a distro when no Windows program uses it. `computer-mcp autostart off` removes both.
+The same package runs on Linux as a joined computer or a relay: shell (bash), files, jobs, `browser` and `transfer`; `ui_look` and `ui_act` are Windows-only. `wanji join` (or `wanji autostart`) installs a systemd user service with lingering, so it starts at boot. Inside WSL it also puts a small hidden script in the Windows Startup folder that keeps the distro running from logon, because WSL stops a distro when no Windows program uses it. `wanji autostart off` removes both.
 
 The phone app's browser takeover works on the AI's own browser too: on a computer without a desktop it shows that browser straight away, and on Windows its tabs are listed as "AI 浏览器" next to the desktop's browser windows. When the AI asks for a takeover while it is using its own browser, that is the one the owner gets. While the owner is on it, `ui_act` and `browser` on that computer wait.
 
 ## Administrator rights
 
-`setup` asks Windows for elevation once and registers a logon task that runs at the highest level with no further prompts, so windows running as administrator can be controlled too. Anything the model starts is then elevated as well; use `as_user` for programs that misbehave that way. To run without administrator rights, use `computer-mcp setup <name> --limited`.
+`setup` asks Windows for elevation once and registers a logon task that runs at the highest level with no further prompts, so windows running as administrator can be controlled too. Anything the model starts is then elevated as well; use `as_user` for programs that misbehave that way. To run without administrator rights, use `wanji setup <name> --limited`.
 
 ## Temporary tunnel (no Cloudflare account or domain)
 
 On the computer **to be controlled**, install the package and start a one-time session:
 
 ```powershell
-npm install -g @zhuangzihan/computer-mcp
-computer-mcp quick --name pc2 --copy
+npm install -g @zhuangzihan/wanji
+wanji quick --name pc2 --copy
 ```
 
-For a local source checkout, run `node .\bin\computer-mcp.mjs quick --name pc2`, or install a local archive built by `npm pack` using `npm install -g .\zhuangzihan-computer-mcp-<version>.tgz`.
+For a local source checkout, run `node .\bin\wanji.mjs quick --name pc2`, or install a local archive built by `npm pack` using `npm install -g .\zhuangzihan-wanji-<version>.tgz`.
 
-The first run locates or downloads the `cloudflared` binary, starts an MCP HTTP server on loopback (default port 8765), and opens a Cloudflare Quick Tunnel. With `--copy`, it copies the full connection URL (like `https://random-words.trycloudflare.com/t/<secret>/mcp`) directly to the clipboard. Without `--copy`, it prints the hostname and lets you retrieve the full URL later via `computer-mcp link --quick`, keeping the secret out of ordinary service logs. **The entire URL is a password**: keep it private. Paste it into your MCP client's remote server URL configuration. The client must support remote HTTP MCP connections.
+The first run locates or downloads the `cloudflared` binary, starts an MCP HTTP server on loopback (default port 8765), and opens a Cloudflare Quick Tunnel. With `--copy`, it copies the full connection URL (like `https://random-words.trycloudflare.com/t/<secret>/mcp`) directly to the clipboard. Without `--copy`, it prints the hostname and lets you retrieve the full URL later via `wanji link --quick`, keeping the secret out of ordinary service logs. **The entire URL is a password**: keep it private. Paste it into your MCP client's remote server URL configuration. The client must support remote HTTP MCP connections.
 
 - No Cloudflare login, account, DNS or domain is needed.
 - Keep the terminal open while connected; Ctrl+C closes the session.
@@ -167,22 +167,22 @@ The first run locates or downloads the `cloudflared` binary, starts an MCP HTTP 
 
 ## Fixed named tunnel (existing mode)
 
-For a persistent hostname you control, use `computer-mcp setup <name> --domain example.com`. **You must supply your own Cloudflare-managed domain on first setup; there is no shared or default domain.** This requires Cloudflare credentials with control of the zone. Re-running `setup` can reuse an existing local configuration and its domain. The fixed tunnel has its own persistent token, service manager and CLI commands (`status`, `link`, `rotate`, `update`, `start`, `stop`, `uninstall`).
+For a persistent hostname you control, use `wanji setup <name> --domain example.com`. **You must supply your own Cloudflare-managed domain on first setup; there is no shared or default domain.** This requires Cloudflare credentials with control of the zone. Re-running `setup` can reuse an existing local configuration and its domain. The fixed tunnel has its own persistent token, service manager and CLI commands (`status`, `link`, `rotate`, `update`, `start`, `stop`, `uninstall`).
 
 ## Copy the MCP link or secret (both modes)
 
 Open another terminal while the temporary tunnel is running, or after fixed setup:
 
 ```powershell
-computer-mcp link                     # interactive numbered copy menu
-computer-mcp link --copy              # complete MCP link (URL + secret)
-computer-mcp link --address --copy    # MCP endpoint URL only
-computer-mcp link --key --copy        # secret key only
-computer-mcp link --quick             # temporary tunnel if both exist
-computer-mcp link --fixed             # fixed-domain tunnel
+wanji link                     # interactive numbered copy menu
+wanji link --copy              # complete MCP link (URL + secret)
+wanji link --address --copy    # MCP endpoint URL only
+wanji link --key --copy        # secret key only
+wanji link --quick             # temporary tunnel if both exist
+wanji link --fixed             # fixed-domain tunnel
 ```
 
-Menu options: **1. Copy full link; 2. Copy address; 3. Copy key; 4. Show details; 0. Exit.** For scripts/non-interactive use, `computer-mcp link --show` prints the full link. `computer-mcp quick --copy` copies the combined temporary link as soon as that tunnel is ready.
+Menu options: **1. Copy full link; 2. Copy address; 3. Copy key; 4. Show details; 0. Exit.** For scripts/non-interactive use, `wanji link --show` prints the full link. `wanji quick --copy` copies the combined temporary link as soon as that tunnel is ready.
 
 Two connection styles are supported:
 
@@ -193,14 +193,14 @@ For temporary tunnels, both hostname and secret change on restart. Fixed-domain 
 
 ## Windows EXE installer (no Node.js prerequisite)
 
-For non-developers on **64-bit Windows 10/11**, install `ComputerMCP-Setup-<version>-Windows-x64.exe`, then open **Computer MCP** from the Start menu.
+For non-developers on **64-bit Windows 10/11**, install `Wanji-Setup-<version>-Windows-x64.exe`, then open **万机** from the Start menu.
 
 - The EXE installer bundles **Node.js**, **cloudflared** and the MCP server. The user does not need to install Node.js or npm.
 - Click **启动临时连接** (Start temporary connection). After the connection appears, use **复制完整链接** (copy full URL), **复制 MCP 地址** (copy endpoint URL) or **复制密钥** (copy Bearer token).
 - A permanent tunnel requires the user's **own Cloudflare-managed domain**; the manager offers an optional fixed-domain setup.
 - The installer is **per-user**; it does not intentionally stop, restart, or overwrite existing MCP tunnels. On the first connection, the user must approve remote-control access.
 - For `ui_look` and `ui_act`, click **安装桌面控制 / OCR** (Install desktop controls/OCR). This optional step downloads Python 3.12 via `winget` if necessary, plus Python packages and OCR models. A working Internet connection, available Windows package manager, and several hundred MB of disk space may be needed. Until installed, file and shell tools still work.
-- The AI's default shell is a choice: the installer has an optional "download Bash" box, and the manager has two buttons, PowerShell or download-and-use Bash. The command line equivalent is `computer-mcp shell powershell|bash|auto`. Without Bash, the `bash` tool runs Windows PowerShell.
+- The AI's default shell is a choice: the installer has an optional "download Bash" box, and the manager has two buttons, PowerShell or download-and-use Bash. The command line equivalent is `wanji shell powershell|bash|auto`. Without Bash, the `bash` tool runs Windows PowerShell.
 - This build depends on Windows .NET Framework 4.x, which is included/enabled on typical Windows 10/11 systems.
 - This EXE is currently **unsigned**. Windows SmartScreen may warn when it is first used; for public distribution, a proper publisher code-signing certificate is recommended.
 - Be careful with the MCP URL and secret. They authorize access to the computer; never share them publicly.
@@ -215,7 +215,7 @@ powershell -ExecutionPolicy Bypass -File installer\build-windows.ps1 -Cloudflare
 
 `-NodeExe` and `-InnoCompiler` are optional; the script looks for `node.exe` and `ISCC.exe` itself. The script only builds the version named inside it, and stops if that does not match `package.json`.
 
-The result is written to `dist\ComputerMCP-Setup-<version>-Windows-x64.exe`, and the script prints its size and SHA-256 hash. License notices for bundled Node.js and cloudflared are in `installer\` and packed under `licenses\`.
+The result is written to `dist\Wanji-Setup-<version>-Windows-x64.exe`, and the script prints its size and SHA-256 hash. License notices for bundled Node.js and cloudflared are in `installer\` and packed under `licenses\`.
 
 ## Temporary browser takeover (phone browser, no account)
 
@@ -223,13 +223,13 @@ When AI hits CAPTCHA, QR login, or a verification page in an already-running Chr
 
 ### One-click launcher (Windows source checkout)
 
-Double-click the Desktop shortcut ComputerMCP-手机接管浏览器.cmd, or run this from the checkout folder:
+Double-click the Desktop shortcut 万机-手机接管浏览器.cmd, or run this from the checkout folder:
 
     node .\bin\human-takeover.mjs
 
 A private URL is printed. Open it on your phone; no App, VPS, Cloudflare account, login, or separate MCP client is needed. You can tap, swipe-scroll, drag CAPTCHA sliders, and type into the existing browser. Tap **验证完成 · 交还给 AI** when done, then tell ChatGPT to continue. The temporary link is valid for up to 15 minutes, expires after 5 minutes of inactivity, and the launcher automatically stops its own tunnel after completion/expiry. Ctrl+C stops it earlier. Keep it private.
 
-An AI already connected to the old Computer MCP can launch this helper with its bash tool without restarting the existing tunnel. **Important:** because it is a separate temporary instance, the old MCP's UI lock is not shared; the AI should refrain from any ui_act while the human is controlling the browser. Running the updated MCP service natively instead exposes request_human_takeover, check_human_takeover, and cancel_human_takeover tools and enforces its own UI lock.
+An AI already connected to the old 万机 can launch this helper with its bash tool without restarting the existing tunnel. **Important:** because it is a separate temporary instance, the old MCP's UI lock is not shared; the AI should refrain from any ui_act while the human is controlling the browser. Running the updated MCP service natively instead exposes request_human_takeover, check_human_takeover, and cancel_human_takeover tools and enforces its own UI lock.
 
 In the updated MCP service, the AI can call request_human_takeover directly; it returns a short-lived phone link (the URL fragment holds a separate handoff key, not the full MCP key). When the human finishes, call check_human_takeover to verify complete, then refresh the screen with ui_look before resuming.
 
@@ -253,7 +253,7 @@ node live-tests\accept.mjs local    # real programs through the running service;
 node live-tests\real-model.mjs      # a real model completes a task using only the link (uses Claude quota)
 ```
 
-Tests use a local MCP server and simulated tunnel output. No external Cloudflare resource is provisioned unless you actually run `computer-mcp quick` or `setup`.
+Tests use a local MCP server and simulated tunnel output. No external Cloudflare resource is provisioned unless you actually run `wanji quick` or `setup`.
 
 ## License
 

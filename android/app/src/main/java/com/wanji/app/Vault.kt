@@ -1,4 +1,4 @@
-package com.computermcp.app
+package com.wanji.app
 
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
@@ -86,6 +86,6 @@ class VaultStore(context: Context) {
     }
 
     private companion object {
-        const val ALIAS = "computer-mcp-vault"
+        const val ALIAS = "wanji-vault"
     }
 }

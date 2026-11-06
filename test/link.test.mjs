@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { createMcpServer } from '../src/server.mjs';
 import { clearQuickLink, connectionParts, getQuickLink, quickLinkPath, saveQuickLink } from '../src/link.mjs';
 
-const cli = fileURLToPath(new URL('../bin/computer-mcp.mjs', import.meta.url));
+const cli = fileURLToPath(new URL('../bin/wanji.mjs', import.meta.url));
 const fixtureToken = 'abcdEFGHijklMNOPqrstUVWX01234567';
 
 test('copy choices: combined URL and separate address / Bearer token are consistent', () => {

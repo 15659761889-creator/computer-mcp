@@ -1,4 +1,4 @@
-package com.computermcp.app
+package com.wanji.app
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -34,7 +34,7 @@ class PushService : Service() {
         channels(this)
         val ongoing = NotificationCompat.Builder(this, CHANNEL_WAITING)
             .setSmallIcon(R.drawable.ic_fg)
-            .setContentTitle("Computer MCP")
+            .setContentTitle("万机")
             .setContentText(tr("正在等待 AI 的请求", "Waiting for the AI’s requests"))
             .setOngoing(true)
             .setContentIntent(openApp(this, 0))

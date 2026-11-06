@@ -9,7 +9,11 @@ import { homeDir } from './config.mjs';
 // Windows program is attached to it, so a small hidden script in the Windows Startup folder
 // keeps it attached from logon; systemd then starts the service inside.
 
-const UNIT = 'computer-mcp.service';
+const UNIT = 'wanji.service';
+// Pre-rename names, removed when the new ones are installed so a renamed
+// service does not leave a stale unit/keeper behind.
+const LEGACY_UNIT = 'computer-mcp.service';
+const legacyKeeperName = () => `ComputerMCP-WSL-${(process.env.WSL_DISTRO_NAME || 'Linux').replace(/[^\w.-]/g, '_')}.vbs`;
 const unitFile = () => path.join(os.homedir(), '.config', 'systemd', 'user', UNIT);
 const hasSystemd = () => fs.existsSync('/run/systemd/system');
 
@@ -50,7 +54,7 @@ function windowsStartupDir() {
   return linux ? path.join(linux, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup') : null;
 }
 
-const keeperName = () => `ComputerMCP-WSL-${(process.env.WSL_DISTRO_NAME || 'Linux').replace(/[^\w.-]/g, '_')}.vbs`;
+const keeperName = () => `Wanji-WSL-${(process.env.WSL_DISTRO_NAME || 'Linux').replace(/[^\w.-]/g, '_')}.vbs`;
 
 function installKeeper() {
   const distro = process.env.WSL_DISTRO_NAME;
@@ -58,8 +62,8 @@ function installKeeper() {
   if (!distro || !dir || !fs.existsSync(dir)) return 'the Windows Startup folder was not found, so the VM stops when nothing else uses it';
   const file = path.join(dir, keeperName());
   const vbs = [
-    `' Keeps the WSL distro "${distro}" running from logon, so Computer MCP (a systemd service inside it) stays up.`,
-    `' Written by computer-mcp; computer-mcp uninstall inside the distro removes it.`,
+    `' Keeps the WSL distro "${distro}" running from logon, so 万机 (a systemd service inside it) stays up.`,
+    `' Written by wanji; wanji uninstall inside the distro removes it.`,
     'Set shell = CreateObject("WScript.Shell")',
     'Do',
     // No quotes around the name: wsl.exe started this way fails at once with -d "name".
@@ -81,7 +85,10 @@ function installKeeper() {
 
 function removeKeeper() {
   const dir = windowsStartupDir();
-  if (dir) fs.rmSync(path.join(dir, keeperName()), { force: true });
+  if (dir) {
+    fs.rmSync(path.join(dir, keeperName()), { force: true });
+    fs.rmSync(path.join(dir, legacyKeeperName()), { force: true });
+  }
 }
 
 // ---- What service.mjs calls ----
@@ -91,9 +98,9 @@ const quoted = (value) => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g,
 
 export function installLinuxAutostart() {
   if (!hasSystemd()) {
-    return { installed: false, note: 'This system does not run systemd; start `computer-mcp run` from your own service manager.' };
+    return { installed: false, note: 'This system does not run systemd; start `wanji run` from your own service manager.' };
   }
-  const cli = path.join(homeDir(), 'app', 'bin', 'computer-mcp.mjs');
+  const cli = path.join(homeDir(), 'app', 'bin', 'wanji.mjs');
   const env = [
     // The PATH of whoever installed it, so the AI's commands find the same tools.
     `Environment=${quoted(`PATH=${process.env.PATH}`)}`,
@@ -101,7 +108,7 @@ export function installLinuxAutostart() {
   ];
   const unit = [
     '[Unit]',
-    'Description=Computer MCP',
+    'Description=万机',
     'After=network-online.target',
     '',
     '[Service]',
@@ -115,6 +122,12 @@ export function installLinuxAutostart() {
     'WantedBy=default.target',
     '',
   ].join('\n');
+  // Drop the pre-rename unit so it cannot keep starting the old entry file.
+  const legacyFile = path.join(os.homedir(), '.config', 'systemd', 'user', LEGACY_UNIT);
+  if (fs.existsSync(legacyFile)) {
+    systemctl('disable', '--now', LEGACY_UNIT);
+    fs.rmSync(legacyFile, { force: true });
+  }
   fs.mkdirSync(path.dirname(unitFile()), { recursive: true });
   fs.writeFileSync(unitFile(), unit);
   const reload = systemctl('daemon-reload');

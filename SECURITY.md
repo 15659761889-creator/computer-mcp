@@ -1,6 +1,6 @@
 # Security policy
 
-Computer MCP gives an AI remote control of your computers. Treat its secrets
+万机 gives an AI remote control of your computers. Treat its secrets
 accordingly.
 
 ## What the secrets protect
@@ -15,10 +15,10 @@ accordingly.
 
 ## If a secret leaks
 
-1. Replace it at once: `computer-mcp rotate` (the old link stops working
+1. Replace it at once: `wanji rotate` (the old link stops working
    immediately), or delete the client token in the phone app.
 2. Update every AI client with the new link.
-3. Check `computer-mcp memory` and recent activity for anything unfamiliar.
+3. Check `wanji memory` and recent activity for anything unfamiliar.
 
 ## Reporting a vulnerability
 

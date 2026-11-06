@@ -15,5 +15,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "ComputerMCP"
+rootProject.name = "万机"
 include(":app")

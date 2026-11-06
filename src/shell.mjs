@@ -48,7 +48,7 @@ export function cleanWorkDir(maxAgeMs = OLD_JOB_MS) {
 let cachedBash;
 let missingSince = 0;
 
-// A miss is re-checked after a while, so a Bash downloaded by `computer-mcp shell bash`
+// A miss is re-checked after a while, so a Bash downloaded by `wanji shell bash`
 // is found without restarting the service.
 export function findBash() {
   if (cachedBash || (cachedBash === null && Date.now() - missingSince < 15000)) return cachedBash;
@@ -57,7 +57,7 @@ export function findBash() {
   return cachedBash;
 }
 
-// Where `computer-mcp shell bash` unpacks Portable Git.
+// Where `wanji shell bash` unpacks Portable Git.
 export const portableGitDir = () => path.join(homeDir(), 'git');
 
 // Kept apart from config.json, which means "set up" to the rest of the program.
@@ -164,7 +164,7 @@ export function buildInvocation(shell, command, dir) {
   const bash = findBash();
   if (!bash) {
     throw new Error(IS_WINDOWS
-      ? 'Git Bash is not installed on this computer; pass shell: "powershell", or the owner can run: computer-mcp shell bash'
+      ? 'Git Bash is not installed on this computer; pass shell: "powershell", or the owner can run: wanji shell bash'
       : 'bash is not installed on this computer');
   }
   const script = path.join(dir, 'command.sh');

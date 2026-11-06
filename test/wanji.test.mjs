@@ -69,7 +69,7 @@ test('rotating the token rejects the old link at once', async () => {
 test('protocol: initialize, version negotiation, notifications, tool list', async () => {
   const init = await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } });
   assert.equal(init.result.protocolVersion, '2025-06-18');
-  assert.equal(init.result.serverInfo.name, 'computer-mcp-test');
+  assert.equal(init.result.serverInfo.name, 'wanji-test');
   const odd = await rpc('initialize', { protocolVersion: '1999-01-01' });
   assert.equal(odd.result.protocolVersion, '2025-11-25');
   const note = await post(`/t/${TOKEN}/mcp`, { jsonrpc: '2.0', method: 'notifications/initialized' });

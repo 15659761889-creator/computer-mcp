@@ -1,13 +1,13 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $testRoot = Join-Path $env:TEMP ('cmcp-manager-launch-' + [guid]::NewGuid().ToString('N'))
-$manager = Join-Path $testRoot 'ComputerMCP.exe'
+$manager = Join-Path $testRoot 'Wanji.exe'
 $runtime = Join-Path $testRoot 'runtime'
 $capture = Join-Path $testRoot 'args.txt'
 $previousCapture = $env:CMCP_TEST_CAPTURE
 try {
   New-Item -ItemType Directory -Path $runtime -Force | Out-Null
-  Copy-Item (Join-Path $root 'build\windows\stage\ComputerMCP.exe') $manager
+  Copy-Item (Join-Path $root 'build\windows\stage\Wanji.exe') $manager
   $mockSource = @'
 using System;
 using System.IO;
@@ -34,8 +34,8 @@ class VerifyManagerLaunch {
   static int Main() {
     string root = AppDomain.CurrentDomain.BaseDirectory;
     string capture = Environment.GetEnvironmentVariable("CMCP_TEST_CAPTURE");
-    var assembly = Assembly.LoadFrom(Path.Combine(root, "ComputerMCP.exe"));
-    var type = assembly.GetType("ComputerMCPWindows.ManagerForm", true);
+    var assembly = Assembly.LoadFrom(Path.Combine(root, "Wanji.exe"));
+    var type = assembly.GetType("WanjiWindows.ManagerForm", true);
     var form = (Form)Activator.CreateInstance(type);
     try {
       var method = type.GetMethod("StartCliTask", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -45,7 +45,7 @@ class VerifyManagerLaunch {
       for (int i = 0; i < 100 && !File.Exists(capture); i++) Thread.Sleep(100);
       if (!File.Exists(capture)) throw new Exception("Direct launch produced no argument file");
       var parts = File.ReadAllLines(capture);
-      if (parts.Length != 3 || parts[0] != Path.Combine(root, "app", "bin", "computer-mcp.mjs")
+      if (parts.Length != 3 || parts[0] != Path.Combine(root, "app", "bin", "wanji.mjs")
           || parts[1] != "join" || parts[2] != pair)
         throw new Exception("Arguments incorrect: " + string.Join(" | ", parts));
       Console.WriteLine("PASS: GUI StartCliTask directly started bundled node.exe");

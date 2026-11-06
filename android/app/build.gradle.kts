@@ -4,10 +4,10 @@ plugins {
 }
 
 android {
-    namespace = "com.computermcp.app"
+    namespace = "com.wanji.app"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.computermcp.app"
+        applicationId = "com.wanji.app"
         minSdk = 24
         targetSdk = 35
         versionCode = 10

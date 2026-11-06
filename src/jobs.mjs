@@ -43,7 +43,7 @@ function startAsUser(id, dir) {
   const vbs = path.join(dir, 'start.vbs');
   const text = `CreateObject("WScript.Shell").Run """${process.execPath}"" ""${RUNNER}"" ""${dir}""", 0, False\r\n`;
   fs.writeFileSync(vbs, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, 'utf16le')]));
-  const name = `ComputerMCP-user-${id}`;
+  const name = `Wanji-user-${id}`;
   const script = `
 $ErrorActionPreference = 'Stop'
 $user = "$env:USERDOMAIN\\$env:USERNAME"

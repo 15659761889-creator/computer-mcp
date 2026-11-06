@@ -181,7 +181,7 @@ export function spawnTunnel(config) {
 export async function checkPublic(hostname, proxy) {
   try {
     const res = await fetch(`https://${hostname}/healthz`, { signal: AbortSignal.timeout(10000) });
-    if (res.ok && (await res.text()).includes('computer-mcp')) return true;
+    if (res.ok && (await res.text()).includes('wanji')) return true;
   } catch {
     // Fall through to curl.
   }
@@ -190,5 +190,5 @@ export async function checkPublic(hostname, proxy) {
     env: proxyEnv(proxy),
     windowsHide: true,
   });
-  return result.status === 0 && result.stdout.includes('computer-mcp');
+  return result.status === 0 && result.stdout.includes('wanji');
 }

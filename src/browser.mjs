@@ -53,7 +53,7 @@ function run(exe, args, env = {}) {
   return result.status === 0;
 }
 
-// Installs Playwright and Chromium into the Computer MCP folder; on Linux also the system
+// Installs Playwright and Chromium into the 万机 folder; on Linux also the system
 // libraries and Chinese fonts Chromium needs, when sudo works without a password.
 export async function installBrowser({ proxy } = {}) {
   fs.mkdirSync(browserDir(), { recursive: true });
@@ -124,7 +124,7 @@ async function open() {
   if (context) return context;
   if (!starting) {
     starting = (async () => {
-      if (!browserInstalled()) throw new Error('the browser is not installed on this computer; the owner can run: computer-mcp browser');
+      if (!browserInstalled()) throw new Error('the browser is not installed on this computer; the owner can run: wanji browser');
       process.env.PLAYWRIGHT_BROWSERS_PATH = browsersPath();
       const { chromium } = createRequire(import.meta.url)(coreDir());
       const ctx = await chromium.launchPersistentContext(profileDir(), {

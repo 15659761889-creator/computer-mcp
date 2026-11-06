@@ -341,7 +341,7 @@ export const TASK_TOOLS = [
     description: 'Create a persistent task with its full goal, steps and next action BEFORE starting substantial work. First call task_list to avoid duplicates. A task survives model context loss or quota exhaustion. Claim it before executing.',
     inputSchema: { type: 'object', properties: {
       goal: { type: 'string', description: 'Complete original user goal and acceptance criteria (max 2000 chars).' },
-      project: { type: 'string', description: 'Stable lowercase project id, e.g. computer-mcp or campus.' },
+      project: { type: 'string', description: 'Stable lowercase project id, e.g. wanji or campus.' },
       computer: { type: 'string', description: 'Primary computer name, if known.' },
       steps: { type: 'array', items: { type: 'string' }, description: 'Up to 40 actionable milestones.' },
       next: { type: 'string', description: 'Exact immediate next action.' },

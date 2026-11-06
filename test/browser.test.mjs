@@ -6,7 +6,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { homeDir } from '../src/config.mjs';
 
-// Runs only where `computer-mcp browser` has installed Chromium; it borrows that install with a
+// Runs only where `wanji browser` has installed Chromium; it borrows that install with a
 // fresh profile, so the AI's own logins are not touched.
 const installed = path.join(homeDir(), 'browser');
 const ready = fs.existsSync(path.join(installed, 'ms-playwright')) && fs.existsSync(path.join(installed, 'node_modules', 'playwright-core'));

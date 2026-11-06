@@ -30,7 +30,7 @@ function findPython() {
     const [major, minor, ...exe] = result.stdout.trim().split(' ');
     if (Number(major) === 3 && Number(minor) >= 10 && Number(minor) <= 13) return exe.join(' ');
   }
-  throw new Error('desktop control needs Python 3.10-3.13; install it from python.org, then run: computer-mcp desktop');
+  throw new Error('desktop control needs Python 3.10-3.13; install it from python.org, then run: wanji desktop');
 }
 
 function runStep(exe, args, proxy) {
@@ -74,7 +74,7 @@ class Helper {
 
   start() {
     if (this.child) return;
-    if (!desktopInstalled()) throw new Error('desktop control is not installed; run: computer-mcp desktop');
+    if (!desktopInstalled()) throw new Error('desktop control is not installed; run: wanji desktop');
     const child = spawn(venvPython(), [path.join(DESKTOP_DIR, 'helper.py')], {
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,

@@ -1,4 +1,4 @@
-package com.computermcp.app
+package com.wanji.app
 
 import android.app.Activity
 import android.app.AlertDialog
@@ -165,7 +165,7 @@ class MainActivity : Activity() {
         when {
             invite != null -> acceptInvite(invite.first, invite.second)
             own != null -> connect(own)
-            else -> toast(tr("这不是 Computer MCP 的二维码或邀请", "This isn’t a Computer MCP QR code or invite"))
+            else -> toast(tr("这不是 万机 的二维码或邀请", "This isn’t a 万机 QR code or invite"))
         }
     }
 
@@ -184,12 +184,12 @@ class MainActivity : Activity() {
     private fun showWelcome() {
         computersBox = null
         val page = page()
-        page.addView(text("Computer MCP", 28f, INK, bold = true))
+        page.addView(text("万机", 28f, INK, bold = true))
         page.addView(text(tr("一个地址，让 AI 控制你所有的电脑", "One address that lets your AI control all your computers"), 15f, MUTED).below(6))
 
         val steps = card().below(28)
         steps.addView(text(tr("怎么开始", "How to start"), 17f, INK, bold = true))
-        steps.addView(text(tr("1. 找到二维码：自己租的服务器装好后会显示一个；常开电脑在 Computer MCP 里点“连接手机 App”；用别人的服务，就用他给你的邀请", "1. Find the QR code: a server you rent shows one after setup; on an always-on computer, tap “Connect phone app” in Computer MCP; for someone else’s service, use the invite they gave you"), 15f, INK).below(12))
+        steps.addView(text(tr("1. 找到二维码：自己租的服务器装好后会显示一个；常开电脑在 万机 里点“连接手机 App”；用别人的服务，就用他给你的邀请", "1. Find the QR code: a server you rent shows one after setup; on an always-on computer, tap “Connect phone app” in 万机; for someone else’s service, use the invite they gave you"), 15f, INK).below(12))
         steps.addView(text(tr("2. 用下面的按钮扫码", "2. Scan it with the button below"), 15f, INK).below(8))
         steps.addView(text(tr("3. 添加电脑，再把地址填进豆包、ChatGPT 等 AI 软件", "3. Add your computers, then paste the address into your AI app (ChatGPT, Claude, etc.)"), 15f, INK).below(8))
         page.addView(steps)
@@ -232,7 +232,7 @@ class MainActivity : Activity() {
     }
 
     private fun askForText() {
-        val input = EditText(this).apply { hint = "computermcp://…" }
+        val input = EditText(this).apply { hint = "wanji://…" }
         AlertDialog.Builder(this)
             .setTitle(tr("粘贴连接文本或邀请", "Paste the connection text or invite"))
             .setView(padded(input))
@@ -313,7 +313,7 @@ class MainActivity : Activity() {
             paintPush()
         }
         extras.addView(pushLine)
-        extras.addView(text(tr("收不到通知时，在手机设置里允许 Computer MCP 自启动和后台运行（vivo、小米、华为等都要设置）。", "If notifications don’t arrive, allow Computer MCP to auto-start and run in the background in your phone settings (needed on vivo, Xiaomi, Huawei, etc.)."), 12f, MUTED).below(6))
+        extras.addView(text(tr("收不到通知时，在手机设置里允许 万机 自启动和后台运行（vivo、小米、华为等都要设置）。", "If notifications don’t arrive, allow 万机 to auto-start and run in the background in your phone settings (needed on vivo, Xiaomi, Huawei, etc.)."), 12f, MUTED).below(6))
         page.addView(extras)
 
         val language = card().below(16)
@@ -328,7 +328,7 @@ class MainActivity : Activity() {
         val page = page()
         backTo = { showHome() }
         page.addView(header(tr("AI 正在做什么", "What the AI is doing")) { showHome() })
-        page.addView(text(tr("显示通过 Computer MCP 发出的工具调用，打开本页时自动更新。", "Shows tool calls made through Computer MCP; updates automatically while this page is open."), 13f, MUTED).below(10))
+        page.addView(text(tr("显示通过 万机 发出的工具调用，打开本页时自动更新。", "Shows tool calls made through 万机; updates automatically while this page is open."), 13f, MUTED).below(10))
         activityNotice = text(tr("正在读取活动…", "Loading activity…"), 13f, MUTED).below(10).also { page.addView(it) }
         activityBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }.also { page.addView(it) }
         activityShown = null
@@ -347,7 +347,7 @@ class MainActivity : Activity() {
             if (token != screenToken) return@work
             activityNotice?.apply {
                 val reason = error.message
-                text = if (reason == "not found") tr("当前主机版本不支持活动列表，请升级 Computer MCP 主机。", "This host version doesn’t support the activity list. Please upgrade the Computer MCP host.")
+                text = if (reason == "not found") tr("当前主机版本不支持活动列表，请升级 万机 主机。", "This host version doesn’t support the activity list. Please upgrade the 万机 host.")
                 else tr("读取活动失败", "Couldn’t load activity") + (if (reason.isNullOrBlank()) tr("，正在重试。", ", retrying.") else "：$reason") +
                     (if (box.childCount > 0) tr("（下方为上次读取的记录）", " (showing the previous load below)") else "")
                 setTextColor(ORANGE)
@@ -1041,7 +1041,7 @@ class MainActivity : Activity() {
         browser.addView(text(tr("浏览器", "Browser"), 17f, INK, bold = true))
         // A computer without a desktop (a Linux VM or server) still has the AI's own browser to show.
         if (!computer.desktop && !computer.browser) {
-            browser.addView(text(tr("这台电脑看不到浏览器：没有桌面控制，也没装 AI 浏览器。Windows 电脑在 Computer MCP 里点“安装桌面控制”；Linux 电脑运行 computer-mcp browser。", "This computer’s browser can’t be seen: it has no desktop control and no AI browser. On Windows, tap “Install desktop control” in Computer MCP; on Linux, run computer-mcp browser."), 14f, MUTED).below(8))
+            browser.addView(text(tr("这台电脑看不到浏览器：没有桌面控制，也没装 AI 浏览器。Windows 电脑在 万机 里点“安装桌面控制”；Linux 电脑运行 wanji browser。", "This computer’s browser can’t be seen: it has no desktop control and no AI browser. On Windows, tap “Install desktop control” in 万机; on Linux, run wanji browser."), 14f, MUTED).below(8))
         } else {
             val preview = ImageView(this).apply {
                 scaleType = ImageView.ScaleType.FIT_CENTER
@@ -1310,7 +1310,7 @@ class MainActivity : Activity() {
 
     private fun showInvite(invite: Invite) {
         val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        body.addView(text(tr("1. 在新电脑上安装并打开 Computer MCP", "1. Install and open Computer MCP on the new computer"), 15f, INK))
+        body.addView(text(tr("1. 在新电脑上安装并打开 万机", "1. Install and open 万机 on the new computer"), 15f, INK))
         body.addView(text(tr("2. 把下面的配对码发到新电脑，粘贴后点“加入主电脑”", "2. Send the pairing code below to the new computer, paste it and tap “Join main computer”"), 15f, INK).below(8))
         body.addView(text(invite.pair, 17f, BLUE, bold = true).apply {
             setTextIsSelectable(true)

@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { findNamedTunnel } from '../src/tunnel.mjs';
 import { hostnameFor } from '../src/config.mjs';
 
-const cliPath = fileURLToPath(new URL('../bin/computer-mcp.mjs', import.meta.url));
+const cliPath = fileURLToPath(new URL('../bin/wanji.mjs', import.meta.url));
 
 function isolatedSetup(...args) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cmcp-domain-test-'));

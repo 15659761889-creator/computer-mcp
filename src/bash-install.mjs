@@ -58,7 +58,7 @@ function download(url, target, proxy, redirects = 5) {
   });
 }
 
-// Downloads Portable Git into the Computer MCP folder, so the bash tool can use it.
+// Downloads Portable Git into the 万机 folder, so the bash tool can use it.
 export async function installBash({ proxy } = {}) {
   if (process.platform !== 'win32') throw new Error('downloading Bash is only needed on Windows');
   const existing = findBash();

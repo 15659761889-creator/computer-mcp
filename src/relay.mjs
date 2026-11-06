@@ -94,11 +94,11 @@ export function createSignup(dir = relayDir()) {
 }
 
 export function appLink(config, adminKey) {
-  return `computermcp://${new URL(relayOrigin(config)).host}/${adminKey}`;
+  return `wanji://${new URL(relayOrigin(config)).host}/${adminKey}`;
 }
 
 export function signupLink(config, code) {
-  return `computermcp://${new URL(relayOrigin(config)).host}/signup/${code}`;
+  return `wanji://${new URL(relayOrigin(config)).host}/signup/${code}`;
 }
 
 export class Relay {
@@ -178,7 +178,7 @@ export class Relay {
         return;
       }
       if (pathname === '/healthz') {
-        sendJson(res, 200, { ok: true, service: 'computer-mcp-relay' });
+        sendJson(res, 200, { ok: true, service: 'wanji-relay' });
         return;
       }
       if (pathname === '/relay/signup' && req.method === 'POST') {
@@ -258,7 +258,7 @@ export class Relay {
       return;
     }
     if (req.url === '/healthz') {
-      sendJson(res, 200, { ok: true, service: 'computer-mcp-relay' });
+      sendJson(res, 200, { ok: true, service: 'wanji-relay' });
       return;
     }
     res.writeHead(301, { Location: `${this.origin()}${req.url || '/'}` });
@@ -314,7 +314,7 @@ async function renew(relay, config, dir, log) {
 // "files" reads certFile and keyFile; "none" serves plain HTTP behind another proxy or tunnel.
 export async function runRelay({ dir = relayDir(), log = (line) => console.log(line) } = {}) {
   const config = loadRelayConfig(dir);
-  if (!config) throw new Error('the relay is not set up; run: computer-mcp relay setup --host <this server\'s IP or domain>');
+  if (!config) throw new Error('the relay is not set up; run: wanji relay setup --host <this server\'s IP or domain>');
   const relay = new Relay({ dir, config, log });
   const handler = (req, res) => { relay.handle(req, res); };
 

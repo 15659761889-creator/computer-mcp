@@ -10,6 +10,7 @@ import {
 import { MemoryStore, renderLine } from './memory.mjs';
 import {
   autostartState, installAppCopy, installAutostart, removeAutostart, runService, startService, stopService,
+  writeLauncher,
 } from './service.mjs';
 import { desktopInstalled, desktopSupported, installDesktop } from './desktop.mjs';
 import { browserInstalled, installBrowser } from './browser.mjs';
@@ -27,39 +28,39 @@ import {
   checkPublic, deleteTunnel, ensureCloudflared, ensureCloudflareLogin, ensureTunnel, tunnelLogPath,
 } from './tunnel.mjs';
 
-const HELP = `computer-mcp: give this computer its own fixed MCP link
+const HELP = `wanji: give this computer its own fixed MCP link
 
-  computer-mcp setup <name>   set up once: tunnel, DNS, automatic start, link
+  wanji setup <name>   set up once: tunnel, DNS, automatic start, link
       --domain <domain>       Your own Cloudflare domain (required on first setup)
       --port <port>           local port (default ${DEFAULT_PORT} or the next free one)
       --proxy <url>           proxy for downloads and Cloudflare API calls
       --cloudflared <path>    use this cloudflared instead of finding or downloading one
-  computer-mcp quick          temporary account-free tunnel, no setup or DNS
+  wanji quick          temporary account-free tunnel, no setup or DNS
       --name <name>           optional computer label
       --port <port>           local port (default: first free port starting at ${DEFAULT_PORT})
       --proxy <url>           optional HTTP/HTTPS proxy
       --cloudflared <path>    local cloudflared executable (otherwise finds/downloads it)
       --copy                  copy the complete temporary link on start
-  computer-mcp link           choose which connection details to copy (interactive menu)
+  wanji link           choose which connection details to copy (interactive menu)
       --copy                  copy the complete MCP URL (no menu)
       --address --copy        copy the MCP address for Bearer-token clients
       --key --copy            copy only the secret key / Bearer token
       --quick | --fixed       select temporary or fixed tunnel
       --menu                  force the interactive copy menu
       --show                  print the complete MCP URL (for scripts)
-  computer-mcp app            connect the phone app: shows a QR code, and makes this the main computer
+  wanji app            connect the phone app: shows a QR code, and makes this the main computer
       --rows                  print the connection text and QR rows (for the Windows manager)
-  computer-mcp invite         make a one-time pairing code for adding another computer
-  computer-mcp join <code>    add this computer to a main computer; it then starts by itself
+  wanji invite         make a one-time pairing code for adding another computer
+  wanji join <code>    add this computer to a main computer; it then starts by itself
       --name <name>           name the AI sees (default: this computer's name)
       --proxy <url>           proxy for reaching the main computer
-  computer-mcp computers      list the computers on this main computer
-  computer-mcp remove <name>  remove a computer from this main computer
-  computer-mcp route [name] [auto|lan|public]
+  wanji computers      list the computers on this main computer
+  wanji remove <name>  remove a computer from this main computer
+  wanji route [name] [auto|lan|public]
                               how a computer reaches the main one and copies files: auto
                               prefers the LAN, lan never uses the internet for work, public
                               never uses the LAN. On a joined computer, leave out the name.
-  computer-mcp relay setup    make this rented server the relay all computers connect to
+  wanji relay setup    make this rented server the relay all computers connect to
       --host <ip|domain>      this server's public IP or domain (required)
       --shared                serve several people, each signing up with an invite
       --tls acme|files|none   acme (default) gets a free certificate itself on port 80
@@ -67,12 +68,12 @@ const HELP = `computer-mcp: give this computer its own fixed MCP link
       --port <n>              HTTPS port (default 443); with --tls none, the local HTTP port
       --origin <url>          public address, when another proxy or tunnel is in front
       --cert <file> --key <file>   certificate files for --tls files
-  computer-mcp relay run      run the relay in the foreground (what the system service calls)
-  computer-mcp relay app      show the QR code that connects the phone app (one-person relay)
-  computer-mcp relay invite   make an invite for one more person (shared relay)
-  computer-mcp relay users    list the people on this relay
-  computer-mcp relay remove-user <id>
-  computer-mcp memory         the notes AIs leave each other; yours are locked, so no AI can change them
+  wanji relay run      run the relay in the foreground (what the system service calls)
+  wanji relay app      show the QR code that connects the phone app (one-person relay)
+  wanji relay invite   make an invite for one more person (shared relay)
+  wanji relay users    list the people on this relay
+  wanji relay remove-user <id>
+  wanji memory         the notes AIs leave each other; yours are locked, so no AI can change them
       list [--kind fact|handoff] [--query words]    show the notes (this is the default)
       add "text" --key <key>  save a note of yours (a fact needs --key; --kind handoff has none)
       --computer <name> --tags a,b --open           optional; --open leaves the note unlocked
@@ -82,20 +83,20 @@ const HELP = `computer-mcp: give this computer its own fixed MCP link
       revoke <author> [--since <date>]              undo everything one AI wrote (and wipe it)
       revoke --all --since <date>                   undo every AI write since then, whatever names they gave
       purge                   keep only live notes; also ends the history, so nothing before can be undone
-  computer-mcp status         show whether the service and the link work
-  computer-mcp rotate         replace the secret; the old link stops working at once
-  computer-mcp desktop        install desktop control (ui_look, ui_act); setup does this too
-  computer-mcp browser        install the AI's own browser (Chromium + Playwright, about 300 MB)
+  wanji status         show whether the service and the link work
+  wanji rotate         replace the secret; the old link stops working at once
+  wanji desktop        install desktop control (ui_look, ui_act); setup does this too
+  wanji browser        install the AI's own browser (Chromium + Playwright, about 300 MB)
       --proxy <url>           proxy for the download
-  computer-mcp shell [powershell|bash|auto]   choose the AI's default shell; bash downloads
+  wanji shell [powershell|bash|auto]   choose the AI's default shell; bash downloads
                               Git Bash first when it is missing (Windows, about 60 MB)
       --proxy <url>           proxy for the download
-  computer-mcp update         make the service run this installed version
-  computer-mcp autostart [off]  start automatically with the computer (Windows: logon task;
+  wanji update         make the service run this installed version
+  wanji autostart [off]  start automatically with the computer (Windows: logon task;
                               Linux: systemd user service, plus a keeper in Windows under WSL)
-  computer-mcp start | stop   start or stop the service
-  computer-mcp run            run in the foreground (what the startup task calls)
-  computer-mcp uninstall      remove automatic start, keep the link for a later setup
+  wanji start | stop   start or stop the service
+  wanji run            run in the foreground (what the startup task calls)
+  wanji uninstall      remove automatic start, keep the link for a later setup
       --delete-tunnel         also delete the Cloudflare tunnel
       --purge                 also delete local settings, logs and the secret
 `;
@@ -159,10 +160,10 @@ async function setup({ flags, positional }) {
   const existing = loadConfig();
   const name = (positional[0] || existing?.name || '').toLowerCase();
   if (!/^[a-z0-9]([a-z0-9-]{0,40}[a-z0-9])?$/.test(name)) {
-    throw new Error('usage: computer-mcp setup <name>; the name may use a-z, 0-9 and hyphens');
+    throw new Error('usage: wanji setup <name>; the name may use a-z, 0-9 and hyphens');
   }
   if (existing && existing.name !== name) {
-    throw new Error(`this computer is already set up as "${existing.name}"; run computer-mcp uninstall --delete-tunnel --purge first`);
+    throw new Error(`this computer is already set up as "${existing.name}"; run wanji uninstall --delete-tunnel --purge first`);
   }
   const domain = flags.domain ?? existing?.domain;
   if (typeof domain !== 'string' || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(domain)) {
@@ -200,18 +201,18 @@ async function setup({ flags, positional }) {
     if (autostart.level !== 'Highest') {
       if (!flags.limited) console.log('Note: administrator rights were not granted, so windows running as administrator cannot be controlled. Run setup again and allow the prompt to change that.');
     }
-    if (!findBash()) console.log('Note: Git Bash was not found, so the AI uses PowerShell. To give it Bash, run: computer-mcp shell bash');
+    if (!findBash()) console.log('Note: Git Bash was not found, so the AI uses PowerShell. To give it Bash, run: wanji shell bash');
     if (!await waitFor(() => localHealthy(port), 30)) {
-      throw new Error(`the service did not start on port ${port}; try computer-mcp run to see why`);
+      throw new Error(`the service did not start on port ${port}; try wanji run to see why`);
     }
     console.log('Checking the public address...');
     if (!await waitFor(() => checkPublic(hostname, proxy), 120)) {
-      console.log(`Warning: ${hostname} is not reachable yet. New DNS can take a few minutes; check with computer-mcp status.`);
+      console.log(`Warning: ${hostname} is not reachable yet. New DNS can take a few minutes; check with wanji status.`);
       console.log(`If it stays down, this network may block Cloudflare tunnels (TCP 7844). Log: ${tunnelLogPath()}`);
     }
   }
   console.log(`\nDone. Your fixed link (treat it like a password):\n\n  ${publicLink(requireConfig())}\n`);
-  console.log('To copy the full link, address or key separately, run: computer-mcp link');
+  console.log('To copy the full link, address or key separately, run: wanji link');
 }
 
 
@@ -240,8 +241,8 @@ async function linkCommand(flags) {
       }
       const parts = source === 'fixed' ? fixed : quick;
       if (!parts) throw new Error(source === 'quick'
-        ? 'no live temporary tunnel found; start computer-mcp quick and try again'
-        : 'no fixed tunnel configured; run computer-mcp setup <name> --domain example.com');
+        ? 'no live temporary tunnel found; start wanji quick and try again'
+        : 'no fixed tunnel configured; run wanji setup <name> --domain example.com');
       console.log(`\n${source === 'quick' ? 'Temporary' : 'Fixed'} connection: ${parts.address}`);
       while (true) {
         console.log('\n  1. Copy complete MCP link (address + key)');
@@ -267,8 +268,8 @@ async function linkCommand(flags) {
 
   const parts = source === 'fixed' ? fixed : quick;
   if (!parts) throw new Error(source === 'quick'
-    ? 'no live temporary tunnel found; start computer-mcp quick and try again'
-    : 'no fixed tunnel configured; run computer-mcp setup <name> --domain example.com');
+    ? 'no live temporary tunnel found; start wanji quick and try again'
+    : 'no fixed tunnel configured; run wanji setup <name> --domain example.com');
   const part = flags.address ? 'address' : flags.key ? 'key' : 'full';
   if (flags.copy) {
     copyToClipboard(parts[part]);
@@ -282,7 +283,7 @@ async function linkCommand(flags) {
 async function hubApi(pathname, { method = 'GET', body } = {}) {
   const config = requireConfig();
   if (config.joined) throw new Error(`this computer is joined to ${config.joined.origin}; manage computers on the main computer or in the phone app`);
-  if (!config.hubEnabled) throw new Error('this is not a main computer yet; run: computer-mcp app');
+  if (!config.hubEnabled) throw new Error('this is not a main computer yet; run: wanji app');
   const { adminKey } = loadHubState(hubPath(homeDir()));
   let res;
   try {
@@ -293,7 +294,7 @@ async function hubApi(pathname, { method = 'GET', body } = {}) {
       signal: AbortSignal.timeout(5000),
     });
   } catch {
-    throw new Error('the service is not running; run: computer-mcp start');
+    throw new Error('the service is not running; run: wanji start');
   }
   const answer = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(answer.error || `the service answered ${res.status}`);
@@ -327,7 +328,7 @@ function printQr(rows) {
 async function appCommand(flags) {
   const config = requireConfig();
   if (config.joined) throw new Error('this computer is already joined to a main computer; connect the phone app on that one');
-  if (!config.hostname) throw new Error('the main computer needs a fixed address first; run: computer-mcp setup <name> --domain <your-domain>');
+  if (!config.hostname) throw new Error('the main computer needs a fixed address first; run: wanji setup <name> --domain <your-domain>');
   if (!config.hubEnabled) {
     saveConfig({ ...config, hubEnabled: true });
     loadHubState(hubPath(homeDir()));
@@ -337,14 +338,14 @@ async function appCommand(flags) {
     await waitFor(() => localHealthy(config.port), 30);
   }
   const { adminKey } = loadHubState(hubPath(homeDir()));
-  const text = `computermcp://${config.hostname}/${adminKey}`;
+  const text = `wanji://${config.hostname}/${adminKey}`;
   const rows = qrRows(text);
   if (flags.rows) {
     console.log(text);
     console.log(rows.join('\n'));
     return;
   }
-  console.log('\nOpen the Computer MCP app on your phone and scan this. It is the key to all your computers, so show it to no one.\n');
+  console.log('\nOpen the 万机 app on your phone and scan this. It is the key to all your computers, so show it to no one.\n');
   printQr(rows);
   console.log(`\nOr copy this into the app:\n${text}\n`);
 }
@@ -352,7 +353,7 @@ async function appCommand(flags) {
 async function joinCommand({ flags, positional }) {
   const { origin, code } = parsePair(positional.join(' '));
   const existing = loadConfig();
-  if (existing?.hostname) throw new Error(`this computer already has its own link as "${existing.name}"; run computer-mcp uninstall --delete-tunnel --purge first`);
+  if (existing?.hostname) throw new Error(`this computer already has its own link as "${existing.name}"; run wanji uninstall --delete-tunnel --purge first`);
   const proxy = flags.proxy === true ? undefined : flags.proxy || existing?.proxy;
   await stopService();
   const joined = await joinHub({
@@ -407,7 +408,7 @@ async function routeCommand(positional) {
   }
   const [name, wanted] = positional;
   if (!name) return computersCommand();
-  if (!ROUTES.includes(wanted)) throw new Error('usage: computer-mcp route <name> auto|lan|public');
+  if (!ROUTES.includes(wanted)) throw new Error('usage: wanji route <name> auto|lan|public');
   const { computers } = await hubApi('status');
   const computer = computers.find((c) => c.name.toLowerCase() === name.toLowerCase());
   if (!computer) throw new Error(`no computer named "${name}"`);
@@ -417,7 +418,7 @@ async function routeCommand(positional) {
 }
 
 async function removeCommand(name) {
-  if (!name) throw new Error('usage: computer-mcp remove <name>');
+  if (!name) throw new Error('usage: wanji remove <name>');
   const { computers } = await hubApi('status');
   const computer = computers.find((c) => c.name.toLowerCase() === name.toLowerCase());
   if (!computer) throw new Error(`no computer named "${name}"`);
@@ -431,7 +432,7 @@ async function relayCommand({ flags, positional }) {
   const dir = relayDir();
   const config = loadRelayConfig(dir);
   const need = () => {
-    if (!config) throw new Error('the relay is not set up; run: computer-mcp relay setup --host <this server\'s IP or domain>');
+    if (!config) throw new Error('the relay is not set up; run: wanji relay setup --host <this server\'s IP or domain>');
     return config;
   };
   const showLink = (text, intro) => {
@@ -462,7 +463,7 @@ async function relayCommand({ flags, positional }) {
       saveRelayConfig(next, dir);
       if (!next.shared && listAccounts(dir).length === 0) createAccount(dir, 'owner');
       console.log(`Relay set up for ${relayOrigin(next)}${next.shared ? ' (shared)' : ''}.`);
-      console.log(next.shared ? 'Make an invite for each person with: computer-mcp relay invite' : 'Once it runs, connect the phone app with: computer-mcp relay app');
+      console.log(next.shared ? 'Make an invite for each person with: wanji relay invite' : 'Once it runs, connect the phone app with: wanji relay app');
       return undefined;
     }
     case 'run':
@@ -472,20 +473,20 @@ async function relayCommand({ flags, positional }) {
     case 'app': {
       const ids = listAccounts(dir);
       const id = positional[0] || (ids.length === 1 ? ids[0] : null);
-      if (!id) throw new Error('this relay has several people; each connects with their own invite (computer-mcp relay invite)');
+      if (!id) throw new Error('this relay has several people; each connects with their own invite (wanji relay invite)');
       const text = appLink(need(), readAccount(dir, id).adminKey);
       if (flags.rows) {
         console.log(text);
         console.log(qrRows(text).join('\n'));
         return undefined;
       }
-      showLink(text, 'Open the Computer MCP app on your phone and scan this. It is the key to all your computers, so show it to no one.');
+      showLink(text, 'Open the 万机 app on your phone and scan this. It is the key to all your computers, so show it to no one.');
       return undefined;
     }
     case 'invite': {
-      if (!need().shared) throw new Error('this relay serves one person; connect the phone app with: computer-mcp relay app');
+      if (!need().shared) throw new Error('this relay serves one person; connect the phone app with: wanji relay app');
       const { code, days } = createSignup(dir);
-      showLink(signupLink(config, code), `Invite for one person, valid for ${days} days, one use. They scan it with the Computer MCP app.`);
+      showLink(signupLink(config, code), `Invite for one person, valid for ${days} days, one use. They scan it with the 万机 app.`);
       return undefined;
     }
     case 'users':
@@ -497,13 +498,13 @@ async function relayCommand({ flags, positional }) {
       return undefined;
     case 'remove-user': {
       const id = positional[0];
-      if (!id || !listAccounts(dir).includes(id)) throw new Error('usage: computer-mcp relay remove-user <id from relay users>');
+      if (!id || !listAccounts(dir).includes(id)) throw new Error('usage: wanji relay remove-user <id from relay users>');
       removeAccount(dir, id);
       console.log(`Removed ${id}. Their MCP address and computers stop working within a few seconds.`);
       return undefined;
     }
     default:
-      throw new Error('usage: computer-mcp relay setup|run|app|invite|users|remove-user');
+      throw new Error('usage: wanji relay setup|run|app|invite|users|remove-user');
   }
 }
 
@@ -514,7 +515,7 @@ function memoryCommand({ positional, flags }) {
   const [action = 'list', ...rest] = positional;
   const flag = (name) => (typeof flags[name] === 'string' ? flags[name] : undefined);
   const ref = () => {
-    if (!rest[0]) throw new Error(`memory ${action} needs the id or the key of a note (see: computer-mcp memory list)`);
+    if (!rest[0]) throw new Error(`memory ${action} needs the id or the key of a note (see: wanji memory list)`);
     return /^m_[0-9a-f]{8}$/.test(rest[0]) ? { id: rest[0] } : { key: rest[0] };
   };
   switch (action) {
@@ -563,7 +564,7 @@ function memoryCommand({ positional, flags }) {
     case 'revoke': {
       const all = Boolean(flags.all);
       if (all && !flag('since')) throw new Error('memory revoke --all needs --since <date>, the time from which every AI write is undone');
-      if (!all && !rest[0]) throw new Error('memory revoke needs the name of an AI (see: computer-mcp memory authors), or --all --since <date>');
+      if (!all && !rest[0]) throw new Error('memory revoke needs the name of an AI (see: wanji memory authors), or --all --since <date>');
       const { events } = store.revoke({ author: all ? '*' : rest[0], since: flag('since') });
       console.log(`Undid ${events} writes by ${all ? 'every AI' : `"${rest[0]}"`} and wiped them from the file.`);
       return;
@@ -585,20 +586,20 @@ async function status() {
     console.log(`joined to:   ${config.joined.origin}`);
     console.log(`local:       ${await localHealthy(config.port) ? 'running' : 'NOT running'}`);
     console.log(`autostart:   ${autostartState()}`);
-    console.log(`browser:     ${browserInstalled() ? 'installed' : 'not installed; run computer-mcp browser'}`);
+    console.log(`browser:     ${browserInstalled() ? 'installed' : 'not installed; run wanji browser'}`);
     console.log(`audit log:   ${path.join(logDir(), 'audit.jsonl')}`);
     return;
   }
   const local = await localHealthy(config.port);
   const remote = await checkPublic(config.hostname, config.proxy);
   console.log(`name:        ${config.name}`);
-  console.log(`address:     https://${config.hostname} (the secret is shown by computer-mcp link)`);
+  console.log(`address:     https://${config.hostname} (the secret is shown by wanji link)`);
   console.log(`local:       ${local ? 'running' : 'NOT running'} on 127.0.0.1:${config.port}`);
   console.log(`public:      ${remote ? 'reachable' : 'NOT reachable'}`);
   console.log(`autostart:   ${autostartState()}`);
   console.log(`shell:       ${shellLine()}`);
-  if (desktopSupported) console.log(`desktop:     ${desktopInstalled() ? 'installed' : 'not installed; run computer-mcp desktop'}`);
-  console.log(`browser:     ${browserInstalled() ? 'installed' : 'not installed; run computer-mcp browser'}`);
+  if (desktopSupported) console.log(`desktop:     ${desktopInstalled() ? 'installed' : 'not installed; run wanji desktop'}`);
+  console.log(`browser:     ${browserInstalled() ? 'installed' : 'not installed; run wanji browser'}`);
   console.log(`audit log:   ${path.join(logDir(), 'audit.jsonl')}`);
   console.log(`tunnel log:  ${tunnelLogPath()}`);
   if (!local || !remote) process.exitCode = 1;
@@ -657,7 +658,7 @@ export async function main(argv) {
       return appCommand(parsed.flags);
     case 'invite': {
       const invite = await hubApi('invites', { method: 'POST' });
-      console.log(`Pairing code, valid for 10 minutes, one use:\n\n  ${invite.pair}\n\nOn the new computer run: computer-mcp join ${invite.pair}`);
+      console.log(`Pairing code, valid for 10 minutes, one use:\n\n  ${invite.pair}\n\nOn the new computer run: wanji join ${invite.pair}`);
       return undefined;
     }
     case 'join':
@@ -681,7 +682,7 @@ export async function main(argv) {
     case 'rotate': {
       const config = requireConfig();
       saveConfig({ ...config, token: newToken() });
-      console.log('Secret replaced; the old link no longer works. Get the new one with: computer-mcp link');
+      console.log('Secret replaced; the old link no longer works. Get the new one with: wanji link');
       return undefined;
     }
     case 'shell':
@@ -696,6 +697,7 @@ export async function main(argv) {
       requireConfig();
       await stopService();
       installAppCopy();
+      writeLauncher();
       startService();
       console.log('The service now runs this version.');
       return undefined;
@@ -704,7 +706,7 @@ export async function main(argv) {
       if (parsed.positional[0] === 'off') {
         await stopService();
         removeAutostart();
-        console.log('Automatic start removed and the service stopped. Start it again with: computer-mcp autostart');
+        console.log('Automatic start removed and the service stopped. Start it again with: wanji autostart');
         return undefined;
       }
       installAppCopy();

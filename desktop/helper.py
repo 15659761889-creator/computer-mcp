@@ -1,4 +1,4 @@
-"""Desktop perception and control for Computer MCP (Windows).
+"""Desktop perception and control for 万机 (Windows).
 
 Stays running with the OCR model warm and answers JSON lines on stdin/stdout.
 All coordinates are physical screen pixels: the process is per-monitor DPI aware,
@@ -1321,7 +1321,7 @@ class Desktop:
         if hwnd and root and root != hwnd and hwnd not in owner_chain(root) and window_pid(root) != window_pid(hwnd):
             raise ToolFailure(f'"{window_text(root) or window_class(root)}" is covering that spot; nothing was clicked')
         if root and window_blocks_input(root):
-            raise ToolFailure(f'"{window_text(root)}" runs as administrator and this service does not, so Windows would ignore the click; run computer-mcp setup from an administrator terminal')
+            raise ToolFailure(f'"{window_text(root)}" runs as administrator and this service does not, so Windows would ignore the click; run wanji setup from an administrator terminal')
 
     def _popup_of_foreground(self, hwnd):
         foreground = user32.GetForegroundWindow()
@@ -1336,7 +1336,7 @@ class Desktop:
             x, y = self.point_from(step)
             root = root_at(x, y)
             if root and window_blocks_input(root):
-                raise ToolFailure(f'"{window_text(root)}" runs as administrator and this service does not, so Windows would ignore the click; run computer-mcp setup from an administrator terminal')
+                raise ToolFailure(f'"{window_text(root)}" runs as administrator and this service does not, so Windows would ignore the click; run wanji setup from an administrator terminal')
             if root and window_class(root) not in NOISE_CLASSES and user32.GetForegroundWindow() != root and not self._popup_of_foreground(root):
                 activate(root)
                 time.sleep(0.05)
@@ -1428,7 +1428,7 @@ class Desktop:
             time.sleep(0.05)
             foreground = hwnd
         if window_blocks_input(foreground):
-            raise ToolFailure(f'"{window_text(foreground)}" runs as administrator and this service does not, so Windows would ignore the keys; run computer-mcp setup from an administrator terminal')
+            raise ToolFailure(f'"{window_text(foreground)}" runs as administrator and this service does not, so Windows would ignore the keys; run wanji setup from an administrator terminal')
         return foreground
 
     def _last_target_window(self):

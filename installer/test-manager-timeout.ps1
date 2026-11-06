@@ -6,9 +6,9 @@ try {
   $source = Join-Path $PSScriptRoot 'Manager.cs'
   & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo /target:library "/out:$dll" /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Management.dll $source
   if ($LASTEXITCODE -ne 0) { throw 'compile failed' }
-  $type = [Reflection.Assembly]::LoadFrom($dll).GetType('ComputerMCPWindows.ManagerForm')
+  $type = [Reflection.Assembly]::LoadFrom($dll).GetType('WanjiWindows.ManagerForm')
   $assembly = $type.Assembly
-  $assembly.GetType('ComputerMCPWindows.UiLang').GetField('English').SetValue($null, $true)
+  $assembly.GetType('WanjiWindows.UiLang').GetField('English').SetValue($null, $true)
   $obj = [Runtime.Serialization.FormatterServices]::GetUninitializedObject($type)
   $flags = [Reflection.BindingFlags]'Instance,NonPublic'
   $cli = Join-Path $dir 'slow.cjs'

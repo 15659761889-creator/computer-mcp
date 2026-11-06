@@ -143,7 +143,7 @@ async function handleRpc(message, context) {
       const requested = params?.protocolVersion;
       const canUse = (tool) => !context.allowedTools || context.allowedTools.has(tool);
       const base = context.hub
-        ? (canUse('list_computers') ? hubInstructions(context.hub) : 'This Computer MCP connection has a restricted tool set. Use only the tools exposed by tools/list; unavailable tools cannot be called with this key.')
+        ? (canUse('list_computers') ? hubInstructions(context.hub) : 'This 万机 connection has a restricted tool set. Use only the tools exposed by tools/list; unavailable tools cannot be called with this key.')
         : `${instructions(context.name)}${context.memory && canUse('list_computers') ? ' Call list_computers at the start of every task: it names this computer and reports the shared memory.' : ''}`;
       const withMemory = context.memory && (!context.allowedTools || context.allowedTools.has('memory_read')) ? `${base}\n\n${context.memory.instructionsBlock()}` : base;
       const resume = context.auditFile && (!context.allowedTools || context.allowedTools.has('recent_calls')) ? `${withMemory}\n\nTo continue work another AI left unfinished, call recent_calls: it lists the latest tool calls, whether each worked, and whether calls came after the last handoff note. It does not record outputs, so check the real state before you continue.` : withMemory;
@@ -151,7 +151,7 @@ async function handleRpc(message, context) {
       return rpcResult(id, {
         protocolVersion: SUPPORTED_PROTOCOLS.includes(requested) ? requested : SUPPORTED_PROTOCOLS[0],
         capabilities: { tools: {} },
-        serverInfo: { name: `computer-mcp-${context.name}`, version: VERSION },
+        serverInfo: { name: `wanji-${context.name}`, version: VERSION },
         instructions: context.skills && (!context.allowedTools || context.allowedTools.has('skill_list')) ? `${coordinated}\n\n${SKILL_GUIDE}` : coordinated,
       });
     }
@@ -184,7 +184,7 @@ async function runLocal(name, args, context, handoffTool) {
 async function runThroughHub(name, args, context, handoffTool) {
   const { computer, ...rest } = args ?? {};
   if (computer === undefined && context.hub.selfName && !context.hub.hasOthers()) return runThroughHub(name, { ...rest, computer: context.hub.selfName }, context, handoffTool);
-  if (!context.hub.names()) return { text: 'No computer is connected yet, so nothing was run. Add one in the Computer MCP phone app.', isError: true };
+  if (!context.hub.names()) return { text: 'No computer is connected yet, so nothing was run. Add one in the 万机 phone app.', isError: true };
   if (computer === undefined) return { text: `Name the computer in the computer parameter. Available: ${context.hub.names()}. If your tool list has no such parameter, refresh this connector.`, isError: true };
   const target = context.hub.resolve(computer);
   if (!target) return { text: `There is no computer named "${computer}", so nothing was run. Available: ${context.hub.names()}.`, isError: true };
@@ -506,7 +506,7 @@ export function createMcpServer({ name, getToken, auditFile, allowSse = true, on
       }
       if (hub && await hub.handle(req, res, pathname)) return;
       if (pathname === '/healthz') {
-        sendJson(res, 200, { ok: true, service: 'computer-mcp' });
+        sendJson(res, 200, { ok: true, service: 'wanji' });
         return;
       }
       const stopToken = /^\/t\/([^/]+)\/shutdown$/.exec(pathname)?.[1];

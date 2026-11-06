@@ -50,7 +50,7 @@ foreach ($name in @('package.json','README.md','LICENSE')) {
 }
 Copy-Item $NodePath (Join-Path $stage 'runtime\node.exe') -Force
 Copy-Item $CloudflaredPath (Join-Path $stage 'runtime\cloudflared.exe') -Force
-Copy-Item (Join-Path $project 'LICENSE') (Join-Path $stage 'licenses\COMPUTERMCP_LICENSE.txt') -Force
+Copy-Item (Join-Path $project 'LICENSE') (Join-Path $stage 'licenses\WANJI_LICENSE.txt') -Force
 foreach ($name in @('NODE_LICENSE.txt','CLOUDFLARED_LICENSE.txt')) {
   $license = Join-Path $PSScriptRoot $name
   if (-not (Test-Path $license)) { throw "Dependency license missing: $license" }
@@ -58,13 +58,13 @@ foreach ($name in @('NODE_LICENSE.txt','CLOUDFLARED_LICENSE.txt')) {
 }
 
 Write-Host "Compiling native Windows UI..."
-& $csc /nologo /target:winexe "/out:$(Join-Path $stage 'ComputerMCP.exe')" /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Management.dll (Join-Path $PSScriptRoot 'Manager.cs')
+& $csc /nologo /target:winexe "/out:$(Join-Path $stage 'Wanji.exe')" /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Management.dll (Join-Path $PSScriptRoot 'Manager.cs')
 if ($LASTEXITCODE -ne 0) { throw "C# compilation failed: $LASTEXITCODE" }
 Write-Host "Building signed-independent Inno Setup executable (unsigned publisher build)..."
-& $IsccPath (Join-Path $PSScriptRoot 'ComputerMCP.iss')
+& $IsccPath (Join-Path $PSScriptRoot 'Wanji.iss')
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed: $LASTEXITCODE" }
 
-$output = Join-Path $dist "ComputerMCP-Setup-0.4.0-x64.exe"
+$output = Join-Path $dist "Wanji-Setup-0.4.0-x64.exe"
 if (-not (Test-Path -LiteralPath $output)) { throw "Expected setup executable was not created." }
 $item = Get-Item $output
 $hash = Get-FileHash $output -Algorithm SHA256

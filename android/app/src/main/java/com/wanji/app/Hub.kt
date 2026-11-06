@@ -1,4 +1,4 @@
-package com.computermcp.app
+package com.wanji.app
 
 import android.content.Context
 import android.net.Uri
@@ -23,19 +23,19 @@ data class Connection(val host: String, val key: String) {
 
         private fun split(text: String): Pair<String, String>? {
             val uri = Uri.parse(text.trim())
-            if (uri.scheme != "computermcp") return null
+            if (uri.scheme != "wanji") return null
             val host = uri.encodedAuthority?.lowercase() ?: return null
             val path = uri.path?.trim('/') ?: return null
             return if (HOST.matches(host)) host to path else null
         }
 
-        /** The QR code of your own main computer or server: computermcp://host/key */
+        /** The QR code of your own main computer or server: wanji://host/key */
         fun parse(text: String): Connection? {
             val (host, key) = split(text) ?: return null
             return if (KEY.matches(key)) Connection(host, key) else null
         }
 
-        /** An invite to someone else's relay: computermcp://host/signup/code */
+        /** An invite to someone else's relay: wanji://host/signup/code */
         fun parseInvite(text: String): Pair<String, String>? {
             val (host, path) = split(text) ?: return null
             val code = path.removePrefix("signup/")
@@ -121,7 +121,7 @@ class ConnectionStore(context: Context) {
     fun clear() = prefs.edit().clear().apply()
 
     private companion object {
-        const val ALIAS = "computer-mcp-connection"
+        const val ALIAS = "wanji-connection"
     }
 }
 
@@ -350,7 +350,7 @@ class HubClient(private val connection: Connection) {
         val json = try {
             request("GET", "memory")
         } catch (error: HubException) {
-            if (error.message == "not found") throw HubException(tr("主电脑的 Computer MCP 版本太旧，还没有共享记忆，请先升级", "The main computer’s Computer MCP is too old and has no shared memory yet. Please upgrade it first"))
+            if (error.message == "not found") throw HubException(tr("主电脑的 万机 版本太旧，还没有共享记忆，请先升级", "The main computer’s 万机 is too old and has no shared memory yet. Please upgrade it first"))
             throw error
         }
         val notes = json.getJSONArray("notes")

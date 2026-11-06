@@ -7,7 +7,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 
-namespace ComputerMCPWindows {
+namespace WanjiWindows {
   // Interface language: follows Windows (Chinese gets Chinese, everything else English) until the
   // person clicks the button in the header; the choice is kept in language.txt next to the manager's state.
   static class UiLang {
@@ -51,14 +51,14 @@ namespace ComputerMCPWindows {
 
     public ManagerForm() {
       node = Path.Combine(root, "runtime", "node.exe");
-      cli = Path.Combine(root, "app", "bin", "computer-mcp.mjs");
+      cli = Path.Combine(root, "app", "bin", "wanji.mjs");
       tunnel = Path.Combine(root, "runtime", "cloudflared.exe");
-      stateDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ComputerMCP");
+      stateDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "万机");
       managerPidFile = Path.Combine(stateDir, "managed-quick.pid");
       Directory.CreateDirectory(stateDir);
       UiLang.Init(stateDir);
 
-      Text = "Computer MCP · Windows";
+      Text = "万机 · Windows";
       Width = 700;
       Height = 600;
       MinimumSize = new Size(660, 540);
@@ -68,7 +68,7 @@ namespace ComputerMCPWindows {
       ForeColor = Color.FromArgb(36, 50, 69);
 
       var header = new Panel { Dock = DockStyle.Top, Height = 92, BackColor = Color.FromArgb(33, 56, 89) };
-      var title = new Label { Text = "Computer MCP", Font = new Font("Segoe UI", 22, FontStyle.Bold), ForeColor = Color.White, Location = new Point(25, 12), AutoSize = true };
+      var title = new Label { Text = "万机", Font = new Font("Segoe UI", 22, FontStyle.Bold), ForeColor = Color.White, Location = new Point(25, 12), AutoSize = true };
       var subtitle = new Label { Text = T("无需安装 Node.js · 一键连接自己的 Windows 电脑", "No Node.js install needed · connect your own Windows computer in one click"), ForeColor = Color.FromArgb(207, 223, 243), Font = new Font("Microsoft YaHei UI", 9), Location = new Point(28, 60), AutoSize = true };
       header.Controls.Add(title); header.Controls.Add(subtitle);
       var langButton = new Button {
@@ -244,7 +244,7 @@ namespace ComputerMCPWindows {
           bool ours = false;
           foreach (ManagementObject item in query.Get()) {
             var cmd = Convert.ToString(item["CommandLine"]);
-            ours = cmd.IndexOf(Path.Combine(root, "app", "bin", "computer-mcp.mjs"), StringComparison.OrdinalIgnoreCase) >= 0 && cmd.Contains(" quick ");
+            ours = cmd.IndexOf(Path.Combine(root, "app", "bin", "wanji.mjs"), StringComparison.OrdinalIgnoreCase) >= 0 && cmd.Contains(" quick ");
           }
           if (!ours) throw new Exception(T("进程身份不匹配，拒绝关闭。", "The process identity doesn’t match; refusing to stop it."));
         }
@@ -281,7 +281,7 @@ namespace ComputerMCPWindows {
           for (int y = 0; y < size; y++) { var row = lines[y + 1].Trim(); for (int x = 0; x < size; x++) if (row[x] == '1') g.FillRectangle(Brushes.Black, (x + 1) * scale, (y + 1) * scale, scale, scale); }
         }
         form.Controls.Add(new PictureBox { Image = image, SizeMode = PictureBoxSizeMode.CenterImage, Location = new Point(20, 15), Size = new Size(400, 380) });
-        form.Controls.Add(new Label { Text = T("打开手机上的 Computer MCP，点“扫码连接”。\n这个二维码等于所有电脑的钥匙，不要给别人看。", "Open Computer MCP on your phone and tap “Scan to connect”.\nThis QR code is the key to all your computers; don’t show it to anyone."), Location = new Point(20, 405), Size = new Size(400, 50), TextAlign = ContentAlignment.MiddleCenter });
+        form.Controls.Add(new Label { Text = T("打开手机上的 万机，点“扫码连接”。\n这个二维码等于所有电脑的钥匙，不要给别人看。", "Open 万机 on your phone and tap “Scan to connect”.\nThis QR code is the key to all your computers; don’t show it to anyone."), Location = new Point(20, 405), Size = new Size(400, 50), TextAlign = ContentAlignment.MiddleCenter });
         var text = lines[0].Trim();
         var copy = new Button { Text = T("扫不了？复制连接文本", "Can’t scan? Copy the connection text"), Location = new Point(120, 458), Size = new Size(200, 32) };
         copy.Click += (s, e) => { Clipboard.SetText(text); copy.Text = T("已复制", "Copied"); };
@@ -303,7 +303,7 @@ namespace ComputerMCPWindows {
       process.OutputDataReceived += (s, e) => { if (e.Data != null) lock (output) output.AppendLine(e.Data); };
       process.ErrorDataReceived += (s, e) => { if (e.Data != null) lock (errors) errors.AppendLine(e.Data); };
       try {
-        if (!process.Start()) throw new Exception(T("无法启动 Computer MCP。", "Couldn’t start Computer MCP."));
+        if (!process.Start()) throw new Exception(T("无法启动 万机。", "Couldn’t start 万机."));
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
       } catch { process.Dispose(); throw; }

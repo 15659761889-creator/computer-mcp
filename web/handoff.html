@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="dark">
-<title data-i18n="title">Computer MCP · 人工接管</title>
+<title data-i18n="title">万机 · 人工接管</title>
 <style>
 :root{color-scheme:dark;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#0b101b;color:#f4f6fa}
 *{box-sizing:border-box}
@@ -38,7 +38,7 @@ button:disabled{opacity:.35}
 </head>
 <body>
 <main id="main">
-<header><div class="logo">🖥️</div><div><strong data-i18n="heading">人工接管</strong><small data-i18n="sub">Computer MCP · 临时浏览器控制</small></div><span id="state" data-i18n="connecting">正在连接</span></header>
+<header><div class="logo">🖥️</div><div><strong data-i18n="heading">人工接管</strong><small data-i18n="sub">万机 · 临时浏览器控制</small></div><span id="state" data-i18n="connecting">正在连接</span></header>
 <div id="window" data-i18n="windowWait">连接电脑浏览器中…</div>
 <div class="screen" id="screen"><div class="empty" id="empty" data-i18n="loadingFrame">正在读取电脑浏览器画面…</div><img id="frame" alt="电脑浏览器实时画面" data-i18n-alt="frameAlt" style="display:none"></div>
 <div id="notification" role="status" aria-live="polite"></div>
@@ -61,7 +61,7 @@ const qs = id => document.getElementById(id);
 // Language: ?lang=en or ?lang=zh wins; otherwise Chinese browsers get Chinese and everything else English.
 const words = {
   zh: {
-    title: 'Computer MCP · 人工接管', heading: '人工接管', sub: 'Computer MCP · 临时浏览器控制', connecting: '正在连接',
+    title: '万机 · 人工接管', heading: '人工接管', sub: '万机 · 临时浏览器控制', connecting: '正在连接',
     windowWait: '连接电脑浏览器中…', loadingFrame: '正在读取电脑浏览器画面…', frameAlt: '电脑浏览器实时画面',
     touch: '触控方式', click: '点击', scroll: '滚动页面', drag: '拖拽滑块',
     modeHint: '点击模式：轻点或长按；滚动模式：上下滑动；拖拽模式：从滑块起点划到终点。',
@@ -74,7 +74,7 @@ const words = {
     doneNow: '临时链接已经失效。返回 ChatGPT，发送「继续」即可。'
   },
   en: {
-    title: 'Computer MCP · Human takeover', heading: 'Human takeover', sub: 'Computer MCP · Temporary browser control', connecting: 'Connecting',
+    title: '万机 · Human takeover', heading: 'Human takeover', sub: '万机 · Temporary browser control', connecting: 'Connecting',
     windowWait: 'Connecting to the computer’s browser…', loadingFrame: 'Loading the computer’s browser picture…', frameAlt: 'Live picture of the computer’s browser',
     touch: 'Touch mode', click: 'Tap', scroll: 'Scroll page', drag: 'Drag slider',
     modeHint: 'Tap mode: tap or long-press. Scroll mode: swipe up or down. Drag mode: drag from the slider’s start to its end.',

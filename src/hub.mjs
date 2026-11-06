@@ -33,7 +33,7 @@ const EVENT_HOLD_MS = 25000;
 
 export const SECRET_TOOL = {
   name: 'type_secret',
-  description: 'Type a saved username or password into the computer without ever seeing it. The owner keeps accounts in the Computer MCP phone app; each use usually asks them on the phone to pick the account and allow it, which can take a minute, but accounts the owner marked as trusted in the phone app are filled without asking (secret_list shows which ones those are). Click into the field first, or name it with target or element_id, then call this once for the username and once for the password. The reply never contains the value. Use this for logins instead of asking for passwords in chat, and only type into the login form the owner expects.',
+  description: 'Type a saved username or password into the computer without ever seeing it. The owner keeps accounts in the 万机 phone app; each use usually asks them on the phone to pick the account and allow it, which can take a minute, but accounts the owner marked as trusted in the phone app are filled without asking (secret_list shows which ones those are). Click into the field first, or name it with target or element_id, then call this once for the username and once for the password. The reply never contains the value. Use this for logins instead of asking for passwords in chat, and only type into the login form the owner expects.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -53,7 +53,7 @@ export const SECRET_TOOL = {
 
 export const SECRET_LIST_TOOL = {
   name: 'secret_list',
-  description: 'List the saved accounts the owner keeps in the Computer MCP phone app, by label and username only, so the AI can tell accounts apart before typing anything. Each entry also says autoAllow: true when the owner lets the AI use that account without asking each time. Passwords are never stored on the hub and never appear here. Name any connected computer; the list is the same for the whole hub. Call this before type_secret when the label alone does not say which account it is, and confirm the username with the owner before typing.',
+  description: 'List the saved accounts the owner keeps in the 万机 phone app, by label and username only, so the AI can tell accounts apart before typing anything. Each entry also says autoAllow: true when the owner lets the AI use that account without asking each time. Passwords are never stored on the hub and never appear here. Name any connected computer; the list is the same for the whole hub. Call this before type_secret when the label alone does not say which account it is, and confirm the username with the owner before typing.',
   inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   annotations: { title: 'List saved accounts', readOnlyHint: true, openWorldHint: false },
 };
@@ -89,7 +89,7 @@ function friendlyBrowserError(text, lang = 'zh') {
     [/elevated/i, '浏览器以管理员身份运行，Windows 不允许这样操作', 'The browser is running as administrator, and Windows does not allow this'],
     [/offline/i, '这台电脑不在线', 'This computer is offline'],
     [/locked|secure desktop|lock screen/i, '电脑锁屏了，或者正在弹出系统权限确认，需要在电脑上处理', 'The computer is locked or showing a system permission prompt; deal with it on the computer'],
-    [/AI browser is not installed/i, '这台电脑还没装 AI 浏览器（在电脑上运行 computer-mcp browser）', 'The AI browser is not installed on this computer (run computer-mcp browser on it)'],
+    [/AI browser is not installed/i, '这台电脑还没装 AI 浏览器（在电脑上运行 wanji browser）', 'The AI browser is not installed on this computer (run wanji browser on it)'],
     [/tab is no longer available/i, '这个浏览器标签页已经关了，请重新选择', 'This browser tab has been closed; please choose again'],
     [/no desktop control|not available on this computer/i, '这台电脑没有安装桌面控制', 'Desktop control is not installed on this computer'],
     [/choose a browser|choose another/i, '请先选择要看的浏览器窗口', 'Choose a browser window to view first'],
@@ -453,7 +453,7 @@ export class Hub {
   // ---- The shared memory, from the phone app ----
 
   // The phone acts as the owner: its notes are locked unless it says otherwise, and its deletes and
-  // undos wipe the text from the file, the same as `computer-mcp memory` on the computer.
+  // undos wipe the text from the file, the same as `wanji memory` on the computer.
   handleMemory(action, method, body, lang = 'zh') {
     const memory = this.memory;
     if (!memory) return { status: 404, body: { error: lang === 'en' ? 'Shared memory is not turned on on this main computer' : '这台主电脑没有开启共享记忆' } };
@@ -771,7 +771,7 @@ export class Hub {
       if (this.takeoverHistory.size > 1000) this.takeoverHistory.delete(this.takeoverHistory.keys().next().value);
       this.bump();
       return {
-        text: `Asked the owner to take over the browser "${started.title}" on ${computerName} in the Computer MCP phone app.
+        text: `Asked the owner to take over the browser "${started.title}" on ${computerName} in the 万机 phone app.
 id: ${request.id}
 Tell the user to open the app, finish the verification and tap Return to AI. ui_act and browser on ${computerName} are blocked until then (15 minutes at most). Then call check_human_takeover with this id, and look again (browser look, or ui_look) before continuing.`,
       };
@@ -814,7 +814,7 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
       }, SECRET_WAIT_MS).unref();
     });
     if (grant === 'denied') return { text: `The owner declined to use "${hint}" on ${computerName}. Do not ask again unless they tell you to.`, isError: true };
-    if (!grant) return { text: `The owner has not picked an account for "${hint}" yet. Ask them to open the Computer MCP app, then call type_secret again.`, isError: true };
+    if (!grant) return { text: `The owner has not picked an account for "${hint}" yet. Ask them to open the 万机 app, then call type_secret again.`, isError: true };
     if (this.browserLocked(id)) return { text: 'The owner is using this computer’s browser; the approved fill was not performed. Request approval again after takeover ends.', isError: true };
     const value = grant[part];
     if (!value) return { text: `The saved account "${grant.label}" has no ${part}.`, isError: true };
@@ -881,7 +881,7 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
 
   secretList() {
     const accounts = this.vaultAccountList();
-    if (!accounts.length) return { text: 'No saved accounts have been shared from the phone app yet. Ask the owner to open the Computer MCP app so it can sync them, then call secret_list again.' };
+    if (!accounts.length) return { text: 'No saved accounts have been shared from the phone app yet. Ask the owner to open the 万机 app so it can sync them, then call secret_list again.' };
     return { text: JSON.stringify({ accounts }, null, 2) };
   }
 

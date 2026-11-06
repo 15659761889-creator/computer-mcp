@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Computer MCP relay: run once on a fresh Linux server (Hong Kong or abroad; a mainland server
-# needs an ICP filing before ports 80/443 work). It installs Node.js and Computer MCP, gets a free
+# 万机 relay: run once on a fresh Linux server (Hong Kong or abroad; a mainland server
+# needs an ICP filing before ports 80/443 work). It installs Node.js and 万机, gets a free
 # HTTPS certificate for this server's IP, starts the relay as a system service and shows the QR
 # code for the phone app.
 #
@@ -13,8 +13,8 @@
 # Optional: CMCP_HOST (public IP or domain), CMCP_PACKAGE (npm spec or tarball URL), CMCP_STAGING=1.
 set -euo pipefail
 
-PACKAGE="${CMCP_PACKAGE:-@zhuangzihan/computer-mcp@0.6.7}"
-STATE=/var/lib/computer-mcp
+PACKAGE="${CMCP_PACKAGE:-@zhuangzihan/wanji@0.6.7}"
+STATE=/var/lib/wanji
 NODE_MAJOR=22
 
 say() { printf '\n\033[1;34m%s\033[0m\n' "$*"; }
@@ -60,10 +60,10 @@ if ! have_node; then
   rm -rf "$tmp"
 fi
 
-say "安装 Computer MCP..."
+say "安装 万机..."
 npm install -g --registry "$REGISTRY" --no-fund --no-audit "$PACKAGE" >/dev/null
-CLI="$(npm root -g)/@zhuangzihan/computer-mcp/bin/computer-mcp.mjs"
-[ -f "$CLI" ] || fail "安装后找不到 computer-mcp。"
+CLI="$(npm root -g)/@zhuangzihan/wanji/bin/wanji.mjs"
+[ -f "$CLI" ] || fail "安装后找不到 wanji。"
 NODE="$(command -v node)"
 cmcp() { COMPUTER_MCP_HOME="$STATE" "$NODE" "$CLI" "$@"; }
 
@@ -91,9 +91,9 @@ setup_args=(relay setup --host "$HOST")
 mkdir -p "$STATE"
 cmcp "${setup_args[@]}"
 
-cat > /etc/systemd/system/computer-mcp-relay.service <<UNIT
+cat > /etc/systemd/system/wanji-relay.service <<UNIT
 [Unit]
-Description=Computer MCP relay
+Description=万机 relay
 After=network-online.target
 Wants=network-online.target
 
@@ -107,8 +107,8 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable computer-mcp-relay >/dev/null 2>&1
-systemctl restart computer-mcp-relay
+systemctl enable wanji-relay >/dev/null 2>&1
+systemctl restart wanji-relay
 
 say "申请 HTTPS 证书（通常不到一分钟）..."
 ok=0
@@ -117,7 +117,7 @@ for _ in $(seq 1 60); do
   sleep 3
 done
 if [ "$ok" != 1 ]; then
-  journalctl -u computer-mcp-relay -n 15 --no-pager || true
+  journalctl -u wanji-relay -n 15 --no-pager || true
   next=app
   [ "${CMCP_SHARED:-0}" = 1 ] && next=invite
   fail "证书还没拿到。最常见的原因：云服务商控制台的防火墙没有放行 80 和 443 端口。放行后服务会自己重试，几分钟后运行：sudo COMPUTER_MCP_HOME=$STATE node $CLI relay $next"
@@ -128,6 +128,6 @@ if [ "${CMCP_SHARED:-0}" = 1 ]; then
   echo "  sudo COMPUTER_MCP_HOME=$STATE node $CLI relay invite"
   cmcp relay invite
 else
-  say "完成。用手机上的 Computer MCP 扫这个二维码："
+  say "完成。用手机上的 万机 扫这个二维码："
   cmcp relay app
 fi

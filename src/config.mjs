@@ -33,7 +33,7 @@ export function loadConfig() {
 
 export function requireConfig() {
   const config = loadConfig();
-  if (!config) throw new Error('not set up yet; run: computer-mcp setup <name> --domain <your-domain>');
+  if (!config) throw new Error('not set up yet; run: wanji setup <name> --domain <your-domain>');
   return config;
 }
 

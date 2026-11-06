@@ -77,12 +77,12 @@ export async function runQuick({ port, name = os.hostname(), proxy, cloudflared:
     const url = await waitForQuickUrl(child);
     quickOrigin = url;
     saveQuickLink({ origin: url, token, port });
-    console.log(`\nComputer MCP quick tunnel is ready for "${name}".`);
-    console.log(`MCP host: ${url} (the secret is hidden; run computer-mcp link --quick to copy it)`);
+    console.log(`\n万机 quick tunnel is ready for "${name}".`);
+    console.log(`MCP host: ${url} (the secret is hidden; run wanji link --quick to copy it)`);
     console.log('Temporary address: changes on restart. Keep this terminal open; Ctrl+C to stop.');
     console.log('Quick Tunnels do not support SSE; long-running calls may time out. Use bash background:true for long jobs.');
-    console.log('Open another terminal and run: computer-mcp link --quick');
-    console.log('Copy separately: computer-mcp link --quick --address --copy or --key --copy.\n');
+    console.log('Open another terminal and run: wanji link --quick');
+    console.log('Copy separately: wanji link --quick --address --copy or --key --copy.\n');
     if (copy) {
       try {
         copyToClipboard(connectionParts(url, token).full);
@@ -107,7 +107,7 @@ export async function runQuick({ port, name = os.hostname(), proxy, cloudflared:
     };
     const onExit = (code) => {
       if (!stopping) {
-        console.error(`Cloudflare temporary tunnel disconnected (exit ${code}). Run computer-mcp quick to obtain a new link.`);
+        console.error(`Cloudflare temporary tunnel disconnected (exit ${code}). Run wanji quick to obtain a new link.`);
         process.exitCode = 1;
         stopping = true;
         server.close(() => resolve());

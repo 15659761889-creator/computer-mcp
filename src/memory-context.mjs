@@ -16,7 +16,7 @@ function object(value, name, keys) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${name} must be an object.`);
   if (Object.keys(value).some(k => !keys.includes(k))) throw new Error(`${name} has an unknown field.`);
 }
-export const PROJECT_SCHEMA = { type: 'string', pattern: '^[a-z0-9][a-z0-9._-]{0,39}$', description: 'Stable project id, e.g. computer-mcp. Not a path. Optional on facts and handoffs.' };
+export const PROJECT_SCHEMA = { type: 'string', pattern: '^[a-z0-9][a-z0-9._-]{0,39}$', description: 'Stable project id, e.g. wanji. Not a path. Optional on facts and handoffs.' };
 export const STATE_SCHEMA = {
   type: 'object', additionalProperties: false,
   description: 'Current reported project state, only on fact key project.<project>.status. Omitted stages keep their earlier report; supplied stages replace that stage. Evidence is not independently verified.',
