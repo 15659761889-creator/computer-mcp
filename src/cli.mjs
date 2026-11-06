@@ -54,8 +54,9 @@ const HELP = `wanji: give this computer its own fixed MCP link
   wanji invite         make a one-time pairing code for adding another computer
       --file [path]           instead, pre-register a computer and write a join file (default: Desktop\join.json)
       --exe [path]            instead, build a one-click joiner EXE the new computer just runs (default: Desktop\Wanji-Join.exe);
-                              permanent: it adds any number of computers until revoked
-      --once                  with --exe: one use only, expiring after --days (default 7, at most 30)
+                              one use, expiring after --days (default 7, at most 30); the computer
+                              it adds stays connected for good until removed in the phone app
+      --permanent             with --exe: the EXE adds any number of computers and never expires, until revoked
       --name <name>           name the new computer (default: computer, or computer-2 ...; with --exe: each computer's own name)
       --list                  list the pairing codes and joiner EXEs that still work
       --cancel [id]           revoke one of them, or all with no id; computers already joined stay
@@ -411,12 +412,13 @@ function freeName(dir, base) {
   }
 }
 
-// Permanent by default (the owner's choice): the EXE can add any number of computers
-// and never expires, until the main computer revokes it. --once: one use, --days (7).
+// One use by default, expiring after --days (7); a computer it adds stays controlled for
+// good either way. --permanent: the EXE can add any number of computers and never
+// expires, until the main computer revokes it.
 async function inviteExeCommand(flags) {
   if (process.platform !== 'win32') throw new Error('wanji invite --exe only builds a Windows joiner; run it on a Windows main computer');
   const name = typeof flags.name === 'string' && flags.name ? flags.name : undefined;
-  const once = flags.once === true;
+  const once = flags.permanent !== true;
   const days = flags.days === undefined || flags.days === true ? 7 : Number(flags.days);
   if (once && (!Number.isFinite(days) || days <= 0 || days > 30)) throw new Error('--days must be between 1 and 30');
   const target = typeof flags.exe === 'string' && flags.exe
@@ -434,7 +436,7 @@ async function inviteExeCommand(flags) {
   }
   const named = name ? `加进来的电脑叫 ${name}${once ? '' : '（第二台起是 ' + name + '-2、-3……）'}。` : '每台电脑会用它自己的电脑名，之后可以在手机 App 里改。';
   if (once) {
-    console.log(`一键加入程序已生成：${target}\n\n把这个文件发到新电脑上，双击运行，它会自动安装并连接，不用输配对码、不用复制文件。\n${named}\n\n这个程序只能用一次，${Math.round(invite.expiresIn / 86400)} 天内有效；用过、过期就作废了。\n要提前作废：wanji invite --cancel ${invite.id}`);
+    console.log(`一键加入程序已生成：${target}\n\n把这个文件发到新电脑上，双击运行，它会自动安装并连接，不用输配对码、不用复制文件。\n${named}\n\n加进来的电脑会一直保持连接、一直能控制，直到你在手机 App 里删掉它。\n这个程序本身只能用一次，${Math.round(invite.expiresIn / 86400)} 天内有效；用过、过期就作废了（不影响已经加进来的电脑）。\n要提前作废：wanji invite --cancel ${invite.id}`);
     return;
   }
   console.log(`一键加入程序已生成：${target}\n\n把这个文件发到要加入的电脑上，双击运行，它会自动安装并连接，不用输配对码、不用复制文件。\n这个程序一直有效，可以反复用，加多少台电脑都行。${named}\n在已经加入的电脑上再运行一次，只会更新程序并重新启动，不会重复添加。\n\n注意：拿到这个程序的人都能把电脑加进来，别外传。\n要作废它：wanji invite --cancel ${invite.id}（或在万机管理器里点“作废加入程序”）。\n已经加进来的电脑不受影响，可以在手机 App 里单独删除。`);

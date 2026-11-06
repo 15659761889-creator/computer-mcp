@@ -134,10 +134,11 @@ namespace WanjiWindows {
       var inviteButton = AddButton(area, T("一键生成加入文件（加新电脑不用输配对码）", "Generate join file in one click (add a new computer without a pairing code)"), 15, 678, 600, Color.FromArgb(37, 99, 235));
       inviteButton.Click += (s, e) => StartCliTask("invite --file", T("生成加入文件", "Generate join file"));
       var exeButton = AddButton(area, T("生成一键加入程序（新电脑双击就自动连接）", "Generate one-click joiner (the new computer just runs it)"), 15, 724, 430, Color.FromArgb(37, 99, 235));
-      // Unchecked (the default): permanent, adds any number of computers until revoked.
-      var exeOnce = new CheckBox { Text = T("一次性（用一次就作废）", "One use only"), Location = new Point(456, 732), AutoSize = true, Font = new Font("Microsoft YaHei UI", 9.5f) };
-      area.Controls.Add(exeOnce);
-      exeButton.Click += (s, e) => StartCliTask(exeOnce.Checked ? "invite --exe --once" : "invite --exe", T("生成一键加入程序", "Generate one-click joiner"));
+      // Unchecked (the default): one use, 7 days. Either way the computer it adds stays
+      // controlled until removed in the app; checked, the EXE itself can add more computers.
+      var exePermanent = new CheckBox { Text = T("永久可反复用（直到作废）", "Reusable until revoked"), Location = new Point(456, 732), AutoSize = true, Font = new Font("Microsoft YaHei UI", 9.5f) };
+      area.Controls.Add(exePermanent);
+      exeButton.Click += (s, e) => StartCliTask(exePermanent.Checked ? "invite --exe --permanent" : "invite --exe", T("生成一键加入程序", "Generate one-click joiner"));
       var revokeButton = AddButton(area, T("作废所有加入程序和配对码（已加入的电脑不受影响）", "Revoke all joiners and pairing codes (joined computers stay)"), 15, 770, 600, Color.FromArgb(94, 109, 127));
       revokeButton.Click += (s, e) => {
         if (MessageBox.Show(this, T("确定作废所有还能用的加入程序和配对码吗？", "Revoke every joiner EXE and pairing code that still works?"), "万机", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)

@@ -3,9 +3,10 @@
 ## 0.6.8 (2026-11-06)
 
 ### One-click joiner EXE (`wanji invite --exe`, manager button)
-- Permanent by default: the EXE carries a reusable pairing code that adds any number of
-  computers and never expires until the main computer revokes it. `--once` (manager:
-  "一次性" checkbox) makes a one-use code instead, expiring after `--days` (7, at most 30).
+- One use by default, expiring after `--days` (7, at most 30); the computer it adds stays
+  controlled for good (its own key) until removed in the app. `--permanent` (manager:
+  "永久可反复用" checkbox) makes a reusable code that adds any number of computers and
+  never expires until the main computer revokes it.
   `wanji invite --list` shows what still works; `wanji invite --cancel [id]` revokes one or
   all (manager button). Joined computers stay; the app removes them one by one. Hub API:
   POST invites `{reusable, days, label}`, GET invites, DELETE invites[/id].
