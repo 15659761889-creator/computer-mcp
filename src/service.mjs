@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -241,11 +242,17 @@ export function installAppCopy() {
   return app;
 }
 
+const fileHash = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
 // The joiner EXE runs node from a temp folder, so the service gets its own copy.
 // Called after stopService: a running service holds the old copy open, hence the retries.
+// An elevated launcher loop that a normal process cannot stop restarts the service
+// within seconds, so the same node.exe already in place is left alone.
 export function installRuntimeCopy() {
   const target = path.join(homeDir(), 'runtime', 'node.exe');
   if (path.resolve(target).toLowerCase() === path.resolve(process.execPath).toLowerCase()) return target;
+  if (fs.existsSync(target) && fs.statSync(target).size === fs.statSync(process.execPath).size
+    && fileHash(target) === fileHash(process.execPath)) return target;
   fs.mkdirSync(path.dirname(target), { recursive: true });
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -395,11 +402,26 @@ export async function stopService() {
   fs.rmSync(statePath(), { force: true });
 }
 
+// Ends the logon task for good, launcher loop included, so call it before stopService:
+// a loop left running brings the service straight back. A task that runs with highest
+// privileges can only be stopped and removed elevated, and Settings > Apps runs
+// uninstallers unelevated, so that case asks once for administrator rights.
+// Returns false if the task is still registered (e.g. the prompt was declined).
 export function removeAutostart() {
   if (process.platform === 'linux') return removeLinuxAutostart();
-  if (!IS_WINDOWS) return;
-  powershell(`Unregister-ScheduledTask -TaskName '${TASK_NAME}' -Confirm:$false -ErrorAction SilentlyContinue`);
-  fs.rmSync(path.join(homeDir(), 'launcher.vbs'), { force: true });
+  if (!IS_WINDOWS) return true;
+  const launcher = path.join(homeDir(), 'launcher.vbs');
+  const script = `
+Stop-ScheduledTask -TaskName '${TASK_NAME}' -ErrorAction SilentlyContinue
+Get-CimInstance Win32_Process -Filter "Name='wscript.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains('${launcher.replace(/'/g, "''")}') } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Unregister-ScheduledTask -TaskName '${TASK_NAME}' -Confirm:$false -ErrorAction SilentlyContinue
+`;
+  const level = powershell(`(Get-ScheduledTask -TaskName '${TASK_NAME}' -ErrorAction SilentlyContinue).Principal.RunLevel`).stdout.trim();
+  if (level === 'Highest' && !isElevated()) runElevated(script);
+  // Also unelevated: covers a Limited task, and whatever a declined prompt left.
+  powershell(script);
+  fs.rmSync(launcher, { force: true });
+  return powershell(`[bool](Get-ScheduledTask -TaskName '${TASK_NAME}' -ErrorAction SilentlyContinue)`).stdout.trim() !== 'True';
 }
 
 export function autostartState() {

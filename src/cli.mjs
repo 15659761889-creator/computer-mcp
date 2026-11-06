@@ -345,14 +345,25 @@ async function appCommand(flags) {
   console.log(`\nOr copy this into the app:\n${text}\n`);
 }
 
+// The Desktop the person actually sees: OneDrive and folder redirection often move it
+// away from %USERPROFILE%\Desktop.
+export function desktopDir() {
+  if (process.platform === 'win32') {
+    const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', "[Console]::OutputEncoding = [Text.Encoding]::UTF8; [Environment]::GetFolderPath('Desktop')"], { encoding: 'utf8', windowsHide: true });
+    const dir = result.stdout?.trim();
+    if (result.status === 0 && dir && fs.existsSync(dir)) return dir;
+  }
+  return path.join(os.homedir(), 'Desktop');
+}
+
 // Pre-register a computer on the host and write its credentials to a join file:
 // the new computer joins from the file, with no pairing code to type.
 async function inviteFileCommand(flags) {
-  const created = await hubApi('computers', { method: 'POST', body: { name: typeof flags.name === 'string' ? flags.name : undefined } });
   // No path given: drop it on the Desktop, where it is easy to find and copy.
   const target = typeof flags.file === 'string' && flags.file
     ? path.resolve(flags.file)
-    : path.join(os.homedir(), 'Desktop', 'join.json');
+    : path.join(desktopDir(), 'join.json');
+  const created = await hubApi('computers', { method: 'POST', body: { name: typeof flags.name === 'string' ? flags.name : undefined } });
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, `${JSON.stringify({ origin: created.origin, id: created.id, key: created.key, name: created.name }, null, 2)}\n`, { mode: 0o600 });
   console.log(`加入文件已保存到：${target}\n\n把这个文件复制到新电脑的 %APPDATA%\\computer-mcp\\join.json，\n再在新电脑上打开 万机 管理器，确认后就会加入，不用输配对码\n（或者在新电脑上运行：wanji join --file <文件路径>）。\n\n注意：这个文件就是凭证，别泄露；加入成功后会自动删除。`);
@@ -423,7 +434,7 @@ async function inviteExeCommand(flags) {
   if (once && (!Number.isFinite(days) || days <= 0 || days > 30)) throw new Error('--days must be between 1 and 30');
   const target = typeof flags.exe === 'string' && flags.exe
     ? path.resolve(flags.exe)
-    : freeName(path.join(os.homedir(), 'Desktop'), name ? `Wanji-Join-${name.replace(/[\\/:*?"<>|\s]+/g, '-')}` : 'Wanji-Join');
+    : freeName(desktopDir(), name ? `Wanji-Join-${name.replace(/[\\/:*?"<>|\s]+/g, '-')}` : 'Wanji-Join');
   const invite = await hubApi('invites', {
     method: 'POST', body: once ? { days, label: path.basename(target) } : { reusable: true, label: path.basename(target) },
   });
@@ -836,8 +847,16 @@ async function shellCommand({ positional, flags }) {
 }
 
 async function uninstall({ flags }) {
+  // The task and its launcher loop first, or the loop restarts the service just stopped.
+  // If it stays, nothing else is removed either, so running this again finishes the job.
+  if (removeAutostart() === false) {
+    if (flags['from-settings']) {
+      console.log('没有卸载：开机任务需要管理员权限才能删掉。请再卸载一次，在弹出的“是否允许更改”里点“是”。');
+      await new Promise((resolve) => { setTimeout(resolve, 8000); });
+    }
+    throw new Error('the startup task could not be removed without administrator rights; run this again and allow the prompt');
+  }
   await stopService();
-  removeAutostart();
   const config = loadConfig();
   if (flags['delete-tunnel'] && config) {
     deleteTunnel({ cloudflared: config.cloudflared, name: config.name, proxy: config.proxy });
@@ -935,8 +954,9 @@ export async function main(argv) {
     case 'autostart': {
       requireConfig();
       if (parsed.positional[0] === 'off') {
+        // The task and its launcher loop first, or the loop restarts the service just stopped.
+        if (removeAutostart() === false) throw new Error('the startup task could not be removed without administrator rights; run this again and allow the prompt');
         await stopService();
-        removeAutostart();
         console.log('Automatic start removed and the service stopped. Start it again with: wanji autostart');
         return undefined;
       }

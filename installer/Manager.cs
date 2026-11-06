@@ -167,7 +167,8 @@ namespace WanjiWindows {
     }
     private static string Q(string s) { return "\"" + s.Replace("\"", "\\\"") + "\""; }
     private string Run(string args, int timeout = 4500) {
-      var psi = new ProcessStartInfo(node, Q(cli) + " " + args) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = root };
+      // Node writes UTF-8 to pipes; without this .NET decodes them as the ANSI code page and Chinese turns to mojibake.
+      var psi = new ProcessStartInfo(node, Q(cli) + " " + args) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8, WorkingDirectory = root };
       using (var p = Process.Start(psi)) {
         var outputTask = p.StandardOutput.ReadToEndAsync();
         var errorTask = p.StandardError.ReadToEndAsync();
@@ -224,7 +225,7 @@ namespace WanjiWindows {
           if (!Uri.IsWellFormedUriString(proxy.Text.Trim(), UriKind.Absolute)) throw new Exception(T("代理地址格式不正确。", "The proxy address is not valid."));
           args += " --proxy " + Q(proxy.Text.Trim());
         }
-        var psi = new ProcessStartInfo(node, args) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = root };
+        var psi = new ProcessStartInfo(node, args) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8, WorkingDirectory = root };
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
         if (!process.Start()) throw new Exception(T("无法启动临时连接。", "Couldn’t start the temporary connection."));
         string pidFile = managerPidFile;
@@ -308,7 +309,8 @@ namespace WanjiWindows {
     private void StartCliTask(string args, string title) {
       var psi = new ProcessStartInfo(node, Q(cli) + " " + args) {
         UseShellExecute = false, CreateNoWindow = true,
-        RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = root
+        RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = root,
+        StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8
       };
       var process = new Process { StartInfo = psi };
       var output = new StringBuilder();
@@ -374,11 +376,12 @@ namespace WanjiWindows {
       StartCliTask(args, T("切换到 Bash", "Switch to Bash"));
     }
     private void InstallDesktop() {
-      var answer = MessageBox.Show(T("完整 OCR / 鼠标键盘控制需要 Python 3.10–3.13 及模型（约 500 MB 或更多）。\n\n如果没有 Python，会先尝试使用 winget 安装 Python 3.12。安装过程需要联网。\n继续？", "Full OCR and mouse/keyboard control need Python 3.10–3.13 and models (about 500 MB or more).\n\nIf Python is missing, it first tries to install Python 3.12 with winget. The installation needs internet access.\nContinue?"), T("安装桌面控制", "Install desktop control"), MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+      var answer = MessageBox.Show(T("完整 OCR / 鼠标键盘控制需要下载约 500 MB，可能要几分钟。\n\n这台电脑没有 Python 3.10–3.13 的话，会自动下载一份只给万机用的 Python，不用你装。需要联网。\n继续？", "Full OCR and mouse/keyboard control download about 500 MB and may take a few minutes.\n\nWithout Python 3.10–3.13 on this computer, a private Python for 万机 is downloaded automatically. It needs internet access.\nContinue?"), T("安装桌面控制", "Install desktop control"), MessageBoxButtons.YesNo, MessageBoxIcon.Question);
       if (answer != DialogResult.Yes) return;
       try {
-        var command = "where py >nul 2>&1 || winget install --id Python.Python.3.12 -e --accept-source-agreements --accept-package-agreements && " + Q(node) + " " + Q(cli) + " desktop";
-        Process.Start(new ProcessStartInfo("cmd.exe", "/k " + Q(command)) { UseShellExecute = true, WorkingDirectory = root });
+        var args = "desktop";
+        if (!string.IsNullOrWhiteSpace(proxy.Text)) args += " --proxy " + Q(proxy.Text.Trim());
+        StartCliTask(args, T("安装桌面控制", "Install desktop control"));
       } catch (Exception ex) { MessageBox.Show(ex.Message, T("安装失败", "Install failed")); }
     }
   }

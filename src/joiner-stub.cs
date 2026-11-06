@@ -20,12 +20,18 @@ using System.Text;
 // bootstrap.cmd there, then cleans the temp folder up.
 class JoinerStub {
   // A run whose window was closed early never reaches the finally below; its folder
-  // is cleared on the next run. Recent ones are left alone, another run may own them.
+  // is cleared on the next run. Recent ones are left alone, and so is any folder whose
+  // node.exe is still open: another run may still be installing from it.
   static void ClearOldRuns() {
     try {
       foreach (var dir in Directory.GetDirectories(Path.GetTempPath(), "wanji-join-*")) {
         try {
-          if (DateTime.UtcNow - Directory.GetCreationTimeUtc(dir) > TimeSpan.FromHours(1)) Directory.Delete(dir, true);
+          if (DateTime.UtcNow - Directory.GetCreationTimeUtc(dir) < TimeSpan.FromHours(1)) continue;
+          string node = Path.Combine(dir, "node.exe");
+          if (File.Exists(node)) {
+            using (new FileStream(node, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+          }
+          Directory.Delete(dir, true);
         } catch { }
       }
     } catch { }
