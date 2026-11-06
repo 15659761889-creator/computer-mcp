@@ -50,7 +50,7 @@ const HELP = `wanji: give this computer its own fixed MCP link
   wanji app            connect the phone app: shows a QR code, and makes this the main computer
       --rows                  print the connection text and QR rows (for the Windows manager)
   wanji invite         make a one-time pairing code for adding another computer
-      --file <path>           instead, pre-register a computer and write a join file
+      --file [path]           instead, pre-register a computer and write a join file (default: Desktop\join.json)
       --name <name>           name the new computer (default: computer, or computer-2 ...)
   wanji join <code>    add this computer to a main computer; it then starts by itself
       --file [path]           join from a join file instead of a pairing code
@@ -341,7 +341,10 @@ async function appCommand(flags) {
 // the new computer joins from the file, with no pairing code to type.
 async function inviteFileCommand(flags) {
   const created = await hubApi('computers', { method: 'POST', body: { name: typeof flags.name === 'string' ? flags.name : undefined } });
-  const target = path.resolve(flags.file);
+  // No path given: drop it on the Desktop, where it is easy to find and copy.
+  const target = typeof flags.file === 'string' && flags.file
+    ? path.resolve(flags.file)
+    : path.join(os.homedir(), 'Desktop', 'join.json');
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, `${JSON.stringify({ origin: created.origin, id: created.id, key: created.key, name: created.name }, null, 2)}\n`, { mode: 0o600 });
   console.log(`加入文件已保存到：${target}\n\n把这个文件复制到新电脑的 %APPDATA%\\computer-mcp\\join.json，\n再在新电脑上打开 万机 管理器，确认后就会加入，不用输配对码\n（或者在新电脑上运行：wanji join --file <文件路径>）。\n\n注意：这个文件就是凭证，别泄露；加入成功后会自动删除。`);
@@ -677,7 +680,7 @@ export async function main(argv) {
     case 'app':
       return appCommand(parsed.flags);
     case 'invite': {
-      if (typeof parsed.flags.file === 'string' && parsed.flags.file) return inviteFileCommand(parsed.flags);
+      if (parsed.flags.file) return inviteFileCommand(parsed.flags);
       const invite = await hubApi('invites', { method: 'POST' });
       console.log(`Pairing code, valid for 10 minutes, one use:\n\n  ${invite.pair}\n\nOn the new computer run: wanji join ${invite.pair}`);
       return undefined;
