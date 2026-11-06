@@ -33,4 +33,4 @@ Users with their **own** Cloudflare-managed domain can enter the domain and clic
 
 ## Building from source
 
-`installer/build-windows.ps1` compiles the native WinForms manager with the Windows .NET Framework C# compiler, stages the Node runtime and Cloudflare tunnel and invokes Inno Setup 6. This generates `dist/Wanji-Setup-0.6.7-Windows-x64.exe`. It does not publish the installer or npm package.
+`installer/build-windows.ps1` compiles the native WinForms manager with the Windows .NET Framework C# compiler, stages the Node runtime and Cloudflare tunnel and invokes Inno Setup 6. This generates `dist/Wanji-Setup-0.6.8-Windows-x64.exe`. It does not publish the installer or npm package.

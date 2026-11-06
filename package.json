@@ -1,6 +1,6 @@
 {
   "name": "@zhuangzihan/wanji",
-  "version": "0.6.7",
+  "version": "0.6.8",
   "description": "Remote computer control MCP server with Cloudflare Quick Tunnels or fixed domains; bash, file and desktop control tools.",
   "author": "zhuangzihan",
   "homepage": "https://www.npmjs.com/package/@zhuangzihan/wanji",

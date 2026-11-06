@@ -29,4 +29,4 @@
 powershell -ExecutionPolicy Bypass -File installer\build-windows.ps1
 ```
 
-输出位于 `dist\Wanji-Setup-0.6.7-Windows-x64.exe`。
+输出位于 `dist\Wanji-Setup-0.6.8-Windows-x64.exe`。

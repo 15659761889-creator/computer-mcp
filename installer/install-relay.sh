@@ -13,7 +13,7 @@
 # Optional: CMCP_HOST (public IP or domain), CMCP_PACKAGE (npm spec or tarball URL), CMCP_STAGING=1.
 set -euo pipefail
 
-PACKAGE="${CMCP_PACKAGE:-@zhuangzihan/wanji@0.6.7}"
+PACKAGE="${CMCP_PACKAGE:-@zhuangzihan/wanji@0.6.8}"
 STATE=/var/lib/wanji
 NODE_MAJOR=22
 

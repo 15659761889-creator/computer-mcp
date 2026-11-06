@@ -1,5 +1,5 @@
 #define AppName "万机"
-#define AppVersion "0.6.7"
+#define AppVersion "0.6.8"
 
 [Setup]
 AppId={{C99AD54F-186F-4F5A-8F49-CC1D9C7FA7B0}
@@ -12,7 +12,7 @@ DefaultDirName={localappdata}\Programs\万机
 DefaultGroupName=万机
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-OutputBaseFilename=Wanji-Setup-0.6.7-Windows-x64
+OutputBaseFilename=Wanji-Setup-0.6.8-Windows-x64
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -24,7 +24,7 @@ CloseApplications=no
 RestartApplications=no
 SetupLogging=yes
 LicenseFile=..\LICENSE
-VersionInfoVersion=0.6.7.0
+VersionInfoVersion=0.6.8.0
 VersionInfoDescription=万机 Windows Installer
 VersionInfoCompany=万机
 VersionInfoProductName=万机
