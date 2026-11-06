@@ -2,6 +2,8 @@ import readline from 'node:readline/promises';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import qrcode from './vendor/qrcode.mjs';
 import {
   DEFAULT_PORT, choosePort, homeDir, hostnameFor, joinFilePath, loadConfig, logDir, memoryPath, newToken, publicLink, readJoinFileAt, requireConfig, saveConfig,
@@ -51,6 +53,7 @@ const HELP = `wanji: give this computer its own fixed MCP link
       --rows                  print the connection text and QR rows (for the Windows manager)
   wanji invite         make a one-time pairing code for adding another computer
       --file [path]           instead, pre-register a computer and write a join file (default: Desktop\join.json)
+      --exe [path]            instead, build a one-click joiner EXE the new computer just runs (default: Desktop\Wanji-Join-<name>.exe)
       --name <name>           name the new computer (default: computer, or computer-2 ...)
   wanji join <code>    add this computer to a main computer; it then starts by itself
       --file [path]           join from a join file instead of a pairing code
@@ -348,6 +351,57 @@ async function inviteFileCommand(flags) {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, `${JSON.stringify({ origin: created.origin, id: created.id, key: created.key, name: created.name }, null, 2)}\n`, { mode: 0o600 });
   console.log(`加入文件已保存到：${target}\n\n把这个文件复制到新电脑的 %APPDATA%\\computer-mcp\\join.json，\n再在新电脑上打开 万机 管理器，确认后就会加入，不用输配对码\n（或者在新电脑上运行：wanji join --file <文件路径>）。\n\n注意：这个文件就是凭证，别泄露；加入成功后会自动删除。`);
+}
+
+// One-click joiner: a single EXE the new computer just runs. It is the joiner stub
+// (src/joiner-stub.cs) plus an appended ZIP (node.exe, app/, join.json, bootstrap.cmd)
+// and a 16-byte footer (magic "WANJISFX" + ZIP offset). The stub extracts the ZIP and
+// runs bootstrap.cmd, which installs the app, joins, sets up autostart and starts the
+// service. Nothing to copy or type on the new computer.
+async function inviteExeCommand(flags) {
+  if (process.platform !== 'win32') throw new Error('wanji invite --exe only builds a Windows joiner; run it on a Windows main computer');
+  const created = await hubApi('computers', { method: 'POST', body: { name: typeof flags.name === 'string' ? flags.name : undefined } });
+  const outName = `Wanji-Join-${created.name}.exe`;
+  const target = typeof flags.exe === 'string' && flags.exe
+    ? path.resolve(flags.exe)
+    : path.join(os.homedir(), 'Desktop', outName);
+  const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'wanji-joiner-'));
+  try {
+    // Stage the payload: node runtime, the app, the join credentials, the bootstrap.
+    const nodeExe = process.execPath;
+    if (!fs.existsSync(nodeExe)) throw new Error(`cannot find the Node runtime at ${nodeExe}`);
+    fs.copyFileSync(nodeExe, path.join(stage, 'node.exe'));
+    const appDir = path.join(stage, 'app');
+    fs.mkdirSync(appDir, { recursive: true });
+    for (const entry of ['bin', 'src', 'desktop', 'web', 'package.json']) {
+      const src = path.join(appRoot, entry);
+      if (fs.existsSync(src)) fs.cpSync(src, path.join(appDir, entry), { recursive: true });
+    }
+    fs.writeFileSync(path.join(stage, 'join.json'), `${JSON.stringify({ origin: created.origin, id: created.id, key: created.key, name: created.name }, null, 2)}\n`, { mode: 0o600 });
+    fs.copyFileSync(path.join(appRoot, 'src', 'joiner-bootstrap.cmd'), path.join(stage, 'bootstrap.cmd'));
+    // Compile the stub, then zip the payload.
+    const csc = 'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
+    if (!fs.existsSync(csc)) throw new Error('cannot find the C# compiler (csc.exe); the joiner needs .NET Framework 4 on this computer');
+    const stubExe = path.join(stage, 'stub.exe');
+    const cscRes = spawnSync(csc, ['/nologo', '/target:exe', '/optimize+', `/out:${stubExe}`, '/r:System.IO.Compression.dll', '/r:System.IO.Compression.FileSystem.dll', path.join(appRoot, 'src', 'joiner-stub.cs')], { encoding: 'utf8', windowsHide: true });
+    if (cscRes.status !== 0) throw new Error(`could not compile the joiner stub: ${(cscRes.stderr || cscRes.stdout || '').trim()}`);
+    const zipPath = path.join(stage, 'payload.zip');
+    const zipScript = `Compress-Archive -Path '${stage}\\*' -DestinationPath '${zipPath}' -Force`;
+    const zipRes = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(zipScript, 'utf16le').toString('base64')], { encoding: 'utf8', windowsHide: true });
+    if (zipRes.status !== 0) throw new Error(`could not zip the joiner payload: ${(zipRes.stderr || zipRes.stdout || '').trim()}`);
+    // Append ZIP + footer to the stub: [stub][zip][magic 8B][zip offset 8B LE].
+    const stub = fs.readFileSync(stubExe);
+    const zip = fs.readFileSync(zipPath);
+    const footer = Buffer.alloc(16);
+    footer.write('WANJISFX', 0, 'ascii');
+    footer.writeBigInt64LE(BigInt(stub.length), 8);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, Buffer.concat([stub, zip, footer]));
+    console.log(`一键加入程序已生成：${target}\n\n把这个文件发到新电脑上，双击运行，它会自动安装并连接，不用输配对码、不用复制文件。\n新电脑的名字是 ${created.name}。\n\n注意：这个程序里有连接凭证，别发给别人；新电脑加入成功后可以把它删掉。`);
+  } finally {
+    fs.rmSync(stage, { recursive: true, force: true });
+  }
 }
 
 // The config a joined computer saves; kept separate so it can be tested
@@ -680,6 +734,7 @@ export async function main(argv) {
     case 'app':
       return appCommand(parsed.flags);
     case 'invite': {
+      if (parsed.flags.exe) return inviteExeCommand(parsed.flags);
       if (parsed.flags.file) return inviteFileCommand(parsed.flags);
       const invite = await hubApi('invites', { method: 'POST' });
       console.log(`Pairing code, valid for 10 minutes, one use:\n\n  ${invite.pair}\n\nOn the new computer run: wanji join ${invite.pair}`);
