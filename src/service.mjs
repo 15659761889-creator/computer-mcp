@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { homeDir, loadConfig, logDir, memoryPath, requireConfig, saveConfig, statePath, tokenReader } from './config.mjs';
+import { choosePort, consumeJoinFile, homeDir, loadConfig, logDir, memoryPath, newToken, saveConfig, statePath, tokenReader } from './config.mjs';
 import { BROWSER_METHODS, Hub, hubPath } from './hub.mjs';
 import { MemoryStore } from './memory.mjs';
 import { startNodeLink } from './node-link.mjs';
@@ -140,7 +140,28 @@ async function runJoinedComputer(config) {
 }
 
 export async function runService() {
-  const config = requireConfig();
+  let config = loadConfig();
+  // A join file left in the config folder joins this computer on its own:
+  // no pairing code to type. A bad file is warned about and left alone, so
+  // one bad file can never keep the service from starting.
+  if (!config?.joined) {
+    let joined = null;
+    try {
+      joined = consumeJoinFile();
+    } catch (err) {
+      console.log(`警告：join.json 无效，已忽略：${err.message}`);
+    }
+    if (joined) {
+      if (!config) {
+        config = { name: joined.name || 'computer', port: await choosePort(), token: newToken(), joined: { origin: joined.origin, id: joined.id, key: joined.key } };
+      } else {
+        config = { ...config, name: joined.name || config.name, joined: { origin: joined.origin, id: joined.id, key: joined.key } };
+      }
+      saveConfig(config);
+      console.log(`已用 join.json 自动加入主机 "${joined.name || config.name}"，文件已删除。`);
+    }
+  }
+  if (!config) throw new Error('not set up yet; run: wanji setup <name> --domain <your-domain>');
   cleanWorkDir();
   if (config.joined) return runJoinedComputer(config);
   const previous = readState();

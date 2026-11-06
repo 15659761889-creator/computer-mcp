@@ -1,11 +1,10 @@
 import readline from 'node:readline/promises';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import qrcode from './vendor/qrcode.mjs';
 import {
-  DEFAULT_PORT, homeDir, hostnameFor, loadConfig, logDir, memoryPath, newToken, publicLink, requireConfig, saveConfig,
+  DEFAULT_PORT, choosePort, homeDir, hostnameFor, loadConfig, logDir, memoryPath, newToken, publicLink, readJoinFileAt, requireConfig, saveConfig,
 } from './config.mjs';
 import { MemoryStore, renderLine } from './memory.mjs';
 import {
@@ -51,7 +50,10 @@ const HELP = `wanji: give this computer its own fixed MCP link
   wanji app            connect the phone app: shows a QR code, and makes this the main computer
       --rows                  print the connection text and QR rows (for the Windows manager)
   wanji invite         make a one-time pairing code for adding another computer
+      --file <path>           instead, pre-register a computer and write a join file
+      --name <name>           name the new computer (default: computer, or computer-2 ...)
   wanji join <code>    add this computer to a main computer; it then starts by itself
+      --file <path>           join from a join file instead of a pairing code
       --name <name>           name the AI sees (default: this computer's name)
       --proxy <url>           proxy for reaching the main computer
   wanji computers      list the computers on this main computer
@@ -118,22 +120,6 @@ function parseArgs(argv) {
     }
   }
   return { flags, positional };
-}
-
-function portIsFree(port) {
-  return new Promise((resolve) => {
-    const probe = net.createServer();
-    probe.once('error', () => resolve(false));
-    probe.listen(port, '127.0.0.1', () => probe.close(() => resolve(true)));
-  });
-}
-
-async function choosePort(requested) {
-  if (requested) return requested;
-  for (let port = DEFAULT_PORT; port < DEFAULT_PORT + 100; port += 1) {
-    if (await portIsFree(port)) return port;
-  }
-  throw new Error('no free local port found; pass --port');
 }
 
 async function localHealthy(port) {
@@ -350,15 +336,21 @@ async function appCommand(flags) {
   console.log(`\nOr copy this into the app:\n${text}\n`);
 }
 
-async function joinCommand({ flags, positional }) {
-  const { origin, code } = parsePair(positional.join(' '));
-  const existing = loadConfig();
-  if (existing?.hostname) throw new Error(`this computer already has its own link as "${existing.name}"; run wanji uninstall --delete-tunnel --purge first`);
+// Pre-register a computer on the host and write its credentials to a join file:
+// the new computer joins from the file, with no pairing code to type.
+async function inviteFileCommand(flags) {
+  const created = await hubApi('computers', { method: 'POST', body: { name: typeof flags.name === 'string' ? flags.name : undefined } });
+  const target = path.resolve(flags.file);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, `${JSON.stringify({ origin: created.origin, id: created.id, key: created.key, name: created.name }, null, 2)}\n`, { mode: 0o600 });
+  console.log(`加入文件已保存到：${target}\n\n把这个文件复制到新电脑的 %APPDATA%\\computer-mcp\\join.json，\n在新电脑上启动程序就会自动加入，不用输配对码。\n\n注意：这个文件就是凭证，别泄露；新电脑用完后会自动删除。`);
+}
+
+// The shared tail of joining: save the credentials, install the app copy and
+// desktop control, set up autostart, and start the service.
+async function finishJoin(existing, joined, flags) {
   const proxy = flags.proxy === true ? undefined : flags.proxy || existing?.proxy;
   await stopService();
-  const joined = await joinHub({
-    origin, code, proxy, name: typeof flags.name === 'string' ? flags.name : os.hostname().toLowerCase(),
-  });
   const port = existing?.port || await choosePort();
   saveConfig({
     name: joined.name, port, proxy, token: existing?.token || newToken(), joined: { origin, id: joined.id, key: joined.key },
@@ -375,6 +367,22 @@ async function joinCommand({ flags, positional }) {
   if (autostart.installed) startService();
   if (autostart.note) console.log(autostart.note);
   console.log(`\nDone. This computer is now "${joined.name}". It starts by itself and appears in the phone app.`);
+}
+
+async function joinCommand({ flags, positional }) {
+  const existing = loadConfig();
+  if (existing?.hostname) throw new Error(`this computer already has its own link as "${existing.name}"; run wanji uninstall --delete-tunnel --purge first`);
+  if (typeof flags.file === 'string' && flags.file) {
+    const joined = readJoinFileAt(flags.file);
+    if (!joined) throw new Error(`no join file at ${flags.file}; ask the main computer for one (wanji invite --file <path>)`);
+    return finishJoin(existing, joined, flags);
+  }
+  const { origin, code } = parsePair(positional.join(' '));
+  const proxy = flags.proxy === true ? undefined : flags.proxy || existing?.proxy;
+  const joined = await joinHub({
+    origin, code, proxy, name: typeof flags.name === 'string' ? flags.name : os.hostname().toLowerCase(),
+  });
+  return finishJoin(existing, { ...joined, origin }, flags);
 }
 
 const VIA = { lan: 'over the LAN', public: 'over the internet' };
@@ -657,6 +665,7 @@ export async function main(argv) {
     case 'app':
       return appCommand(parsed.flags);
     case 'invite': {
+      if (typeof parsed.flags.file === 'string' && parsed.flags.file) return inviteFileCommand(parsed.flags);
       const invite = await hubApi('invites', { method: 'POST' });
       console.log(`Pairing code, valid for 10 minutes, one use:\n\n  ${invite.pair}\n\nOn the new computer run: wanji join ${invite.pair}`);
       return undefined;

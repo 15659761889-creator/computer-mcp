@@ -539,6 +539,19 @@ export class Hub {
     }
   }
 
+  // 主机预注册电脑，不用配对码：join file 本身就是凭证，要妥善保管，用完即删。
+  createComputer(name, info) {
+    const now = Date.now();
+    const id = randomBytes(8).toString('hex');
+    const key = randomBytes(32).toString('base64url');
+    const computerName = this.uniqueName(name);
+    this.state.computers[id] = {
+      id, name: computerName, note: '', keyHash: hashText(key), addedAt: now, info: info && typeof info === 'object' ? info : {},
+    };
+    this.save();
+    return { id, key, name: computerName };
+  }
+
   hasInvite(code) {
     const wanted = hashText(String(code ?? '').replace(/-/g, '').toUpperCase());
     return this.state.invites.some((invite) => invite.expires > Date.now() && invite.hash === wanted);
@@ -557,13 +570,7 @@ export class Hub {
       return { status: 403, body: { error: 'this pairing code is wrong, expired or already used' } };
     }
     this.state.invites.splice(index, 1);
-    const id = randomBytes(8).toString('hex');
-    const key = randomBytes(32).toString('base64url');
-    const name = this.uniqueName(body.name);
-    this.state.computers[id] = {
-      id, name, note: '', keyHash: hashText(key), addedAt: now, info: body.info && typeof body.info === 'object' ? body.info : {},
-    };
-    this.save();
+    const { id, key, name } = this.createComputer(body.name, body.info);
     return { status: 200, body: { id, key, name } };
   }
 
@@ -1125,6 +1132,11 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
         }
         if (action === 'invites' && req.method === 'POST') {
           reply(res, 200, this.createInvite());
+          return true;
+        }
+        if (action === 'computers' && req.method === 'POST') {
+          const created = this.createComputer((await readJson(req))?.name);
+          reply(res, 201, { ...created, origin: this.origin() });
           return true;
         }
         const memoryAction = /^memory(?:\/(add|forget|lock|revoke))?$/.exec(action);
