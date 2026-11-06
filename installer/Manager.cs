@@ -131,12 +131,14 @@ namespace WanjiWindows {
       AddLabel(area, T("多台电脑（一个 MCP 地址控制所有电脑）", "Several computers (one MCP address controls them all)"), 15, 598, true);
       var appButton = AddButton(area, T("这台是主电脑：连接手机 App（显示二维码）", "This is the main computer: connect the phone app (show QR code)"), 15, 632, 600, Color.FromArgb(37, 99, 235));
       appButton.Click += (s, e) => ShowAppQr();
-      AddLabel(area, T("这台是新电脑：粘贴手机 App 给的配对码", "This is a new computer: paste the pairing code from the phone app"), 15, 678, false);
-      pairCode = new TextBox { Location = new Point(15, 710), Width = 430, Height = 29 };
+      var inviteButton = AddButton(area, T("一键生成加入文件（加新电脑不用输配对码）", "Generate join file in one click (add a new computer without a pairing code)"), 15, 678, 600, Color.FromArgb(37, 99, 235));
+      inviteButton.Click += (s, e) => StartCliTask("invite --file", T("生成加入文件", "Generate join file"));
+      AddLabel(area, T("这台是新电脑：粘贴手机 App 给的配对码", "This is a new computer: paste the pairing code from the phone app"), 15, 724, false);
+      pairCode = new TextBox { Location = new Point(15, 756), Width = 430, Height = 29 };
       area.Controls.Add(pairCode);
-      var joinButton = AddButton(area, T("加入主电脑", "Join main computer"), 456, 706, 160, Color.FromArgb(37, 99, 235));
+      var joinButton = AddButton(area, T("加入主电脑", "Join main computer"), 456, 752, 160, Color.FromArgb(37, 99, 235));
       joinButton.Click += (s, e) => JoinHub();
-      area.AutoScrollMinSize = new Size(0, 765);
+      area.AutoScrollMinSize = new Size(0, 811);
 
       ticker = new System.Windows.Forms.Timer { Interval = 3500 };
       ticker.Tick += (s, e) => RefreshStatus();
