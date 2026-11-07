@@ -5,7 +5,7 @@ import path from 'node:path';
 import { BROWSER_TOOL, browserTool } from './browser.mjs';
 import { callDesktop, desktopSupported } from './desktop.mjs';
 import { describeJob, findJob, jobOutput, killJob, listJobs, logPathOf, startJob, waitForJob } from './jobs.mjs';
-import { DEFAULT_TIMEOUT_SECS, DEFAULT_WAIT_SECS, MAX_TIMEOUT_SECS, defaultShell } from './shell.mjs';
+import { DEFAULT_TIMEOUT_SECS, DEFAULT_WAIT_SECS, MAX_TIMEOUT_SECS, MAX_WAIT_SECS, defaultShell } from './shell.mjs';
 import { decodeFile, encodeFile, looksBinary } from './text.mjs';
 import { maskSecrets } from './history.mjs';
 
@@ -76,14 +76,14 @@ const DESKTOP_TOOLS = [
 const BASE_TOOLS = [
   {
     name: 'bash',
-    description: 'Run a shell command on this computer. The default shell is named in the server instructions (Git Bash or Windows PowerShell, as the owner chose); set shell explicitly to select one. Each call starts fresh: cd and environment variables do not carry over, so use cwd. Stdin is closed. A command still running after wait seconds keeps running as a job: the reply gives its job id, and the job tool fetches the result. For servers use background: true.',
+    description: 'Run a shell command on this computer. The default shell is named in the server instructions (Git Bash or Windows PowerShell, as the owner chose); set shell explicitly to select one. Each call starts fresh: cd and environment variables do not carry over, so use cwd. Stdin is closed. A command still running after wait seconds keeps running as a job: the reply gives its job id, and the job tool fetches the result. If a bash call fails without a reply (a dropped connection), the command may still have run: call job with no id to find it before running it again. For servers use background: true.',
     inputSchema: {
       type: 'object',
       properties: {
         command: { type: 'string', description: 'The command or script to run.' },
         cwd: { type: 'string', description: 'Working directory. Defaults to the home directory.' },
         timeout: { type: 'number', description: `Seconds before the process tree is killed. Default ${DEFAULT_TIMEOUT_SECS}, max ${MAX_TIMEOUT_SECS}.` },
-        wait: { type: 'number', description: `Seconds to wait for the result before replying with a job id. Default ${DEFAULT_WAIT_SECS}. The command keeps running until timeout.` },
+        wait: { type: 'number', description: `Seconds to wait for the result before replying with a job id. Default ${DEFAULT_WAIT_SECS}, max ${MAX_WAIT_SECS}. The command keeps running until timeout.` },
         background: { type: 'boolean', description: 'Start without waiting and with no default time limit; returns the job id, PID and a log path.' },
         shell: { type: 'string', enum: ['bash', 'powershell'], description: 'Default: the shell named in the server instructions. Use powershell for Windows-specific work.' },
         as_user: { type: 'boolean', description: 'Run without administrator rights, for programs that misbehave when elevated, such as drag and drop in a browser. Takes about 2 seconds to start.' },
@@ -101,7 +101,7 @@ const BASE_TOOLS = [
       properties: {
         id: { type: 'string', description: 'Job id from bash.' },
         action: { type: 'string', enum: ['status', 'kill'], description: 'Default status.' },
-        wait: { type: 'number', description: 'Seconds to wait for the job to finish before replying. Default 0.' },
+        wait: { type: 'number', description: `Seconds to wait for the job to finish before replying. Default 0, max ${MAX_WAIT_SECS}; call again to keep waiting.` },
       },
       additionalProperties: false,
     },
@@ -211,8 +211,9 @@ async function bash(args) {
   if (!stat?.isDirectory()) throw new ToolError(`cwd is not a folder: ${cwd}`);
   const background = args.background === true;
   const timeoutSecs = background && args.timeout === undefined ? 0 : clampTimeout(args.timeout);
-  const waitSecs = args.wait === undefined ? DEFAULT_WAIT_SECS : Number(args.wait);
-  if (!(waitSecs >= 0)) throw new ToolError('wait must be a number of seconds');
+  const asked = args.wait === undefined ? DEFAULT_WAIT_SECS : Number(args.wait);
+  if (!(asked >= 0)) throw new ToolError('wait must be a number of seconds');
+  const waitSecs = Math.min(asked, MAX_WAIT_SECS);
 
   let job;
   try {
@@ -255,7 +256,7 @@ async function job(args) {
     const state = await waitForJob(found.dir, 5000);
     return { text: `job ${args.id} killed; state: ${state.state}\n${formatResult(state, found.dir)}` };
   }
-  const state = await waitForJob(found.dir, Math.max(0, Number(args.wait) || 0) * 1000);
+  const state = await waitForJob(found.dir, Math.min(Math.max(0, Number(args.wait) || 0), MAX_WAIT_SECS) * 1000);
   const row = describeJob(args.id, found.dir, state);
   if (row.state === 'running') {
     const { stdout, stderr } = jobOutput(found.dir);

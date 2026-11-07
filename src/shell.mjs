@@ -10,6 +10,9 @@ const OLD_JOB_MS = 7 * 24 * 3600 * 1000;
 export const DEFAULT_TIMEOUT_SECS = 120;
 export const MAX_TIMEOUT_SECS = 3600;
 export const DEFAULT_WAIT_SECS = 60;
+// One request never hangs longer than this: a tunnel that drops a long request loses its result,
+// so longer commands reply with a job id and the job tool fetches the result.
+export const MAX_WAIT_SECS = 90;
 
 export function workDir() {
   const dir = path.join(os.tmpdir(), 'computer-mcp');

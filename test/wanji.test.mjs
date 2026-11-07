@@ -160,6 +160,33 @@ test('bash: a slow command returns a job id, keeps running, and its result can b
   assert.match((await call('job', {})).text, new RegExp(`${id}  finished exit 4`));
 });
 
+test('bash and job: wait is capped so one request never hangs for minutes', async () => {
+  const { tools } = (await rpc('tools/list')).result;
+  const bash = tools.find((tool) => tool.name === 'bash');
+  assert.match(bash.inputSchema.properties.wait.description, /max 90/);
+  assert.match(bash.description, /call job with no id/);
+  assert.match(tools.find((tool) => tool.name === 'job').inputSchema.properties.wait.description, /max 90/);
+  const init = await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } });
+  assert.match(init.result.instructions, /check with the job tool before running it again/);
+  // A huge wait is clamped, not rejected, and a quick command still answers at once.
+  const quick = await call('bash', { command: 'echo ok', wait: 100000 });
+  assert.match(quick.text, /ok/);
+});
+
+test('job: a job whose spec is half written does not break the list', async () => {
+  const { jobsDir } = await import('../src/shell.mjs');
+  const half = path.join(jobsDir(), 'zzhalf00');
+  fs.mkdirSync(half, { recursive: true });
+  fs.writeFileSync(path.join(half, 'spec.json'), '{"comm');
+  try {
+    const listed = await call('job', {});
+    assert.equal(listed.isError, false, listed.text);
+    assert.doesNotMatch(listed.text, /zzhalf00/);
+  } finally {
+    fs.rmSync(half, { recursive: true, force: true });
+  }
+});
+
 test('job: killing stops the whole process tree, and the PID is the real shell', async () => {
   const started = await call('bash', { command: 'sleep 60 & sleep 60; echo never', background: true });
   const id = /job: ([0-9a-f]{8})/.exec(started.text)[1];

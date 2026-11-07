@@ -210,11 +210,19 @@ export function listJobs(limit = 20) {
     }
   }
   rows.sort((a, b) => b.mtime - a.mtime);
-  return rows.slice(0, limit).map(({ id, dir }) => {
-    const job = describeJob(id, dir, currentState(dir));
+  const jobs = [];
+  for (const { id, dir } of rows.slice(0, limit)) {
+    let job;
+    try {
+      job = describeJob(id, dir, currentState(dir));
+    } catch {
+      // Its spec.json is still being written; one starting job must not break the whole list.
+      continue;
+    }
     job.command = job.command.length > COMMAND_PREVIEW_CHARS ? `${job.command.slice(0, COMMAND_PREVIEW_CHARS)}...` : job.command;
-    return job;
-  });
+    jobs.push(job);
+  }
+  return jobs;
 }
 
 export function findJob(id) {
