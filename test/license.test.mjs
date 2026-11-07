@@ -10,7 +10,7 @@ import {
   clearPendingDelivery, createLicense, deliverPendingLicenses, formatKey, generateKey, handleLicenseHttp, handlePaddleEvent,
   keyHash, licenseActive, licensesDir, listLicenses, listPendingDeliveries, localLicenseStatus,
   newMachineId, normalizeKey, readLicense, readLocalLicense, refreshLocalLicense, removeLocalLicense, revokeLicense,
-  saveLocalLicense, unbindLicenseMachine, unbindRemote, validKeyFormat, verifyLicense, verifyPaddleSignature, verifyRemote,
+  fillPaddleEmail, licensePublicKey, saveLocalLicense, signVerdict, trustLicenseKeysForTesting, unbindLicenseMachine, unbindRemote, validKeyFormat, verifyLicense, verifyPaddleSignature, verifyRemote,
 } from '../src/license.mjs';
 import { createAccount, createSignup, Relay } from '../src/relay.mjs';
 import { joinHub } from '../src/node-link.mjs';
@@ -32,7 +32,14 @@ let relay;
 let relayServer;
 let relayBase;
 
+// A Pro verdict as the license server would sign it.
+function signedLocal(key, machineId, verifiedAt = new Date().toISOString(), expiresAt = FUTURE) {
+  const verdict = signVerdict(licDir, key, machineId, { valid: true, plan: 'pro', expiresAt }, verifiedAt);
+  return { key, machineId, server: verifyBase, plan: 'pro', expiresAt, verifiedAt, signature: verdict.signature };
+}
+
 before(async () => {
+  trustLicenseKeysForTesting([licensePublicKey(licDir)]);
   verifyServer = http.createServer((req, res) => {
     const { pathname } = new URL(req.url, 'http://localhost');
     handleLicenseHttp(req, res, pathname, licDir);
@@ -208,7 +215,7 @@ test('a license owner can unbind a machine through the License Server', async ()
 test('the local license caches for a day and re-checks against the server', async () => {
   const { key } = createLicense(licDir, { email: 'cache@example.com', days: 30 });
   const machineId = newMachineId();
-  saveLocalLicense(home, { key, machineId, server: verifyBase, plan: 'pro', expiresAt: FUTURE, verifiedAt: new Date().toISOString() });
+  saveLocalLicense(home, signedLocal(key, machineId));
   const fresh = localLicenseStatus(home);
   assert.equal(fresh.plan, 'pro');
   assert.equal(fresh.fresh, true);
@@ -222,10 +229,52 @@ test('the local license caches for a day and re-checks against the server', asyn
   assert.equal(refreshed.plan, 'pro');
   assert.equal(refreshed.fresh, true);
   assert.ok(Date.parse(readLocalLicense(home).verifiedAt) > Date.now() - 60 * 1000);
-  saveLocalLicense(home, { key, machineId, server: verifyBase, plan: 'pro', expiresAt: FUTURE, verifiedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() });
+  saveLocalLicense(home, signedLocal(key, machineId, new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString()));
   const offline = await refreshLocalLicense(home, { server: 'http://127.0.0.1:1' });
   assert.equal(offline.plan, 'pro', 'a dead server keeps the unexpired verdict');
   assert.equal(offline.stale, true);
+});
+
+test('a hand-written or altered license.json never turns on Pro', async () => {
+  const { key } = createLicense(licDir, { email: 'forge@example.com', days: 30 });
+  const machineId = newMachineId();
+  const far = '2099-01-01T00:00:00.000Z';
+  saveLocalLicense(home, { key, machineId, plan: 'pro', expiresAt: far, verifiedAt: far });
+  assert.equal(localLicenseStatus(home).plan, 'free', 'no signature');
+  const offline = await refreshLocalLicense(home, { server: 'http://127.0.0.1:1' });
+  assert.equal(offline.plan, 'free', 'an unsigned verdict is not kept while the server is unreachable');
+  saveLocalLicense(home, { ...signedLocal(key, machineId), expiresAt: far });
+  assert.equal(localLicenseStatus(home).plan, 'free', 'a changed expiry breaks the signature');
+  saveLocalLicense(home, { ...signedLocal(key, machineId), machineId: newMachineId() });
+  assert.equal(localLicenseStatus(home).plan, 'free', 'a verdict copied to another machine id fails');
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'cmcp-otherkey-'));
+  try {
+    const foreign = signVerdict(path.join(other, 'licenses'), key, machineId, { valid: true, plan: 'pro', expiresAt: FUTURE });
+    saveLocalLicense(home, { key, machineId, plan: 'pro', expiresAt: FUTURE, verifiedAt: foreign.verifiedAt, signature: foreign.signature });
+    assert.equal(localLicenseStatus(home).plan, 'free', 'a key the client does not trust');
+  } finally {
+    fs.rmSync(other, { recursive: true, force: true });
+  }
+  saveLocalLicense(home, signedLocal(key, machineId, new Date(Date.now() - 8 * 86400000).toISOString()));
+  assert.equal(localLicenseStatus(home).plan, 'free', 'past the 7-day offline grace');
+  const lapsed = await refreshLocalLicense(home, { server: 'http://127.0.0.1:1' });
+  assert.equal(lapsed.plan, 'free');
+  const back = await refreshLocalLicense(home, { server: verifyBase });
+  assert.equal(back.plan, 'pro', 'reaching the server again restores Pro');
+  assert.ok(readLocalLicense(home).signature);
+  removeLocalLicense(home);
+});
+
+test('the license server signs only valid verdicts', async () => {
+  const { key } = createLicense(licDir, { email: 'signed@example.com', days: 30 });
+  const ok = await verifyRemote(verifyBase, key, 'sig-machine');
+  assert.equal(ok.valid, true);
+  assert.equal(ok.machineId, 'sig-machine');
+  assert.match(ok.signature, /^[A-Za-z0-9+/]+=*$/);
+  revokeLicense(licDir, key);
+  const no = await verifyRemote(verifyBase, key, 'sig-machine');
+  assert.equal(no.valid, false);
+  assert.equal(no.signature, undefined);
 });
 
 test('a free hub refuses a second computer, a Pro hub lets it join, and the invite is not burned', async () => {
@@ -309,6 +358,72 @@ test('Paddle signatures verify and events create, extend and revoke', () => {
   const pending = listPendingDeliveries(licDir);
   assert.equal(clearPendingDelivery(licDir, pending[0].key), true);
   assert.equal(listPendingDeliveries(licDir).length, 0);
+});
+
+test('Paddle subscription events without an email look the buyer up by customer_id', async () => {
+  const event = () => ({ event_type: 'subscription.created', data: { id: 'sub_lookup_1', customer_id: 'ctm_01lookup', current_billing_period: { ends_at: FUTURE } } });
+  const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cmcp-nokey-'));
+  assert.equal(await fillPaddleEmail(licDir, event(), { env: {}, home: emptyHome }), false, 'no API key: unknown');
+  fs.rmSync(emptyHome, { recursive: true, force: true });
+  const seen = [];
+  const fetchImpl = async (url, init) => {
+    seen.push({ url, auth: init.headers.Authorization });
+    return new Response(JSON.stringify({ data: { id: 'ctm_01lookup', email: 'lookup@example.com' } }), { status: 200 });
+  };
+  const ev = event();
+  assert.equal(await fillPaddleEmail(licDir, ev, { env: { WANJI_PADDLE_API_KEY: 'pdl_sdbx_apikey_test' }, fetchImpl }), true);
+  assert.equal(seen[0].url, 'https://sandbox-api.paddle.com/customers/ctm_01lookup');
+  assert.equal(seen[0].auth, 'Bearer pdl_sdbx_apikey_test');
+  const created = handlePaddleEvent(licDir, ev);
+  assert.equal(created.action, 'created');
+  assert.equal(created.email, 'lookup@example.com');
+  const live = [];
+  const activated = { event_type: 'subscription.activated', data: { id: 'sub_lookup_1', customer_id: 'ctm_01lookup' } };
+  const noFetch = async (u) => { live.push(u); return new Response('{}'); };
+  assert.equal(await fillPaddleEmail(licDir, activated, { env: { WANJI_PADDLE_API_KEY: 'pdl_live_apikey_x' }, fetchImpl: noFetch }), true);
+  assert.equal(live.length, 0, 'a subscription that already has a license needs no lookup');
+  assert.equal(handlePaddleEvent(licDir, activated).action, 'extended');
+  const failing = event();
+  failing.data.id = 'sub_lookup_2';
+  assert.equal(await fillPaddleEmail(licDir, failing, { env: { WANJI_PADDLE_API_KEY: 'k' }, fetchImpl: async () => new Response('{}', { status: 500 }) }), false);
+  const bad = event();
+  bad.data.id = 'sub_lookup_3';
+  bad.data.customer_id = '../../x';
+  assert.equal(await fillPaddleEmail(licDir, bad, { env: { WANJI_PADDLE_API_KEY: 'k' }, fetchImpl }), false, 'a strange customer id is never put in a URL');
+});
+
+test('Paddle adjustments revoke only on an approved full refund or a chargeback', () => {
+  const make = (sub) => handlePaddleEvent(licDir, { event_type: 'subscription.created', data: { customer: { email: 'adj@example.com' }, id: sub, current_billing_period: { ends_at: FUTURE } } });
+  const adj = (sub, fields) => handlePaddleEvent(licDir, { event_type: 'adjustment.created', data: { subscription_id: sub, ...fields } });
+  const status = (sub) => listLicenses(licDir).find((e) => e.record.subscriptionId === sub).record.status;
+  make('sub_adj_1');
+  assert.equal(adj('sub_adj_1', { action: 'refund', type: 'full', status: 'pending_approval' }).handled, false);
+  assert.equal(adj('sub_adj_1', { action: 'refund', type: 'full', status: 'rejected' }).handled, false);
+  assert.equal(adj('sub_adj_1', { action: 'refund', type: 'partial', status: 'approved' }).handled, false);
+  assert.equal(adj('sub_adj_1', { action: 'credit', type: 'full', status: 'approved' }).handled, false);
+  assert.equal(status('sub_adj_1'), 'active');
+  const approved = handlePaddleEvent(licDir, { event_type: 'adjustment.updated', data: { subscription_id: 'sub_adj_1', action: 'refund', type: 'full', status: 'approved' } });
+  assert.equal(approved.action, 'revoked');
+  assert.equal(status('sub_adj_1'), 'revoked');
+  make('sub_adj_2');
+  assert.equal(adj('sub_adj_2', { action: 'chargeback', type: 'full', status: 'approved' }).action, 'revoked');
+
+  for (const p of listPendingDeliveries(licDir)) clearPendingDelivery(licDir, p.key);
+});
+
+test('the Paddle webhook asks for a retry when the buyer email cannot be found', async () => {
+  const secret = 'whsec-test-secret';
+  process.env.WANJI_PADDLE_WEBHOOK_SECRET = secret;
+  try {
+    const raw = JSON.stringify({ event_type: 'subscription.created', data: { id: 'sub_retry_hook', customer_id: 'ctm_01retry', current_billing_period: { ends_at: FUTURE } } });
+    const ts = String(Math.floor(Date.now() / 1000));
+    const h1 = createHmac('sha256', secret).update(`${ts}:${raw}`).digest('hex');
+    const res = await fetch(`${verifyBase}/license/webhook`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Paddle-Signature': `ts=${ts};h1=${h1}` }, body: raw });
+    assert.equal(res.status, 503, 'non-2xx so Paddle sends it again');
+    assert.equal(listLicenses(licDir).some((e) => e.record.subscriptionId === 'sub_retry_hook'), false);
+  } finally {
+    delete process.env.WANJI_PADDLE_WEBHOOK_SECRET;
+  }
 });
 
 test('SMTP license delivery is opt-in and clears the manual queue only after success', async () => {

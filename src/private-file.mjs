@@ -1,5 +1,9 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import path from 'node:path';
+
+// Full path: Git for Windows ships its own whoami.exe in usr\bin, which rejects /user.
+export const WHOAMI = path.join(process.env.SystemRoot || 'C:/Windows', 'System32', 'whoami.exe');
 
 let cachedSid;
 const securedFiles = new Map();
@@ -12,7 +16,7 @@ function fileStamp(file) {
 
 function windowsUserSid() {
   if (cachedSid) return cachedSid;
-  const result = spawnSync('whoami.exe', ['/user', '/fo', 'csv', '/nh'], {
+  const result = spawnSync(WHOAMI, ['/user', '/fo', 'csv', '/nh'], {
     encoding: 'utf8', windowsHide: true, timeout: 5000,
   });
   const sid = /S-1-\d+(?:-\d+)+/.exec(result.stdout || '')?.[0];

@@ -27,7 +27,7 @@ import {
 import {
   DEFAULT_LICENSE_SERVER, clearPendingDelivery, createLicense, listLicenses, listPendingDeliveries,
   licensesDir, localLicenseStatus, newMachineId, readLocalLicense, refreshLocalLicense, removeLocalLicense, revokeLicense,
-  saveLocalLicense, unbindRemote, verifyRemote,
+  saveVerdict, unbindRemote, verifyRemote,
 } from './license.mjs';
 import { runQuick } from './quick.mjs';
 import { securePrivateDirectory, writePrivateFile } from './private-file.mjs';
@@ -736,8 +736,9 @@ async function licenseCommand({ flags, positional }) {
     }[verdict.reason] || 'this license key is not valid';
     throw new Error(why);
   }
-  const now = new Date().toISOString();
-  saveLocalLicense(homeDir(), { key, machineId, server, plan: verdict.plan || 'pro', expiresAt: verdict.expiresAt || null, verifiedAt: now });
+  if (saveVerdict(homeDir(), { key, machineId }, verdict, server).plan !== 'pro') {
+    throw new Error('the license server answered without a valid signature; update Wanji and try again');
+  }
   const refreshed = await hubApi('license/refresh', { method: 'POST' }).then(() => true).catch(() => false);
   console.log(`Wanji Pro until ${verdict.expiresAt}.${refreshed ? '' : ' Restart the service to apply it (wanji stop, then wanji start).'}`);
   return undefined;

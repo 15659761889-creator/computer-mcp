@@ -1,4 +1,6 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import {
+  createHash, createHmac, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, timingSafeEqual, verify,
+} from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { homeDir } from './config.mjs';
@@ -17,6 +19,20 @@ export const VERIFY_RATE_ACCOUNT_MAX = 10;
 // v1 license server: the owner's hub, already public. Override with --server or
 // WANJI_LICENSE_SERVER; a buyer never needs to know it, it is in the Paddle email.
 export const DEFAULT_LICENSE_SERVER = 'https://pc-test-mcp.3618.app';
+
+// A Pro verdict stays usable this long without reaching the license server.
+export const OFFLINE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+// The license server signs every Pro verdict with its Ed25519 key (SPKI DER, base64).
+// A computer trusts only verdicts signed by one of these, so editing license.json
+// cannot make it Pro.
+const LICENSE_PUBLIC_KEYS = [
+  'MCowBQYDK2VwAyEAACSFPq5Ojcz08MKoyaZd1ODo4UWN3KtpjBwhU2FGmHQ=', // pc-test license server, made 2026-11-07
+];
+let trustedKeys = LICENSE_PUBLIC_KEYS;
+// Tests sign with a key of their own; nothing in the product calls this.
+export function trustLicenseKeysForTesting(keys) {
+  trustedKeys = keys;
+}
 
 export const licensesDir = (home = homeDir()) => path.join(home, 'licenses');
 export const localLicensePath = (home = homeDir()) => path.join(home, 'license.json');
@@ -194,6 +210,53 @@ export function verifyLicense(dir, key, machineId) {
   return { valid: true, plan: record.plan || 'pro', expiresAt: record.expiresAt };
 }
 
+// ---- Signed verdicts ----
+
+const signingKeyFile = (dir) => path.join(dir, 'signing-key.pem');
+
+// The license server's Ed25519 key, made on first use and kept beside the license records.
+export function licenseSigningKey(dir) {
+  const file = signingKeyFile(dir);
+  try {
+    securePrivateFile(file);
+    return createPrivateKey(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  const { privateKey } = generateKeyPairSync('ed25519');
+  writePrivateFile(file, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+  return privateKey;
+}
+
+// What goes into LICENSE_PUBLIC_KEYS for a server's signing key.
+export function licensePublicKey(dir) {
+  return createPublicKey(licenseSigningKey(dir)).export({ type: 'spki', format: 'der' }).toString('base64');
+}
+
+const verdictPayload = ({ keyHash: hashHex, machineId, plan, expiresAt, verifiedAt }) => Buffer.from(
+  ['wanji-license-v1', hashHex, machineId, plan, expiresAt, verifiedAt].join('\n'),
+);
+
+// Adds the time of the check and a signature over key, machine, plan and expiry.
+export function signVerdict(dir, key, machineId, verdict, verifiedAt = new Date().toISOString()) {
+  const payload = verdictPayload({ keyHash: keyHash(key), machineId, plan: verdict.plan, expiresAt: verdict.expiresAt, verifiedAt });
+  return { ...verdict, machineId, verifiedAt, signature: sign(null, payload, licenseSigningKey(dir)).toString('base64') };
+}
+
+export function verdictSignatureOk(local, keys = trustedKeys) {
+  if (typeof local?.signature !== 'string' || typeof local.machineId !== 'string') return false;
+  const payload = verdictPayload({ keyHash: keyHash(local.key), machineId: local.machineId, plan: local.plan, expiresAt: local.expiresAt, verifiedAt: local.verifiedAt });
+  const signature = Buffer.from(local.signature, 'base64');
+  return keys.some((der) => {
+    try {
+      return verify(null, payload, createPublicKey({ key: Buffer.from(der, 'base64'), format: 'der', type: 'spki' }), signature);
+    } catch {
+      return false;
+    }
+  });
+}
+
 export function unbindLicenseMachine(dir, key, machineId) {
   if (!validKeyFormat(key) || typeof machineId !== 'string' || !machineId || machineId.length > 128) {
     return { unbound: false, reason: 'invalid' };
@@ -246,10 +309,11 @@ export function localLicenseStatus(home = homeDir(), now = Date.now()) {
   const local = readLocalLicense(home);
   if (!local?.key || !validKeyFormat(local.key)) return { plan: 'free', fresh: false };
   const expires = licenseExpiryTime(local.expiresAt);
-  const verified = Date.parse(local.verifiedAt || '');
-  if (local.plan === 'pro' && Number.isFinite(expires) && expires > now) {
-    const fresh = Number.isFinite(verified) && now - verified < LICENSE_CACHE_MS;
-    return { plan: 'pro', expiresAt: local.expiresAt, verifiedAt: local.verifiedAt || null, fresh, stale: !fresh, keyHash: keyHash(local.key), server: local.server || null };
+  const age = now - licenseExpiryTime(local.verifiedAt);
+  // Pro only on a verdict the license server signed, checked within the offline grace.
+  if (local.plan === 'pro' && expires > now && age < OFFLINE_GRACE_MS && verdictSignatureOk(local)) {
+    const fresh = age < LICENSE_CACHE_MS;
+    return { plan: 'pro', expiresAt: local.expiresAt, verifiedAt: local.verifiedAt, fresh, stale: !fresh, keyHash: keyHash(local.key), server: local.server || null };
   }
   return { plan: 'free', expiresAt: local.expiresAt || null, verifiedAt: local.verifiedAt || null, fresh: false, keyHash: keyHash(local.key), server: local.server || null };
 }
@@ -268,8 +332,7 @@ export async function verifyRemote(server, key, machineId) {
 }
 
 export async function unbindRemote(server, key, machineId) {
-  const origin = String(server || '').replace(/\/$/, '');
-  if (!/^https?:\/\//.test(origin)) throw new Error('license server must be an http(s) URL');
+  const origin = secureServerOrigin(server);
   const res = await fetch(`${origin}/license/unbind`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -282,8 +345,7 @@ export async function unbindRemote(server, key, machineId) {
 }
 
 export async function licenseStatusRemote(server, hashHex) {
-  const origin = String(server || '').replace(/\/$/, '');
-  if (!/^https?:\/\//.test(origin)) throw new Error('license server must be an http(s) URL');
+  const origin = secureServerOrigin(server);
   const res = await fetch(`${origin}/license/status`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -295,9 +357,21 @@ export async function licenseStatusRemote(server, hashHex) {
   return body;
 }
 
+// Stores the license server's answer for this computer.
+export function saveVerdict(home, local, verdict, server) {
+  saveLocalLicense(home, {
+    key: local.key, machineId: local.machineId, server,
+    plan: verdict.valid ? (verdict.plan || 'pro') : 'free',
+    expiresAt: verdict.expiresAt || null,
+    verifiedAt: verdict.verifiedAt || new Date().toISOString(),
+    signature: verdict.valid ? verdict.signature || null : null,
+  });
+  return localLicenseStatus(home);
+}
+
 // Re-checks the stored key against the license server. A fresh cache is trusted
-// without a network call; a network failure keeps the cached verdict while it
-// has not expired, so a short outage never locks a paying user out.
+// without a network call; a network failure keeps the signed verdict for
+// OFFLINE_GRACE_MS, so a short outage never locks a paying user out.
 export async function refreshLocalLicense(home = homeDir(), { server } = {}) {
   const local = readLocalLicense(home);
   if (!local?.key || !validKeyFormat(local.key)) return { plan: 'free', fresh: false };
@@ -309,21 +383,13 @@ export async function refreshLocalLicense(home = homeDir(), { server } = {}) {
   try {
     verdict = await verifyRemote(target, local.key, machineId);
   } catch (err) {
-    if (local.plan === 'pro' && licenseExpiryTime(local.expiresAt) > Date.now()) {
-      return { plan: 'pro', expiresAt: local.expiresAt, verifiedAt: local.verifiedAt, fresh: false, stale: true, keyHash: keyHash(local.key), server: target };
-    }
+    if (cached.plan === 'pro') return { ...cached, stale: true, server: target };
     return { plan: 'free', fresh: false, stale: true, error: err.message, keyHash: keyHash(local.key), server: target };
   }
-  const now = new Date().toISOString();
-  saveLocalLicense(home, {
-    ...local, machineId, server: target,
-    plan: verdict.valid ? (verdict.plan || 'pro') : 'free',
-    expiresAt: verdict.expiresAt || null, verifiedAt: now,
-  });
+  const status = saveVerdict(home, { key: local.key, machineId }, verdict, target);
   return {
-    plan: verdict.valid ? (verdict.plan || 'pro') : 'free',
-    expiresAt: verdict.expiresAt || null, verifiedAt: now, fresh: true,
-    reason: verdict.reason || null, keyHash: keyHash(local.key), server: target,
+    ...status, fresh: true, stale: false,
+    reason: verdict.reason || (verdict.valid && status.plan !== 'pro' ? 'unsigned' : null), server: target,
   };
 }
 
@@ -344,6 +410,56 @@ export async function refreshHubLicense(hub, home = homeDir()) {
 export function paddleSecret() {
   return process.env.WANJI_PADDLE_WEBHOOK_SECRET || '';
 }
+
+// Paddle API key (WANJI_PADDLE_API_KEY, or paddle-api-key.txt in the Wanji folder).
+// Subscription events carry only customer_id, so the buyer's email is looked up with it.
+export function paddleApiKey(env = process.env, home = homeDir()) {
+  if (env.WANJI_PADDLE_API_KEY) return env.WANJI_PADDLE_API_KEY.trim();
+  try {
+    const file = path.join(home, 'paddle-api-key.txt');
+    securePrivateFile(file);
+    return fs.readFileSync(file, 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+// Sandbox keys contain _sdbx_; WANJI_PADDLE_API_URL overrides both.
+export function paddleApiBase(apiKey, env = process.env) {
+  if (env.WANJI_PADDLE_API_URL) return secureServerOrigin(env.WANJI_PADDLE_API_URL);
+  return /_sdbx_/.test(apiKey) ? 'https://sandbox-api.paddle.com' : 'https://api.paddle.com';
+}
+
+const paddleEmailOf = (data) => data.customer?.email || data.customer_email || null;
+const creatingEvent = (type) => type === 'subscription.created' || type === 'subscription.activated';
+
+// Fills data.customer_email on an event that will create a license. Returns false
+// when the email is still unknown, so the webhook answers an error and Paddle retries.
+export async function fillPaddleEmail(dir, event, { env = process.env, home = homeDir(), fetchImpl = fetch } = {}) {
+  const data = event?.data;
+  if (!creatingEvent(event?.event_type) || !data || typeof data !== 'object' || paddleEmailOf(data)) return true;
+  if (findLicenseBySubscription(dir, data.subscription_id || data.id)) return true;
+  const apiKey = paddleApiKey(env, home);
+  if (!apiKey || typeof data.customer_id !== 'string' || !/^ctm_[a-z0-9]+$/i.test(data.customer_id)) return false;
+  try {
+    const res = await fetchImpl(`${paddleApiBase(apiKey, env)}/customers/${data.customer_id}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return false;
+    const email = (await res.json())?.data?.email;
+    if (typeof email !== 'string' || !email.trim()) return false;
+    data.customer_email = email.trim();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Only money that actually went back ends a license: an approved full refund or a
+// chargeback. A refund request still pending, a rejected one, or a partial credit does not.
+const endsLicense = (data) => data.status === 'approved'
+  && (data.action === 'chargeback' || (data.action === 'refund' && data.type === 'full'));
 
 // Paddle-Signature: ts=<unix>;h1=<hex>; HMAC-SHA256 over `ts:rawBody`.
 export function verifyPaddleSignature(rawBody, header, secret, now = Date.now()) {
@@ -431,20 +547,20 @@ export function handlePaddleEvent(dir, event) {
   const type = event?.event_type;
   const data = event?.data && typeof event.data === 'object' ? event.data : {};
   const subscription = data.subscription && typeof data.subscription === 'object' ? data.subscription : {};
-  const email = data.customer?.email || data.customer_email || null;
+  const email = paddleEmailOf(data);
   const subscriptionId = data.subscription_id || subscription.id || data.id || null;
   const endsAt = data.billing_period?.ends_at || data.current_billing_period?.ends_at
     || subscription.current_billing_period?.ends_at || subscription.billing_period?.ends_at
     || data.next_billed_at || data.ends_at || subscription.next_billed_at || null;
   const daysFrom = (iso) => (iso && Number.isFinite(Date.parse(iso))
     ? Math.max(1, Math.ceil((Date.parse(iso) - Date.now()) / 86400000)) : 30);
-  if (type === 'subscription.created' || type === 'subscription.activated') {
-    if (!email) return { handled: false, reason: 'no buyer email in event' };
+  if (creatingEvent(type)) {
     const existing = findLicenseBySubscription(dir, subscriptionId);
     if (existing) {
       const kept = extendLicenseBySubscription(dir, subscriptionId, endsAt);
       return { handled: true, action: 'extended', keyHash: existing.keyHash, email: kept?.record.email || existing.record.email };
     }
+    if (!email) return { handled: false, reason: 'no buyer email in event' };
     const { key, record } = createLicense(dir, { email, days: daysFrom(endsAt), subscriptionId });
     queuePendingDelivery(dir, key, email);
     return { handled: true, action: 'created', keyHash: keyHash(key), email, expiresAt: record.expiresAt };
@@ -453,6 +569,9 @@ export function handlePaddleEvent(dir, event) {
     const kept = extendLicenseBySubscription(dir, subscriptionId, endsAt);
     if (!kept) return { handled: false, reason: 'no license for this subscription' };
     return { handled: true, action: 'extended', keyHash: kept.keyHash, email: kept.record.email };
+  }
+  if ((type === 'adjustment.created' || type === 'adjustment.updated') && !endsLicense(data)) {
+    return { handled: false, reason: 'adjustment does not end the license' };
   }
   if (type === 'subscription.canceled'
     || (type === 'subscription.updated' && data.status === 'canceled')
@@ -526,7 +645,8 @@ export async function handleLicenseHttp(req, res, pathname, dir = licensesDir())
       reply(res, 200, licenseActive(dir, String(body.keyHash).toLowerCase()));
       return;
     }
-    reply(res, 200, verifyLicense(dir, body?.key, body?.machineId));
+    const verdict = verifyLicense(dir, body?.key, body?.machineId);
+    reply(res, 200, verdict.valid ? signVerdict(dir, body.key, body.machineId, verdict) : verdict);
     return;
   }
   if (pathname === '/license/webhook' && req.method === 'POST') {
@@ -551,6 +671,12 @@ export async function handleLicenseHttp(req, res, pathname, dir = licensesDir())
       event = JSON.parse(raw.toString('utf8'));
     } catch {
       reply(res, 400, { error: 'invalid JSON' });
+      return;
+    }
+    if (!(await fillPaddleEmail(dir, event))) {
+      // A non-2xx answer makes Paddle send the event again later.
+      console.error(`Paddle ${event?.event_type}: could not look up the buyer email (check WANJI_PADDLE_API_KEY)`);
+      reply(res, 503, { error: 'could not look up the buyer email; retry later' });
       return;
     }
     const result = handlePaddleEvent(dir, event);

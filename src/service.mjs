@@ -15,6 +15,7 @@ import { localHandoff } from './handoff-local.mjs';
 import { LAN_PORT, allowThroughFirewall, lanAddresses, startDiscovery, startLanServer } from './lan.mjs';
 import { Transfers, handleXferLan, isXferTool, runXfer, transfersFile, xferPsk } from './transfer.mjs';
 import { refreshHubLicense } from './license.mjs';
+import { WHOAMI } from './private-file.mjs';
 import { spawnTunnel, tunnelConfigPath } from './tunnel.mjs';
 import {
   installLinuxAutostart, linuxAutostartState, removeLinuxAutostart, startLinuxService, stopLinuxService,
@@ -172,7 +173,12 @@ export async function runService() {
     if (lan) hub.lan = { port: lan.port, addrs: lan.addrs };
   }
   // Pro is a license check, never a blocker: a failed check keeps the cached verdict.
-  if (hub) refreshHubLicense(hub).catch((err) => console.error(`license check failed: ${err.message}`));
+  // Re-checked every 6 hours, so a refund or the end of the offline grace applies without a restart.
+  if (hub) {
+    const checkLicense = () => refreshHubLicense(hub).catch((err) => console.error(`license check failed: ${err.message}`));
+    checkLicense();
+    setInterval(checkLicense, 6 * 60 * 60 * 1000).unref();
+  }
   // The notes AIs leave each other. A note can never hold this server's own keys.
   // A notes file that cannot be opened must not keep the computer from being controlled.
   let memory = null;
@@ -309,7 +315,7 @@ const TASK = psq(TASK_NAME);
 // an administrator's password at the prompt would end up with a task it cannot start.
 function isAdminUser() {
   if (!IS_WINDOWS) return false;
-  const groups = spawnSync('whoami', ['/groups'], { encoding: 'utf8', windowsHide: true });
+  const groups = spawnSync(WHOAMI, ['/groups'], { encoding: 'utf8', windowsHide: true });
   return groups.status === 0 && groups.stdout.includes('S-1-5-32-544');
 }
 
