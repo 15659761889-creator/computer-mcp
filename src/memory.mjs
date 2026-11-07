@@ -44,9 +44,7 @@ export const MEMORY_LIMITS = {
 // the swap even when the new file has grown past the point where it stopped reading.
 const newEpoch = (ts) => ({ op: 'epoch', ts, id: randomBytes(8).toString('hex') });
 
-function sleepSync(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
+const sleepAsync = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export const MEMORY_TOOL_NAMES = new Set(['memory_read', 'memory_write', 'memory_forget']);
 
@@ -292,8 +290,12 @@ export class MemoryStore {
     this.entries = new Map();
     this.badLines = 0;
     this.lockDepth = 0;
+    this.asyncQueue = Promise.resolve();
     this.sync();
-    this.locked(() => this.compactIfNeeded(true));
+    let compactNeeded = this.events.length >= this.limits.compactEvents;
+    try { compactNeeded ||= fs.statSync(this.file).size >= this.limits.compactBytes; } catch { /* new file */ }
+    // Startup compaction is asynchronous and only starts when the log is actually large.
+    this.ready = compactNeeded ? this.compactIfNeededAsync(true).catch(() => false) : Promise.resolve(false);
   }
 
   reset() {
@@ -357,38 +359,27 @@ export class MemoryStore {
     }
   }
 
-  // Runs fn holding the lock file, so the owner's CLI and the service never interleave a check and
-  // its write. Re-entrant within this process. A lock left by a crashed process goes stale.
+  // Synchronous compatibility methods fail fast on contention instead of blocking the event loop.
+  // Service and MCP write paths use lockedAsync below and wait without blocking.
   locked(fn) {
     if (this.lockDepth > 0) {
       this.lockDepth += 1;
-      try {
-        return fn();
-      } finally {
-        this.lockDepth -= 1;
-      }
+      try { return fn(); } finally { this.lockDepth -= 1; }
     }
     const lock = `${this.file}.lock`;
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    const deadline = Date.now() + this.limits.lockWaitMs;
-    for (;;) {
-      try {
-        fs.closeSync(fs.openSync(lock, 'wx'));
-        break;
-      } catch (err) {
-        if (err.code !== 'EEXIST' && err.code !== 'EPERM') throw err;
-        let age = 0;
-        try {
-          age = Date.now() - fs.statSync(lock).mtimeMs;
-        } catch {
-          continue; // released in between
-        }
-        if (age > this.limits.staleLockMs) {
-          fs.rmSync(lock, { force: true });
-          continue;
-        }
-        if (Date.now() > deadline) throw new MemoryError('The memory file is busy (another write is in progress). Try again in a moment.');
-        sleepSync(15);
+    try {
+      fs.closeSync(fs.openSync(lock, 'wx'));
+    } catch (err) {
+      if (err.code !== 'EEXIST' && err.code !== 'EPERM') throw err;
+      let age = 0;
+      try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch { age = 0; }
+      if (age > this.limits.staleLockMs) {
+        fs.rmSync(lock, { force: true });
+        try { fs.closeSync(fs.openSync(lock, 'wx')); }
+        catch { throw new MemoryError('The memory file is busy (another write is in progress). Try again in a moment.'); }
+      } else {
+        throw new MemoryError('The memory file is busy (another write is in progress). Try again in a moment.');
       }
     }
     this.lockDepth = 1;
@@ -399,6 +390,41 @@ export class MemoryStore {
       this.lockDepth = 0;
       fs.rmSync(lock, { force: true });
     }
+  }
+
+  // All service writes share a per-instance queue and an on-disk lock. Waiting for another
+  // process is asynchronous, so polling the lock never stalls MCP requests or health checks.
+  lockedAsync(fn) {
+    const run = this.asyncQueue.then(async () => {
+      const lock = `${this.file}.lock`;
+      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      const deadline = Date.now() + this.limits.lockWaitMs;
+      for (;;) {
+        try {
+          fs.closeSync(fs.openSync(lock, 'wx'));
+          break;
+        } catch (err) {
+          if (err.code !== 'EEXIST' && err.code !== 'EPERM') throw err;
+          let age = 0;
+          try { age = Date.now() - fs.statSync(lock).mtimeMs; }
+          catch { continue; } // released between the open and stat
+          if (age > this.limits.staleLockMs) {
+            fs.rmSync(lock, { force: true });
+            continue;
+          }
+          if (Date.now() > deadline) throw new MemoryError('The memory file is busy (another write is in progress). Try again in a moment.');
+          await sleepAsync(15);
+        }
+      }
+      try {
+        this.sync();
+        return await fn();
+      } finally {
+        fs.rmSync(lock, { force: true });
+      }
+    });
+    this.asyncQueue = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   append(event) {
@@ -482,7 +508,16 @@ export class MemoryStore {
     return this.locked(() => this.writeNow(args));
   }
 
-  writeNow({ kind, text, author, key, id, if_rev: ifRev, computer, tags, project, state, by = 'ai', via, locked } = {}) {
+  async writeAsync(args = {}) {
+    await this.ready;
+    return this.lockedAsync(async () => {
+      const result = this.writeNow({ ...args, _deferCompact: true });
+      if (this.events.length >= this.limits.compactEvents) await this.compactIfNeededNowAsync();
+      return result;
+    });
+  }
+
+  writeNow({ kind, text, author, key, id, if_rev: ifRev, computer, tags, project, state, by = 'ai', via, locked, _deferCompact = false } = {}) {
     const L = this.limits;
     if (kind !== 'fact' && kind !== 'handoff') throw new MemoryError('kind must be "fact" or "handoff".');
     const body = clean(text);
@@ -573,7 +608,7 @@ export class MemoryStore {
     };
     this.append({ op: 'put', ts, author: who, entry });
     const evicted = kind === 'handoff' && !owner ? this.archiveOldHandoffs(who, entry.project) : 0;
-    if (this.events.length >= this.limits.compactEvents) this.compactIfNeeded();
+    if (!_deferCompact && this.events.length >= this.limits.compactEvents) this.compactIfNeeded();
     return { entry: this.entries.get(entry.id) ?? entry, created: !existing, evicted };
   }
 
@@ -621,6 +656,25 @@ export class MemoryStore {
     });
   }
 
+  async forgetManyAsync({ ids, author, via } = {}) {
+    await this.ready;
+    return this.lockedAsync(() => {
+      const who = checkAuthor(author);
+      const list = [...new Set((Array.isArray(ids) ? ids : []).map((v) => String(v ?? '').trim()).filter(Boolean))];
+      if (!list.length) throw new MemoryError('Give the ids of the notes to delete.');
+      if (list.length > this.limits.forgetBatch) throw new MemoryError(`Delete at most ${this.limits.forgetBatch} notes per call.`);
+      const found = list.map((id) => ({ id, note: this.entries.get(id) }));
+      const missing = found.filter((f) => !f.note).map((f) => f.id);
+      if (missing.length) throw new MemoryError(`There is no note with id ${missing.join(', ')}. Nothing was deleted. Check ids with memory_read.`);
+      const fixed = found.filter((f) => f.note.locked).map((f) => f.id);
+      if (fixed.length) throw new MemoryError(`Note ${fixed.join(', ')} is locked by the owner and cannot be deleted. Nothing was deleted.`);
+      this.checkRate(who);
+      const viaText = via ? clean(via).slice(0, 80) : undefined;
+      for (const { note } of found) this.append({ op: 'forget', ts: this.clock(), author: who, id: note.id, ...(viaText ? { via: viaText } : {}) });
+      return found.map((f) => f.note);
+    });
+  }
+
   forget({ id, key, author, by = 'ai', via } = {}) {
     return this.locked(() => {
       const owner = by === 'owner';
@@ -643,10 +697,44 @@ export class MemoryStore {
     });
   }
 
+  async forgetAsync({ id, key, author, by = 'ai', via } = {}) {
+    await this.ready;
+    return this.lockedAsync(async () => {
+      const owner = by === 'owner';
+      const who = owner ? 'owner' : checkAuthor(author);
+      const found = id ? this.entries.get(id) : key ? this.byKey(key) : null;
+      if (!found) throw new MemoryError('There is no such note. Check its id with memory_read.');
+      if (found.locked && !owner) throw new MemoryError(`Note ${found.id} is locked by the owner and cannot be deleted.`);
+      if (!owner) {
+        this.checkRate(who);
+        const viaText = via ? clean(via).slice(0, 80) : undefined;
+        this.append({ op: 'forget', ts: this.clock(), author: who, id: found.id, ...(viaText ? { via: viaText } : {}) });
+        return found;
+      }
+      const kept = this.events.filter((e) => !(e.op === 'put' && e.entry?.id === found.id) && !(e.op === 'forget' && e.id === found.id));
+      if (!await this.rewriteNowAsync(kept)) throw new MemoryError('Could not rewrite the notes file, so the text of that note is still on disk. Try again.');
+      return found;
+    });
+  }
+
   // Locking adopts a note: it becomes the owner's, so undoing the AI that first wrote it no longer
   // removes it. Only the owner's tools call this; no AI tool can set or clear a lock.
   setLock(ref = {}, locked = true) {
     return this.locked(() => {
+      const found = this.get(ref);
+      if (!found) throw new MemoryError('There is no such note. Check its id with the list.');
+      const ts = this.clock();
+      const entry = { ...found, by: 'owner', author: 'owner', rev: found.rev + 1, updated: new Date(ts).toISOString() };
+      if (locked) entry.locked = true;
+      else delete entry.locked;
+      this.append({ op: 'put', ts, author: 'owner', entry });
+      return this.entries.get(entry.id) ?? entry;
+    });
+  }
+
+  async setLockAsync(ref = {}, locked = true) {
+    await this.ready;
+    return this.lockedAsync(() => {
       const found = this.get(ref);
       if (!found) throw new MemoryError('There is no such note. Check its id with the list.');
       const ts = this.clock();
@@ -667,6 +755,14 @@ export class MemoryStore {
     });
   }
 
+  async purgeAsync() {
+    await this.ready;
+    return this.lockedAsync(async () => {
+      if (!await this.compactNowAsync(0)) throw new MemoryError('Could not rewrite the notes file.');
+      return this.stats();
+    });
+  }
+
   // The owner's undo: every write, replace and delete by this author since `since` is as if it never
   // happened, and its text leaves the file. Author "*" means every AI, whatever name it gave, which is
   // the reliable way to clean up, since an AI can give any name. Nobody else's history is touched.
@@ -683,6 +779,24 @@ export class MemoryStore {
       const kept = this.events.filter((e) => !revokes(target, sinceMs, e));
       const affected = this.events.length - kept.length;
       if (affected && !this.rewrite(kept)) throw new MemoryError('Could not rewrite the notes file, so nothing was undone. Try again.');
+      return { events: affected };
+    });
+  }
+
+  async revokeAsync({ author, since } = {}) {
+    await this.ready;
+    return this.lockedAsync(async () => {
+      const target = author === '*' ? '*' : asName(author);
+      if (!target) throw new MemoryError('Say whose writes to undo.');
+      if (/^owner$/i.test(target)) throw new MemoryError('The owner\'s own notes are not undone this way; delete them one by one.');
+      let sinceMs = 0;
+      if (since !== undefined && since !== null && since !== '') {
+        sinceMs = typeof since === 'number' ? since : Date.parse(since);
+        if (!Number.isFinite(sinceMs)) throw new MemoryError('since must be a date and time.');
+      }
+      const kept = this.events.filter((e) => !revokes(target, sinceMs, e));
+      const affected = this.events.length - kept.length;
+      if (affected && !await this.rewriteNowAsync(kept)) throw new MemoryError('Could not rewrite the notes file, so nothing was undone. Try again.');
       return { events: affected };
     });
   }
@@ -818,66 +932,110 @@ export class MemoryStore {
   compactIfNeeded(atStart = false) {
     let size = 0;
     if (atStart) {
-      try {
-        size = fs.statSync(this.file).size;
-      } catch {
-        size = 0;
-      }
+      try { size = fs.statSync(this.file).size; } catch { size = 0; }
     }
     if (this.events.length < this.limits.compactEvents && size < this.limits.compactBytes) return false;
-    return this.locked(() => {
-      // Keep a week of history so recent writes can still be undone; if even that is too much,
-      // keep a day, and only then nothing.
-      for (const days of [this.limits.historyDays, 1]) {
-        if (!this.compact(days * DAY)) return false;
-        if (this.events.length < this.limits.compactEvents / 2) return true;
-      }
-      return this.compact(0);
-    });
+    return this.locked(() => this.compactIfNeededNow());
   }
 
-  // Folds history older than `historyMs` into one snapshot line per note that was live then, and
-  // keeps newer events as they are. Writes folded into the snapshot can no longer be undone one by
-  // one: a later revoke removes such a note only when that author wrote its latest version.
+  compactIfNeededNow() {
+    // Keep a week of history so recent writes can still be undone; if even that is too much,
+    // keep a day, and only then nothing.
+    for (const days of [this.limits.historyDays, 1]) {
+      if (!this.compactNow(days * DAY)) return false;
+      if (this.events.length < this.limits.compactEvents / 2) return true;
+    }
+    return this.compactNow(0);
+  }
+
+  async compactIfNeededAsync(atStart = false) {
+    return this.lockedAsync(() => this.compactIfNeededNowAsync(atStart));
+  }
+
+  async compactIfNeededNowAsync(atStart = false) {
+    let size = 0;
+    if (atStart) {
+      try { size = fs.statSync(this.file).size; } catch { size = 0; }
+    }
+    if (this.events.length < this.limits.compactEvents && size < this.limits.compactBytes) return false;
+    for (const days of [this.limits.historyDays, 1]) {
+      if (!await this.compactNowAsync(days * DAY)) return false;
+      if (this.events.length < this.limits.compactEvents / 2) return true;
+    }
+    return this.compactNowAsync(0);
+  }
+
+  // Folds history older than `historyMs` into one snapshot line per note that was live then.
   compact(historyMs = this.limits.historyDays * DAY) {
-    return this.locked(() => {
-      const now = this.clock();
-      const cutoff = now - historyMs;
-      let split = this.events.findIndex((e) => e.ts >= cutoff);
-      if (historyMs <= 0 || split < 0) split = this.events.length;
-      const snapshot = [...replay(this.events.slice(0, split)).values()]
-        .filter((e) => !(e.kind === 'handoff' && !e.locked && now - (Date.parse(e.updated) || 0) > this.limits.dropHandoffDays * DAY))
-        .map((e) => ({ op: 'put', ts: Date.parse(e.updated) || now, author: e.author, entry: e }));
-      return this.rewrite([...snapshot, ...this.events.slice(split)]);
-    });
+    return this.locked(() => this.compactNow(historyMs));
   }
 
-  // Replaces the file with these events under a new epoch line, then reads it back.
+  compactNow(historyMs) {
+    const now = this.clock();
+    const cutoff = now - historyMs;
+    let split = this.events.findIndex((e) => e.ts >= cutoff);
+    if (historyMs <= 0 || split < 0) split = this.events.length;
+    const snapshot = [...replay(this.events.slice(0, split)).values()]
+      .filter((e) => !(e.kind === 'handoff' && !e.locked && now - (Date.parse(e.updated) || 0) > this.limits.dropHandoffDays * DAY))
+      .map((e) => ({ op: 'put', ts: Date.parse(e.updated) || now, author: e.author, entry: e }));
+    return this.rewriteNow([...snapshot, ...this.events.slice(split)]);
+  }
+
+  async compactNowAsync(historyMs) {
+    const now = this.clock();
+    const cutoff = now - historyMs;
+    let split = this.events.findIndex((e) => e.ts >= cutoff);
+    if (historyMs <= 0 || split < 0) split = this.events.length;
+    const snapshot = [...replay(this.events.slice(0, split)).values()]
+      .filter((e) => !(e.kind === 'handoff' && !e.locked && now - (Date.parse(e.updated) || 0) > this.limits.dropHandoffDays * DAY))
+      .map((e) => ({ op: 'put', ts: Date.parse(e.updated) || now, author: e.author, entry: e }));
+    return this.rewriteNowAsync([...snapshot, ...this.events.slice(split)]);
+  }
+
+  // Synchronous compatibility path: a busy Windows file fails fast rather than sleeping.
   rewrite(events) {
-    return this.locked(() => {
-      const lines = [newEpoch(this.clock()), ...events].map((e) => JSON.stringify(e));
-      const tmp = `${this.file}.tmp`;
-      try {
-        fs.mkdirSync(path.dirname(this.file), { recursive: true });
-        fs.writeFileSync(tmp, `${lines.join('\n')}\n`, { mode: 0o600 });
-        // Windows refuses a rename for a moment while another process has the file open.
-        for (let attempt = 0; ; attempt += 1) {
-          try {
-            fs.renameSync(tmp, this.file);
-            break;
-          } catch (err) {
-            if (attempt >= 20 || !['EPERM', 'EBUSY', 'EACCES'].includes(err.code)) throw err;
-            sleepSync(25);
-          }
+    return this.locked(() => this.rewriteNow(events));
+  }
+
+  rewriteNow(events) {
+    const lines = [newEpoch(this.clock()), ...events].map((e) => JSON.stringify(e));
+    const tmp = `${this.file}.tmp`;
+    try {
+      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      fs.writeFileSync(tmp, `${lines.join('\n')}\n`, { mode: 0o600 });
+      fs.renameSync(tmp, this.file);
+    } catch {
+      fs.rmSync(tmp, { force: true });
+      return false;
+    }
+    this.reset();
+    this.sync();
+    return true;
+  }
+
+  // Retry transient Windows rename failures with timers, never a synchronous sleep.
+  async rewriteNowAsync(events) {
+    const lines = [newEpoch(this.clock()), ...events].map((e) => JSON.stringify(e));
+    const tmp = `${this.file}.tmp`;
+    try {
+      fs.mkdirSync(path.dirname(this.file), { recursive: true });
+      fs.writeFileSync(tmp, `${lines.join('\n')}\n`, { mode: 0o600 });
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          fs.renameSync(tmp, this.file);
+          break;
+        } catch (err) {
+          if (attempt >= 20 || !['EPERM', 'EBUSY', 'EACCES'].includes(err.code)) throw err;
+          await sleepAsync(25);
         }
-      } catch {
-        fs.rmSync(tmp, { force: true });
-        return false;
       }
-      this.reset();
-      this.sync();
-      return true;
-    });
+    } catch {
+      fs.rmSync(tmp, { force: true });
+      return false;
+    }
+    this.reset();
+    this.sync();
+    return true;
   }
 
   // ---- The tool calls ----
@@ -892,6 +1050,43 @@ export class MemoryStore {
       throw err;
     }
     return { text: `unknown tool: ${name}`, isError: true };
+  }
+
+  async toolAsync(name, args = {}, meta = {}) {
+    await this.ready;
+    try {
+      if (name === 'memory_read') return { text: this.toolRead(args) };
+      if (name === 'memory_write') return { text: await this.toolWriteAsync(args, meta) };
+      if (name === 'memory_forget') return { text: await this.toolForgetAsync(args, meta) };
+    } catch (err) {
+      if (err instanceof MemoryError) return { text: err.message, isError: true };
+      throw err;
+    }
+    return { text: `unknown tool: ${name}`, isError: true };
+  }
+
+  async toolWriteAsync(args, meta) {
+    if (args.if_rev !== undefined && args.if_rev !== null && !Number.isInteger(args.if_rev)) throw new MemoryError('if_rev must be a whole number.');
+    const { entry, created, evicted } = await this.writeAsync({
+      kind: args.kind, text: args.text, author: args.author, key: args.key, id: args.id,
+      if_rev: args.if_rev, computer: args.computer, tags: args.tags, project: args.project,
+      state: args.state, by: 'ai', via: meta.via,
+    });
+    const s = this.stats();
+    const crowded = this.crowded() ? `\n${this.crowdedNote()}` : '';
+    const archived = evicted ? `\nArchived ${evicted} older handoff${evicted === 1 ? '' : 's'} automatically to keep the notes short; the owner can undo it.` : '';
+    return `${created ? 'Saved' : 'Replaced'} ${entry.kind} ${entry.id} (rev ${entry.rev}). Memory: ${s.facts} facts, ${s.handoffs} handoffs, ${s.chars} of ${this.limits.total} characters.${archived}${crowded}`;
+  }
+
+  async toolForgetAsync(args, meta) {
+    if (Array.isArray(args.ids) && args.ids.length) {
+      if (args.id || args.key) throw new MemoryError('Give either ids, or one id or key, not both.');
+      const gone = await this.forgetManyAsync({ ids: args.ids, author: args.author, via: meta.via });
+      return `Deleted ${gone.length} note${gone.length === 1 ? '' : 's'}: ${gone.map((g) => g.id).join(', ')}. The owner can undo it.`;
+    }
+    if (!args.id && !args.key) throw new MemoryError('Give the id of the note (or the key, for a fact), or ids to delete several.');
+    const gone = await this.forgetAsync({ id: args.id, key: args.key, author: args.author, by: 'ai', via: meta.via });
+    return `Deleted ${gone.kind} ${gone.id}. The owner can undo it.`;
   }
 
   toolRead(args) {

@@ -26,10 +26,11 @@ import {
 } from './relay.mjs';
 import {
   DEFAULT_LICENSE_SERVER, clearPendingDelivery, createLicense, listLicenses, listPendingDeliveries,
-  licensesDir, localLicenseStatus, newMachineId, readLocalLicense, removeLocalLicense, revokeLicense,
+  licensesDir, localLicenseStatus, newMachineId, readLocalLicense, refreshLocalLicense, removeLocalLicense, revokeLicense,
   saveLocalLicense, verifyRemote,
 } from './license.mjs';
 import { runQuick } from './quick.mjs';
+import { securePrivateDirectory, writePrivateFile } from './private-file.mjs';
 import {
   checkPublic, deleteTunnel, ensureCloudflared, ensureCloudflareLogin, ensureTunnel, tunnelLogPath,
 } from './tunnel.mjs';
@@ -381,7 +382,7 @@ async function inviteFileCommand(flags) {
     : path.join(desktopDir(), 'join.json');
   const created = await hubApi('computers', { method: 'POST', body: { name: typeof flags.name === 'string' ? flags.name : undefined } });
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, `${JSON.stringify({ origin: created.origin, id: created.id, key: created.key, name: created.name }, null, 2)}\n`, { mode: 0o600 });
+  writePrivateFile(target, `${JSON.stringify({ origin: created.origin, id: created.id, key: created.key, name: created.name }, null, 2)}\n`);
   console.log(`加入文件已保存到：${target}\n\n把这个文件复制到新电脑的 %APPDATA%\\computer-mcp\\join.json，\n再在新电脑上打开 万机 管理器，确认后就会加入，不用输配对码\n（或者在新电脑上运行：wanji join --file <文件路径>）。\n\n注意：这个文件就是凭证，别泄露；加入成功后会自动删除。`);
 }
 
@@ -399,15 +400,17 @@ export function buildJoinerExe({ join, target, appRoot = APP_ROOT, node = proces
   if (!fs.existsSync(csc)) throw new Error('cannot find the C# compiler (csc.exe); the joiner needs .NET Framework 4 on this computer');
   if (!fs.existsSync(node)) throw new Error(`cannot find the Node runtime at ${node}`);
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'wanji-joiner-'));
+  securePrivateDirectory(work);
   const stage = path.join(work, 'payload');
   try {
+    securePrivateDirectory(stage);
     fs.mkdirSync(path.join(stage, 'app'), { recursive: true });
     fs.copyFileSync(node, path.join(stage, 'node.exe'));
     for (const entry of ['bin', 'src', 'desktop', 'web', 'package.json']) {
       const src = path.join(appRoot, entry);
       if (fs.existsSync(src)) fs.cpSync(src, path.join(stage, 'app', entry), { recursive: true });
     }
-    fs.writeFileSync(path.join(stage, 'join.json'), `${JSON.stringify(join, null, 2)}\n`, { mode: 0o600 });
+    writePrivateFile(path.join(stage, 'join.json'), `${JSON.stringify(join, null, 2)}\n`);
     fs.copyFileSync(path.join(appRoot, 'src', 'joiner-bootstrap.cmd'), path.join(stage, 'bootstrap.cmd'));
     // The stub and the ZIP are built next to the payload, not inside it.
     const stubExe = path.join(work, 'stub.exe');
@@ -425,7 +428,7 @@ export function buildJoinerExe({ join, target, appRoot = APP_ROOT, node = proces
     footer.write('WANJISFX', 0, 'ascii');
     footer.writeBigInt64LE(BigInt(stub.length), 8);
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, Buffer.concat([stub, fs.readFileSync(zipPath), footer]));
+    writePrivateFile(target, Buffer.concat([stub, fs.readFileSync(zipPath), footer]));
     return target;
   } finally {
     fs.rmSync(work, { recursive: true, force: true });
@@ -693,7 +696,8 @@ async function licenseCommand({ flags, positional }) {
   if (!key) {
     const status = localLicenseStatus();
     if (status.plan === 'pro') {
-      console.log(`Wanji Pro until ${status.expiresAt}${status.fresh ? '' : ' (checked a while ago; run: wanji license <key> to re-check)'}.`);
+      if (!status.fresh) void refreshLocalLicense().catch(() => {});
+      console.log(`Wanji Pro until ${status.expiresAt}${status.fresh ? '' : ' (cached; checking again in the background)'}.`);
     } else {
       console.log('Free plan: one computer, local use. Pro ($19/month) adds more computers and remote access; run: wanji license <key>.');
     }
@@ -859,8 +863,9 @@ async function relayCommand({ flags, positional }) {
 
 // The owner's side of the shared memory. It works on the same file as the running service, which
 // reads whatever is appended; the rewrites (forget, revoke, purge) are rare and brief.
-function memoryCommand({ positional, flags }) {
+async function memoryCommand({ positional, flags }) {
   const store = new MemoryStore({ file: memoryPath() });
+  await store.ready;
   const [action = 'list', ...rest] = positional;
   const flag = (name) => (typeof flags[name] === 'string' ? flags[name] : undefined);
   const ref = () => {
@@ -880,27 +885,22 @@ function memoryCommand({ positional, flags }) {
       const kind = flag('kind') || 'fact';
       const key = flag('key');
       const found = kind === 'fact' && key ? store.byKey(key) : null;
-      const { entry, created } = store.write({
-        kind,
-        text: rest[0],
-        key,
-        computer: flag('computer'),
+      const { entry, created } = await store.writeAsync({
+        kind, text: rest[0], key, computer: flag('computer'),
         tags: flag('tags') ? flag('tags').split(',') : undefined,
-        if_rev: found?.rev,
-        by: 'owner',
-        locked: flags.open ? false : undefined,
+        if_rev: found?.rev, by: 'owner', locked: flags.open ? false : undefined,
       });
       console.log(`${created ? 'Saved' : 'Replaced'} ${entry.kind} ${entry.id}${entry.locked ? ' (locked)' : ''}.`);
       return;
     }
     case 'lock':
     case 'unlock': {
-      const note = store.setLock(ref(), action === 'lock');
+      const note = await store.setLockAsync(ref(), action === 'lock');
       console.log(`${note.id} is ${note.locked ? 'locked and now yours' : 'unlocked'}.`);
       return;
     }
     case 'forget': {
-      const gone = store.forget({ ...ref(), by: 'owner' });
+      const gone = await store.forgetAsync({ ...ref(), by: 'owner' });
       console.log(`Deleted ${gone.kind} ${gone.id}; its text is gone from the file.`);
       return;
     }
@@ -914,12 +914,12 @@ function memoryCommand({ positional, flags }) {
       const all = Boolean(flags.all);
       if (all && !flag('since')) throw new Error('memory revoke --all needs --since <date>, the time from which every AI write is undone');
       if (!all && !rest[0]) throw new Error('memory revoke needs the name of an AI (see: wanji memory authors), or --all --since <date>');
-      const { events } = store.revoke({ author: all ? '*' : rest[0], since: flag('since') });
+      const { events } = await store.revokeAsync({ author: all ? '*' : rest[0], since: flag('since') });
       console.log(`Undid ${events} writes by ${all ? 'every AI' : `"${rest[0]}"`} and wiped them from the file.`);
       return;
     }
     case 'purge': {
-      const s = store.purge();
+      const s = await store.purgeAsync();
       console.log(`The file now holds only live notes: ${s.facts} facts, ${s.handoffs} handoffs. Earlier writes can no longer be undone.`);
       return;
     }
@@ -927,7 +927,6 @@ function memoryCommand({ positional, flags }) {
       throw new Error('memory: use list, add, lock, unlock, forget, authors, revoke or purge');
   }
 }
-
 async function status() {
   const config = requireConfig();
   if (config.joined) {

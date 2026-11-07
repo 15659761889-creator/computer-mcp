@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
+import { spawnSync } from 'node:child_process';
 import { Hub } from '../src/hub.mjs';
 import { joinFilePath, readJoinFileAt } from '../src/config.mjs';
 import { joinedConfig } from '../src/cli.mjs';
@@ -81,7 +82,16 @@ test('readJoinFileAt reads a valid join file and returns null when missing', () 
   assert.equal(readJoinFileAt(file), null);
   const key = 'k'.repeat(43);
   fs.writeFileSync(file, JSON.stringify({ origin: 'https://hub.example.com', id: '0123456789abcdef', key, name: 'desk-2' }));
+  if (process.platform === 'win32') {
+    const grant = spawnSync('icacls.exe', [file, '/grant', '*S-1-5-32-545:(F)'], { encoding: 'utf8', windowsHide: true });
+    assert.equal(grant.status, 0, grant.stderr);
+  } else fs.chmodSync(file, 0o666);
   assert.deepEqual(readJoinFileAt(file), { origin: 'https://hub.example.com', id: '0123456789abcdef', key, name: 'desk-2' });
+  if (process.platform === 'win32') {
+    const acl = spawnSync('icacls.exe', [file], { encoding: 'utf8', windowsHide: true });
+    assert.equal(acl.status, 0, acl.stderr);
+    assert.doesNotMatch(acl.stdout, /BUILTIN\\Users:|S-1-5-32-545:\\(F\\)/i, 'reading an old join file removes its inherited broad ACL');
+  } else assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   fs.writeFileSync(file, JSON.stringify({ origin: 'https://hub.example.com', id: '0123456789abcdef', key }));
   assert.equal(readJoinFileAt(file).name, undefined);
   fs.rmSync(file);
@@ -94,7 +104,13 @@ test('readJoinFileAt rejects invalid join files', () => {
   fs.writeFileSync(file, JSON.stringify({ origin: 'https://hub.example.com', id: 'x' }));
   assert.throws(() => readJoinFileAt(file), /缺少 origin\/id\/key/);
   fs.writeFileSync(file, JSON.stringify({ origin: 'ftp://hub.example.com', id: 'x', key: 'y' }));
-  assert.throws(() => readJoinFileAt(file), /http/);
+  assert.throws(() => readJoinFileAt(file), /HTTPS/);
+  fs.writeFileSync(file, JSON.stringify({ origin: 'http://hub.example.com', id: 'x', key: 'y' }));
+  assert.throws(() => readJoinFileAt(file), /HTTPS/);
+  fs.writeFileSync(file, JSON.stringify({ origin: 'http://127.0.0.1:8765', code: 'ABCDEFGH' }));
+  assert.equal(readJoinFileAt(file).origin, 'http://127.0.0.1:8765');
+  fs.writeFileSync(file, JSON.stringify({ origin: 'https://user:pass@hub.example.com', id: 'x', key: 'y' }));
+  assert.throws(() => readJoinFileAt(file), /凭证/);
   fs.writeFileSync(file, JSON.stringify({ origin: 'not a url', id: 'x', key: 'y' }));
   assert.throws(() => readJoinFileAt(file), /加入文件无效/);
   fs.rmSync(file);

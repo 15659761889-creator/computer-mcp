@@ -10,19 +10,32 @@ const MAX_SEEN = 2000;
 const LAN_RETRY_MS = 60000;
 const LAN_PROBE_MS = 2500;
 
+function secureHubOrigin(value) {
+  let url;
+  try { url = new URL(String(value || '')); } catch { throw new Error('hub address must be a valid HTTPS URL'); }
+  if (url.username || url.password || url.search || url.hash) throw new Error('hub address must not contain credentials, a query or a fragment');
+  const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const loopback = host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+    throw new Error('hub address must use HTTPS; plain HTTP is allowed only for loopback tests');
+  }
+  return url.origin;
+}
+
 // Unref'd: a stopped link must not hold the process open; the service's servers keep it alive.
 const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms).unref(); });
 
 // fetch ignores proxies, and this computer may only reach the hub through one.
 export function hubClient(origin, proxy) {
-  const secure = new URL(origin).protocol === 'https:';
+  const base = secureHubOrigin(origin);
+  const secure = new URL(base).protocol === 'https:';
   const agent = new (secure ? https : http).Agent({
     keepAlive: true,
     ...(proxy ? { proxyEnv: secure ? { HTTPS_PROXY: proxy } : { HTTP_PROXY: proxy } } : {}),
   });
   return (pathname, { key, body, timeoutMs }) => new Promise((resolve, reject) => {
     const payload = Buffer.from(JSON.stringify(body ?? {}));
-    const req = (secure ? https : http).request(new URL(pathname, origin), {
+    const req = (secure ? https : http).request(new URL(pathname, base), {
       agent,
       method: 'POST',
       headers: {

@@ -2,6 +2,7 @@ import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sig
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import { securePrivateFile, writePrivateFile } from './private-file.mjs';
 
 // A small ACME client (RFC 8555) for one certificate: a domain or, with Let's Encrypt's
 // short-lived profile, a bare IP address, so a rented server needs no domain at all.
@@ -190,6 +191,8 @@ export function certPaths(dir) {
 export function readCert(dir) {
   const files = certPaths(dir);
   try {
+    securePrivateFile(files.key);
+    if (fs.existsSync(files.account)) securePrivateFile(files.account);
     return { cert: fs.readFileSync(files.cert, 'utf8'), key: fs.readFileSync(files.key, 'utf8') };
   } catch {
     return null;
@@ -199,7 +202,7 @@ export function readCert(dir) {
 export function writeCert(dir, { cert, key, accountKey }) {
   const files = certPaths(dir);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(files.key, key, { mode: 0o600 });
+  writePrivateFile(files.key, key);
   fs.writeFileSync(files.cert, cert);
-  if (accountKey) fs.writeFileSync(files.account, accountKey, { mode: 0o600 });
+  if (accountKey) writePrivateFile(files.account, accountKey);
 }
