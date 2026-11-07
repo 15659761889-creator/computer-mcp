@@ -43,3 +43,5 @@ publish-preflight.json
 npm-*-dryrun.json
 quick-*.txt
 quick-*.cmd
+# Build tools
+node_modules/

@@ -707,7 +707,13 @@ async function licenseCommand({ flags, positional }) {
     return undefined;
   }
   if (!key) {
-    const status = localLicenseStatus();
+    let status = localLicenseStatus();
+    // A saved key without a valid signed verdict (made before 0.6.9, or past the
+    // offline grace) is checked again now instead of reporting Free.
+    if (status.plan !== 'pro' && status.keyHash) {
+      status = await refreshLocalLicense().catch(() => status);
+      if (status.plan === 'pro') await hubApi('license/refresh', { method: 'POST' }).catch(() => {});
+    }
     if (status.plan === 'pro') {
       if (!status.fresh) void refreshLocalLicense().catch(() => {});
       console.log(`Wanji Pro until ${status.expiresAt}${status.fresh ? '' : ' (cached; checking again in the background)'}.`);

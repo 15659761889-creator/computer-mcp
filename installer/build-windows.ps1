@@ -31,7 +31,7 @@ foreach($f in @("NODE_LICENSE.txt","CLOUDFLARED_LICENSE.txt")) {
   if(-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $f))) {throw "Missing license: $f"}
 }
 $package = Get-Content -Raw -LiteralPath (Join-Path $root "package.json") | ConvertFrom-Json
-if($package.version -ne "0.6.8") {throw "Installer metadata expects 万机 package version 0.6.8."}
+if($package.version -ne "0.6.9") {throw "Installer metadata expects 万机 package version 0.6.9."}
 if(Test-Path -LiteralPath $app) { Remove-Item -LiteralPath $app -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stage,$app,$runtime,$licenses | Out-Null
 $compiler = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
@@ -45,6 +45,10 @@ foreach($dir in @("bin","src","desktop","web")) {
 }
 Copy-Item -LiteralPath (Join-Path $root "package.json") -Destination $app -Force
 Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination $app -Force
+Get-ChildItem -LiteralPath $app -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
+# Closed source: the installed JavaScript is minified (run npm install once for esbuild).
+& $node (Join-Path $PSScriptRoot "protect.mjs") $app
+if($LASTEXITCODE -ne 0) {throw "Minifying the app failed."}
 Copy-Item -LiteralPath (Join-Path $root "LICENSE") -Destination (Join-Path $licenses "WANJI_LICENSE.txt") -Force
 # A standalone Windows installer must contain the HTML used by browser handoff.
 $handoffHtml = Join-Path $app "web\handoff.html"
@@ -59,7 +63,7 @@ if($LASTEXITCODE -ne 0) {throw "Bundled Cloudflare binary smoke test failed."}
 Write-Output "Building the installer..."
 & $iscc "/Q" (Join-Path $PSScriptRoot "Wanji-Verified.iss")
 if($LASTEXITCODE -ne 0) {throw "Inno Setup compilation failed."}
-$target = Join-Path $root "dist\Wanji-Setup-0.6.8-Windows-x64.exe"
+$target = Join-Path $root "dist\Wanji-Setup-0.6.9-Windows-x64.exe"
 if(-not (Test-Path -LiteralPath $target)) {throw "Installer was not produced."}
 $sha = Get-FileHash -Algorithm SHA256 -LiteralPath $target
 Write-Output "INSTALLER=$target"

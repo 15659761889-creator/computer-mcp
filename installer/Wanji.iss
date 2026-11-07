@@ -31,7 +31,7 @@ VersionInfoVersion=0.4.0.0
 VersionInfoDescription=万机 standalone Windows installer
 VersionInfoCompany={#ProductPublisher}
 VersionInfoProductName={#ProductName}
-VersionInfoCopyright=PolyForm Noncommercial 1.0.0; bundled Node.js and cloudflared licenses included
+VersionInfoCopyright=Copyright (c) 2026 zhuangzihan. All rights reserved.
 LicenseFile=..\LICENSE
 
 [Languages]

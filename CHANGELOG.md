@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.6.9 (2026-11-07)
+
+### Closed source
+- Wanji is now proprietary: `LICENSE` is an end user license agreement (Chinese and English).
+  Versions 0.6.8 and earlier stay under PolyForm Noncommercial 1.0.0 for those who got them.
+- The Windows installer ships minified JavaScript (`installer/protect.mjs`, esbuild, one file
+  at a time so paths stay the same). `package.json` is private, so npm will not publish it.
+
+### License and payment fixes
+- Paddle subscription events carry only `customer_id`; the buyer's email is now looked up
+  with the Paddle API (`WANJI_PADDLE_API_KEY` or `paddle-api-key.txt` in the Wanji folder).
+  If it cannot be found the webhook answers 503 and Paddle retries. Before, no paid order
+  ever produced a key.
+- The license server signs every Pro verdict with Ed25519; a computer trusts only signed
+  verdicts for its own key and machine, for at most 7 days without reaching the server.
+  Editing `license.json` no longer turns on Pro. Existing computers re-verify on their own.
+- Paddle adjustments revoke a license only on an approved full refund or a chargeback,
+  not on a pending or rejected refund request or a partial credit.
+- License unbind and status requests need HTTPS, like verify.
+- The service re-checks its license every 6 hours.
+
+### Fixes
+- `whoami` is called by its System32 path. With Git's `usrin` first in PATH, Git's own
+  `whoami` was used, and every credential file write failed.
+
 ## 0.6.8 (2026-11-06)
 
 ### One-click joiner EXE (`wanji invite --exe`, manager button)

@@ -1,18 +1,17 @@
 #define AppName "万机"
-#define AppVersion "0.6.8"
+#define AppVersion "0.6.9"
 
 [Setup]
 AppId={{C99AD54F-186F-4F5A-8F49-CC1D9C7FA7B0}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppVerName=万机 0.6.6 Windows
+AppVerName=万机 {#AppVersion} Windows
 AppPublisher=zhuangzihan
-AppPublisherURL=https://www.npmjs.com/package/@zhuangzihan/wanji
 DefaultDirName={localappdata}\Programs\万机
 DefaultGroupName=万机
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-OutputBaseFilename=Wanji-Setup-0.6.8-Windows-x64
+OutputBaseFilename=Wanji-Setup-{#AppVersion}-Windows-x64
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -24,7 +23,8 @@ CloseApplications=no
 RestartApplications=no
 SetupLogging=yes
 LicenseFile=..\LICENSE
-VersionInfoVersion=0.6.8.0
+VersionInfoVersion={#AppVersion}.0
+VersionInfoCopyright=Copyright (c) 2026 zhuangzihan. All rights reserved.
 VersionInfoDescription=万机 Windows Installer
 VersionInfoCompany=万机
 VersionInfoProductName=万机
