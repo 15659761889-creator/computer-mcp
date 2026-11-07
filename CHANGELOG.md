@@ -2,12 +2,6 @@
 
 ## 0.6.9 (2026-11-07)
 
-### Closed source
-- Wanji is now proprietary: `LICENSE` is an end user license agreement (Chinese and English).
-  Versions 0.6.8 and earlier stay under PolyForm Noncommercial 1.0.0 for those who got them.
-- The Windows installer ships minified JavaScript (`installer/protect.mjs`, esbuild, one file
-  at a time so paths stay the same). `package.json` is private, so npm will not publish it.
-
 ### License and payment fixes
 - Paddle subscription events carry only `customer_id`; the buyer's email is now looked up
   with the Paddle API (`WANJI_PADDLE_API_KEY` or `paddle-api-key.txt` in the Wanji folder).

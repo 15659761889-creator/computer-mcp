@@ -46,9 +46,6 @@ foreach($dir in @("bin","src","desktop","web")) {
 Copy-Item -LiteralPath (Join-Path $root "package.json") -Destination $app -Force
 Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination $app -Force
 Get-ChildItem -LiteralPath $app -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
-# Closed source: the installed JavaScript is minified (run npm install once for esbuild).
-& $node (Join-Path $PSScriptRoot "protect.mjs") $app
-if($LASTEXITCODE -ne 0) {throw "Minifying the app failed."}
 Copy-Item -LiteralPath (Join-Path $root "LICENSE") -Destination (Join-Path $licenses "WANJI_LICENSE.txt") -Force
 # A standalone Windows installer must contain the HTML used by browser handoff.
 $handoffHtml = Join-Path $app "web\handoff.html"

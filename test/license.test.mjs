@@ -40,6 +40,9 @@ function signedLocal(key, machineId, verifiedAt = new Date().toISOString(), expi
 
 before(async () => {
   trustLicenseKeysForTesting([licensePublicKey(licDir)]);
+  // The webhook tests set WANJI_PADDLE_WEBHOOK_SECRET themselves; start with it unset
+  // so the "webhook stays off" check does not depend on the machine's environment.
+  delete process.env.WANJI_PADDLE_WEBHOOK_SECRET;
   verifyServer = http.createServer((req, res) => {
     const { pathname } = new URL(req.url, 'http://localhost');
     handleLicenseHttp(req, res, pathname, licDir);

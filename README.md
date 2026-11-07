@@ -257,6 +257,6 @@ Tests use a local MCP server and simulated tunnel output. No external Cloudflare
 
 ## License
 
-Proprietary. Copyright (c) 2026 zhuangzihan. All rights reserved. Use is governed by the
-end user license agreement in `LICENSE`; versions 0.6.8 and earlier were released under
-PolyForm Noncommercial 1.0.0.
+PolyForm Noncommercial 1.0.0 — free for personal, research, study, hobby and
+non-profit use; commercial use needs the author's permission. See `LICENSE`.
+Copyright (c) 2026 zhuangzihan.

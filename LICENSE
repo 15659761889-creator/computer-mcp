@@ -1,59 +1,75 @@
-﻿万机（Wanji）最终用户许可协议
-版权所有 (c) 2026 zhuangzihan。保留所有权利。
+Copyright (c) 2026 zhuangzihan
 
-本软件不是开源软件。安装或使用本软件，即表示你同意本协议。
+PolyForm Noncommercial License 1.0.0
 
-1. 授权
-在你遵守本协议的前提下，作者授予你一项非独占、不可转让、不可再许可的权利：在你拥有或有权管理的电脑和手机上安装、使用本软件。免费版的功能范围以软件内的说明为准。Pro 功能需要有效的付费许可证；许可证在付费期内有效，每个许可证最多同时用于 5 台机器。
+https://polyformproject.org/licenses/noncommercial/1.0.0
 
-2. 你不可以
-(a) 复制、出售、出租、出借、转授权或以任何方式分发本软件或其任何部分。本软件"邀请/加入"功能生成的安装文件，只能用于把你自己管理的电脑加入你自己的主电脑；
-(b) 反编译、反汇编或以其他方式逆向工程本软件，适用法律明确允许的情形除外；
-(c) 修改、绕过、停用或破解许可证校验；
-(d) 修改本软件或基于本软件制作衍生作品；
-(e) 把许可证密钥公开或交给许可范围以外的人使用。
+## Acceptance
 
-3. 第三方组件
-本软件附带的 Node.js、cloudflared、Python、OCR 模型、Playwright、Chromium 等第三方组件，适用其各自的许可证（见安装目录中的 licenses 文件夹），本协议不限制你依照这些许可证享有的权利。
+In order to get any license under these terms, you must agree to them as both strict obligations and conditions to all your licenses.
 
-4. 风险提示
-本软件让你选择的 AI 模型控制你的电脑，可能以管理员权限运行命令、读写和删除文件、操作窗口和浏览器。AI 可能出错，也可能被网页、文件或其他内容中藏着的指令误导。接入哪个 AI、哪台电脑，由你决定，你须对其操作结果负责。请做好备份，不要让本软件在存有你无法承受损失的数据的电脑上无人看管地运行。
+## Copyright License
 
-5. 免责与责任限制
-本软件按"现状"提供，不附带任何明示或默示的担保，包括适销性、特定用途适用性和不侵权的担保。在适用法律允许的最大范围内，作者不对任何间接、附带、特殊或后果性损失负责，包括数据丢失、业务中断、账号被封或第三方索赔；作者的全部责任以你在此前 12 个月内为本软件实际支付的金额为限。
+The licensor grants you a copyright license for the software to do everything you might do with the software that would otherwise infringe the licensor's copyright in it for any permitted purpose. However, you may only distribute the software according to Distribution License and make changes or new works based on the software according to Changes and New Works License.
 
-6. 付款与退款
-通过支付平台（如 Paddle）购买的，付款、续费、取消和退款适用该平台的条款。退款或拒付完成后，对应的许可证会被停用。
+## Distribution License
 
-7. 终止
-你违反本协议时，授权自动终止；你须停止使用并删除本软件。第 4、5 条在终止后继续有效。
+The licensor grants you an additional copyright license to distribute copies of the software. Your license to distribute covers distributing the software with changes and new works permitted by Changes and New Works License.
 
-8. 早期版本
-0.6.8 及以前、以 PolyForm Noncommercial 1.0.0 发布的版本，你依照该许可证已经取得的权利不受影响。本协议适用于 0.6.9 及以后的版本。
+## Notices
 
-9. 其他
-如中英文版本不一致，以中文版本为准。
+You must ensure that anyone who gets a copy of any part of the software from you also gets a copy of these terms or the URL for them above, as well as copies of any plain-text lines beginning with `Required Notice:` that the licensor provided with the software. For example:
 
+> Required Notice: Copyright Yoyodyne, Inc. (http://example.com)
 
-Wanji End User License Agreement
-Copyright (c) 2026 zhuangzihan. All rights reserved.
+## Changes and New Works License
 
-This software is not open source. By installing or using it you agree to this agreement.
+The licensor grants you an additional copyright license to make changes and new works based on the software for any permitted purpose.
 
-1. License. Subject to this agreement, the author grants you a non-exclusive, non-transferable, non-sublicensable right to install and use the software on computers and phones you own or manage. The free plan covers what the software describes as free. Pro features need a valid paid license, which is valid for the paid period and may be used on at most 5 machines at a time.
+## Patent License
 
-2. You may not (a) copy, sell, rent, lend, sublicense or distribute the software or any part of it; installers made by the software's invite/join feature may only be used to add computers you manage to your own main computer; (b) decompile, disassemble or otherwise reverse engineer it, except where applicable law expressly allows; (c) modify, bypass, disable or crack the license check; (d) modify it or make derivative works; (e) publish a license key or give it to anyone outside the license.
+The licensor grants you a patent license for the software that covers patent claims the licensor can license, or becomes able to license, that you would infringe by using the software.
 
-3. Third-party components (Node.js, cloudflared, Python, OCR models, Playwright, Chromium and others) are under their own licenses, found in the licenses folder; this agreement does not limit your rights under them.
+## Noncommercial Purposes
 
-4. Risk. The software lets the AI model you choose control your computer, possibly with administrator rights: run commands, read, write and delete files, and operate windows and browsers. AI can make mistakes and can be misled by instructions hidden in web pages, files or other content. You decide which AI and which computers to connect, and you are responsible for what they do. Keep backups, and do not leave the software running unattended on a computer holding data you cannot afford to lose.
+Any noncommercial purpose is a permitted purpose.
 
-5. Disclaimer and limitation of liability. The software is provided "as is", without warranty of any kind, express or implied, including merchantability, fitness for a particular purpose and non-infringement. To the fullest extent the law allows, the author is not liable for any indirect, incidental, special or consequential damages, including lost data, business interruption, suspended accounts or third-party claims, and the author's total liability is limited to the amount you actually paid for the software in the previous 12 months.
+## Personal Uses
 
-6. Payment and refunds. Purchases through a payment platform (such as Paddle) follow that platform's terms for payment, renewal, cancellation and refunds. A license is deactivated once a refund or chargeback completes.
+Personal use for research, experiment, and testing for the benefit of public knowledge, personal study, private entertainment, hobby projects, amateur pursuits, or religious observance, without any anticipated commercial application, is use for a permitted purpose.
 
-7. Termination. This license ends automatically if you breach this agreement; you must then stop using and delete the software. Sections 4 and 5 survive termination.
+## Noncommercial Organizations
 
-8. Earlier versions. Rights you already obtained under PolyForm Noncommercial 1.0.0 for versions 0.6.8 and earlier are not affected. This agreement applies to version 0.6.9 and later.
+Use by any charitable organization, educational institution, public research organization, public safety or health organization, environmental protection organization, or government institution is use for a permitted purpose regardless of the source of funding or obligations resulting from the funding.
 
-9. If the Chinese and English versions differ, the Chinese version prevails.
+## Fair Use
+
+You may have "fair use" rights for the software under the law. These terms do not limit them.
+
+## No Other Rights
+
+These terms do not allow you to sublicense or transfer any of your licenses to anyone else, or prevent the licensor from granting licenses to anyone else. These terms do not imply any other licenses.
+
+## Patent Defense
+
+If you make any written claim that the software infringes or contributes to infringement of any patent, your patent license for the software granted under these terms ends immediately. If your company makes such a claim, your patent license ends immediately for work on behalf of your company.
+
+## Violations
+
+The first time you are notified in writing that you have violated any of these terms, or done anything with the software not covered by your licenses, your licenses can nonetheless continue if you come into full compliance with these terms, and take practical steps to correct past violations, within 32 days of receiving notice. Otherwise, all your licenses end immediately.
+
+## No Liability
+
+***As far as the law allows, the software comes as is, without any warranty or condition, and the licensor will not be liable to you for any damages arising out of these terms or the use or nature of the software, under any kind of legal claim.***
+
+## Definitions
+
+The *licensor* is the individual or entity offering these terms, and the *software* is the software the licensor makes available under these terms.
+
+*You* refers to the individual or entity agreeing to these terms.
+
+*Your company* is any legal entity, sole proprietorship, or other kind of organization that you work for, plus all organizations that have control over, are under the control of, or are under common control with that organization. *Control* means ownership of substantially all the assets of an entity, or the power to direct its management and policies by vote, contract, or otherwise. Control can be direct or indirect.
+
+*Your licenses* are all the licenses granted to you for the software under these terms.
+
+*Use* means anything you do with the software requiring one of your licenses.

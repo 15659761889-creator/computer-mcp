@@ -1,9 +1,13 @@
 {
   "name": "@zhuangzihan/wanji",
   "version": "0.6.9",
-  "private": true,
-  "description": "Give AI models control of your computers through one MCP link: commands, files, desktop and browser.",
+  "description": "Remote computer control MCP server with Cloudflare Quick Tunnels or fixed domains; bash, file and desktop control tools.",
   "author": "zhuangzihan",
+  "homepage": "https://www.npmjs.com/package/@zhuangzihan/wanji",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/15659761889-creator/wanji.git"
+  },
   "type": "module",
   "bin": {
     "wanji": "bin/wanji.mjs"
@@ -23,8 +27,5 @@
   "engines": {
     "node": ">=20"
   },
-  "license": "SEE LICENSE IN LICENSE",
-  "devDependencies": {
-    "esbuild": "0.28.2"
-  }
+  "license": "PolyForm-Noncommercial-1.0.0"
 }
