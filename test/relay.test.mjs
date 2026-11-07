@@ -9,7 +9,8 @@ import { after, before, test } from 'node:test';
 import { buildCsr, needsRenewal } from '../src/acme.mjs';
 import { parsePair } from '../src/hub.mjs';
 import { joinHub, startNodeLink } from '../src/node-link.mjs';
-import { createAccount, readAccount, Relay, removeAccount } from '../src/relay.mjs';
+import { createAccount, createSignup, readAccount, Relay, removeAccount } from '../src/relay.mjs';
+import { resetRateLimitsForTests } from '../src/rate-limit.mjs';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmcp-relay-'));
 let relay;
@@ -121,6 +122,21 @@ test('wrong tokens and keys get nothing', async () => {
   assert.equal((await post('/mcp', {}, 'wrong')).status, 401);
   assert.equal((await fetch(`${base}/hub/api/status`, { headers: { Authorization: 'Bearer wrong' } })).status, 401);
   assert.equal((await post('/hub/join', { code: 'AAAAAAAA', name: 'x' })).status, 403);
+});
+
+test('relay public join and signup endpoints rate-limit failures per IP and account', async () => {
+  resetRateLimitsForTests();
+  const badJoin = async () => post('/hub/join', { code: 'BADCODE1', name: 'x' });
+  for (let i = 0; i < 10; i += 1) assert.equal((await badJoin()).status, 403);
+  const blockedJoin = await badJoin();
+  assert.equal(blockedJoin.status, 429);
+  assert.ok(Number(blockedJoin.headers.get('retry-after')) > 0);
+
+  const badSignup = async () => post('/relay/signup', { code: 'unique-invalid-signup-code' });
+  for (let i = 0; i < 10; i += 1) assert.equal((await badSignup()).status, 403);
+  const blockedSignup = await badSignup();
+  assert.equal(blockedSignup.status, 429);
+  assert.ok(Number(blockedSignup.headers.get('retry-after')) > 0);
 });
 
 test('an account removed on disk stops working', async () => {

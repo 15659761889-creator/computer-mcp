@@ -7,7 +7,7 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { Hub } from '../src/hub.mjs';
 import {
-  clearPendingDelivery, createLicense, formatKey, generateKey, handleLicenseHttp, handlePaddleEvent,
+  clearPendingDelivery, createLicense, deliverPendingLicenses, formatKey, generateKey, handleLicenseHttp, handlePaddleEvent,
   keyHash, licenseActive, licensesDir, listLicenses, listPendingDeliveries, localLicenseStatus,
   newMachineId, normalizeKey, readLicense, readLocalLicense, refreshLocalLicense, removeLocalLicense, revokeLicense,
   saveLocalLicense, unbindLicenseMachine, unbindRemote, validKeyFormat, verifyLicense, verifyPaddleSignature, verifyRemote,
@@ -135,6 +135,32 @@ test('verify binds machines and refuses the rest', () => {
   assert.equal(licenseActive(licDir, keyHash(expiring)).reason, 'expired');
 });
 
+test('missing, malformed and normalized expiry dates never activate a license', () => {
+  for (const value of [undefined, null, '', 'not-a-date', '2026-02-30T00:00:00.000Z', '2026-11-07T00:00:00Z', '2026-11-07T00:00:00.000+00:00']) {
+    const { key } = createLicense(licDir, { email: 'bad-expiry@example.com', days: 30 });
+    const file = path.join(licDir, `${keyHash(key)}.json`);
+    const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (value === undefined) delete record.expiresAt;
+    else record.expiresAt = value;
+    fs.writeFileSync(file, JSON.stringify(record));
+    assert.equal(verifyLicense(licDir, key, 'm1').reason, 'expired', `verify rejects expiry ${String(value)}`);
+    assert.equal(licenseActive(licDir, keyHash(key)).active, false, `relay access rejects expiry ${String(value)}`);
+
+    const gated = new Hub({
+      file: path.join(home, `bad-gate-${String(value).replace(/[^a-z0-9]/gi, '-')}.json`),
+      selfName: 'main', origin: () => 'https://hub.example.com', getToken: () => TOKEN,
+      state: {
+        adminKey: 'bad-expiry-test', computers: { joined: { id: 'joined', name: 'joined' } }, invites: [],
+        license: { plan: 'pro', expiresAt: value },
+      },
+    });
+    try {
+      assert.equal(gated.isPro(), false, `Hub rejects expiry ${String(value)}`);
+      assert.equal(gated.canAddComputer(), false, `Hub gate rejects expiry ${String(value)}`);
+    } finally { gated.close(); }
+  }
+});
+
 test('the license verify endpoint answers without a login', async () => {
   const { key } = createLicense(licDir, { email: 'http@example.com', days: 30 });
   const ok = await fetch(`${verifyBase}/license/verify`, {
@@ -189,7 +215,8 @@ test('the local license caches for a day and re-checks against the server', asyn
   assert.equal(readLocalLicense(home).key, key);
   const stale = localLicenseStatus(home, Date.now() + 25 * 60 * 60 * 1000);
   assert.equal(stale.fresh, false, 'older than 24h is not fresh');
-  assert.equal(stale.plan, 'free', 'a stale cache does not claim Pro');
+  assert.equal(stale.plan, 'pro', 'an unexpired cached Pro verdict stays active while it is rechecked');
+  assert.equal(stale.stale, true, 'a stale Pro verdict is clearly marked for rechecking');
   saveLocalLicense(home, { key, machineId, server: verifyBase, plan: 'pro', expiresAt: FUTURE, verifiedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() });
   const refreshed = await refreshLocalLicense(home);
   assert.equal(refreshed.plan, 'pro');
@@ -282,6 +309,40 @@ test('Paddle signatures verify and events create, extend and revoke', () => {
   const pending = listPendingDeliveries(licDir);
   assert.equal(clearPendingDelivery(licDir, pending[0].key), true);
   assert.equal(listPendingDeliveries(licDir).length, 0);
+});
+
+test('SMTP license delivery is opt-in and clears the manual queue only after success', async () => {
+  const created = handlePaddleEvent(licDir, {
+    event_type: 'subscription.created',
+    data: { customer: { email: 'smtp-buyer@example.com' }, subscription_id: 'sub_smtp_1', current_billing_period: { ends_at: FUTURE } },
+  });
+  assert.equal(created.handled, true);
+  const [pending] = listPendingDeliveries(licDir);
+  assert.ok(pending?.key);
+
+  let sent = [];
+  const disabled = await deliverPendingLicenses(licDir, { env: {}, send: async () => { throw new Error('must stay disabled'); } });
+  assert.equal(disabled.configured, false);
+  assert.equal(disabled.remaining, 1, 'without SMTP settings the manual queue is untouched');
+
+  const env = {
+    WANJI_SMTP_HOST: 'smtp.example.com', WANJI_SMTP_PORT: '465',
+    WANJI_SMTP_USER: 'mailer@example.com', WANJI_SMTP_PASSWORD: 'test-only-password',
+    WANJI_SMTP_FROM: 'billing@example.com',
+  };
+  const delivered = await deliverPendingLicenses(licDir, { env, send: async (config, message) => { sent.push({ config, message }); } });
+  assert.deepEqual({ configured: delivered.configured, sent: delivered.sent, failed: delivered.failed, remaining: delivered.remaining }, { configured: true, sent: 1, failed: 0, remaining: 0 });
+  assert.equal(sent[0].config.secure, true);
+  assert.equal(sent[0].message.to, 'smtp-buyer@example.com');
+  assert.ok(sent[0].message.text.includes(pending.key));
+
+  handlePaddleEvent(licDir, {
+    event_type: 'subscription.created',
+    data: { customer: { email: 'retry-buyer@example.com' }, subscription_id: 'sub_smtp_retry', current_billing_period: { ends_at: FUTURE } },
+  });
+  const failed = await deliverPendingLicenses(licDir, { env, send: async () => { throw new Error('smtp unavailable'); } });
+  assert.equal(failed.failed, 1);
+  assert.equal(failed.remaining, 1, 'a failed delivery remains available for retry or manual sending');
 });
 
 test('the Paddle webhook needs its secret and a good signature', async () => {

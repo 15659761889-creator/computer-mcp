@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildInvocation, jobsDir } from './shell.mjs';
 import { cleanOutput, decodeOutput } from './text.mjs';
+import { securePrivateDirectory, writePrivateFile } from './private-file.mjs';
 
 const RUNNER = fileURLToPath(new URL('./job-runner.mjs', import.meta.url));
 const KEEP_BYTES = 256 * 1024;
@@ -63,9 +64,10 @@ export async function startJob({ command, cwd, timeoutSecs, shell, merge = false
   const id = randomBytes(4).toString('hex');
   const dir = path.join(jobsDir(), id);
   fs.mkdirSync(dir, { recursive: true });
+  securePrivateDirectory(dir);
   const { exe, args, env } = buildInvocation(shell, command, dir);
   const viaTask = asUser && serviceElevated();
-  fs.writeFileSync(path.join(dir, 'spec.json'), JSON.stringify({
+  writePrivateFile(path.join(dir, 'spec.json'), JSON.stringify({
     exe, args, cwd, timeoutSecs, merge, shell, command, ...(viaTask ? { env } : {}),
   }));
   if (viaTask) {

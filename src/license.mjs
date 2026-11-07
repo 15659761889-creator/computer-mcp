@@ -2,6 +2,9 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import fs from 'node:fs';
 import path from 'node:path';
 import { homeDir } from './config.mjs';
+import { sendSmtpMail, smtpConfig } from './smtp.mjs';
+import { securePrivateFile, writePrivateFile } from './private-file.mjs';
+import { consumeRateLimit } from './rate-limit.mjs';
 
 // License keys use the same unambiguous alphabet as pairing codes (no 0/O, 1/I/L).
 export const LICENSE_ALPHABET = '23456789ABCDEFGHJKMNPQRSTUVWXYZ';
@@ -11,7 +14,6 @@ export const PADDLE_TOLERANCE_MS = 300 * 1000;
 export const VERIFY_RATE_WINDOW_MS = 60 * 1000;
 export const VERIFY_RATE_IP_MAX = 60;
 export const VERIFY_RATE_ACCOUNT_MAX = 10;
-const verifyRateBuckets = new Map();
 // v1 license server: the owner's hub, already public. Override with --server or
 // WANJI_LICENSE_SERVER; a buyer never needs to know it, it is in the Paddle email.
 export const DEFAULT_LICENSE_SERVER = 'https://pc-test-mcp.3618.app';
@@ -21,6 +23,25 @@ export const localLicensePath = (home = homeDir()) => path.join(home, 'license.j
 const pendingDir = (home = homeDir()) => path.join(home, 'licenses', 'pending');
 
 const hashBuf = (value) => createHash('sha256').update(String(value)).digest();
+
+export function licenseExpiryTime(value) {
+  // License expiries are written with Date.toISOString(). Require that exact UTC
+  // representation and round-trip it, because Date.parse normalizes invalid dates.
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return NaN;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? parsed : NaN;
+}
+
+function secureServerOrigin(server) {
+  let url;
+  try { url = new URL(String(server || '')); } catch { throw new Error('license server must be an HTTPS URL'); }
+  const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const loopback = host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+    throw new Error('license server must use HTTPS');
+  }
+  return url.origin;
+}
 export const keyHash = (key) => hashBuf(normalizeKey(key)).toString('hex');
 
 export function normalizeKey(key) {
@@ -55,7 +76,7 @@ const licenseFile = (dir, hashHex) => path.join(dir, `${hashHex}.json`);
 function writeRecord(dir, hashHex, record) {
   fs.mkdirSync(dir, { recursive: true });
   const tmp = `${licenseFile(dir, hashHex)}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
+  writePrivateFile(tmp, `${JSON.stringify(record, null, 2)}\n`);
   fs.renameSync(tmp, licenseFile(dir, hashHex));
 }
 
@@ -86,7 +107,9 @@ export function createLicense(dir, { email, days = 30, plan = 'pro', subscriptio
 
 export function readLicenseByHash(dir, hashHex) {
   try {
-    const record = JSON.parse(fs.readFileSync(licenseFile(dir, hashHex), 'utf8'));
+    const file = licenseFile(dir, hashHex);
+    securePrivateFile(file);
+    const record = JSON.parse(fs.readFileSync(file, 'utf8'));
     return record && typeof record === 'object' ? record : null;
   } catch {
     return null;
@@ -159,7 +182,8 @@ export function verifyLicense(dir, key, machineId) {
   const record = readLicense(dir, key);
   if (!record) return { valid: false, reason: 'invalid' };
   if (record.status !== 'active') return { valid: false, reason: 'revoked', expiresAt: record.expiresAt };
-  if (!record.expiresAt || Date.parse(record.expiresAt) <= Date.now()) return { valid: false, reason: 'expired', expiresAt: record.expiresAt };
+  const expires = licenseExpiryTime(record.expiresAt);
+  if (!Number.isFinite(expires) || expires <= Date.now()) return { valid: false, reason: 'expired', expiresAt: record.expiresAt };
   const machines = Array.isArray(record.machines) ? record.machines : [];
   if (!machines.includes(machineId)) {
     if (machines.length >= MAX_MACHINES_PER_KEY) return { valid: false, reason: 'too-many-machines', expiresAt: record.expiresAt };
@@ -188,7 +212,8 @@ export function licenseActive(dir, hashHex) {
   const record = readLicenseByHash(dir, hashHex);
   if (!record) return { active: false, reason: 'invalid' };
   if (record.status !== 'active') return { active: false, reason: 'revoked', expiresAt: record.expiresAt };
-  if (!record.expiresAt || Date.parse(record.expiresAt) <= Date.now()) return { active: false, reason: 'expired', expiresAt: record.expiresAt };
+  const expires = licenseExpiryTime(record.expiresAt);
+  if (!Number.isFinite(expires) || expires <= Date.now()) return { active: false, reason: 'expired', expiresAt: record.expiresAt };
   return { active: true, plan: record.plan || 'pro', expiresAt: record.expiresAt };
 }
 
@@ -196,7 +221,9 @@ export function licenseActive(dir, hashHex) {
 
 export function readLocalLicense(home = homeDir()) {
   try {
-    const local = JSON.parse(fs.readFileSync(localLicensePath(home), 'utf8'));
+    const file = localLicensePath(home);
+    securePrivateFile(file);
+    const local = JSON.parse(fs.readFileSync(file, 'utf8'));
     return local && typeof local === 'object' ? local : null;
   } catch {
     return null;
@@ -207,7 +234,7 @@ export function saveLocalLicense(home, data) {
   fs.mkdirSync(home, { recursive: true });
   const target = localLicensePath(home);
   const tmp = `${target}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+  writePrivateFile(tmp, `${JSON.stringify(data, null, 2)}\n`);
   fs.renameSync(tmp, target);
 }
 
@@ -218,18 +245,17 @@ export function removeLocalLicense(home = homeDir()) {
 export function localLicenseStatus(home = homeDir(), now = Date.now()) {
   const local = readLocalLicense(home);
   if (!local?.key || !validKeyFormat(local.key)) return { plan: 'free', fresh: false };
-  const expires = Date.parse(local.expiresAt || '');
+  const expires = licenseExpiryTime(local.expiresAt);
   const verified = Date.parse(local.verifiedAt || '');
-  if (local.plan === 'pro' && Number.isFinite(expires) && expires > now
-    && Number.isFinite(verified) && now - verified < LICENSE_CACHE_MS) {
-    return { plan: 'pro', expiresAt: local.expiresAt, verifiedAt: local.verifiedAt, fresh: true, keyHash: keyHash(local.key), server: local.server || null };
+  if (local.plan === 'pro' && Number.isFinite(expires) && expires > now) {
+    const fresh = Number.isFinite(verified) && now - verified < LICENSE_CACHE_MS;
+    return { plan: 'pro', expiresAt: local.expiresAt, verifiedAt: local.verifiedAt || null, fresh, stale: !fresh, keyHash: keyHash(local.key), server: local.server || null };
   }
   return { plan: 'free', expiresAt: local.expiresAt || null, verifiedAt: local.verifiedAt || null, fresh: false, keyHash: keyHash(local.key), server: local.server || null };
 }
 
 export async function verifyRemote(server, key, machineId) {
-  const origin = String(server || '').replace(/\/$/, '');
-  if (!/^https?:\/\//.test(origin)) throw new Error('license server must be an http(s) URL');
+  const origin = secureServerOrigin(server);
   const res = await fetch(`${origin}/license/verify`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -283,7 +309,7 @@ export async function refreshLocalLicense(home = homeDir(), { server } = {}) {
   try {
     verdict = await verifyRemote(target, local.key, machineId);
   } catch (err) {
-    if (local.plan === 'pro' && local.expiresAt && Date.parse(local.expiresAt) > Date.now()) {
+    if (local.plan === 'pro' && licenseExpiryTime(local.expiresAt) > Date.now()) {
       return { plan: 'pro', expiresAt: local.expiresAt, verifiedAt: local.verifiedAt, fresh: false, stale: true, keyHash: keyHash(local.key), server: target };
     }
     return { plan: 'free', fresh: false, stale: true, error: err.message, keyHash: keyHash(local.key), server: target };
@@ -341,8 +367,8 @@ export function verifyPaddleSignature(rawBody, header, secret, now = Date.now())
 export function queuePendingDelivery(dir, key, email) {
   const pending = pendingDir(path.dirname(dir));
   fs.mkdirSync(pending, { recursive: true });
-  fs.writeFileSync(path.join(pending, `${keyHash(key)}.json`),
-    JSON.stringify({ key, email, createdAt: new Date().toISOString() }), { mode: 0o600 });
+  writePrivateFile(path.join(pending, `${keyHash(key)}.json`),
+    JSON.stringify({ key, email, createdAt: new Date().toISOString() }));
 }
 
 export function listPendingDeliveries(dir) {
@@ -354,11 +380,36 @@ export function listPendingDeliveries(dir) {
   }
   return files.map((f) => {
     try {
-      return JSON.parse(fs.readFileSync(path.join(pendingDir(path.dirname(dir)), f), 'utf8'));
+      const file = path.join(pendingDir(path.dirname(dir)), f);
+      securePrivateFile(file);
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
     } catch {
       return null;
     }
   }).filter(Boolean);
+}
+
+export async function deliverPendingLicenses(dir, { env = process.env, send = sendSmtpMail } = {}) {
+  const config = smtpConfig(env);
+  if (!config) return { configured: false, sent: 0, remaining: listPendingDeliveries(dir).length };
+  let sent = 0;
+  let failed = 0;
+  for (const pending of listPendingDeliveries(dir)) {
+    if (typeof pending.email !== 'string' || !pending.email.trim()) { failed += 1; continue; }
+    try {
+      await send(config, {
+        to: pending.email,
+        subject: 'Your Wanji Pro license key',
+        text: `Thank you for subscribing to Wanji Pro.\n\nYour license key is:\n\n${pending.key}\n\nEnter it once with: wanji license <key>\n\nKeep this key private.`,
+      });
+      if (clearPendingDelivery(dir, pending.key)) sent += 1;
+      else failed += 1;
+    } catch {
+      // SMTP failure leaves the key in the manual queue for a later retry.
+      failed += 1;
+    }
+  }
+  return { configured: true, sent, failed, remaining: listPendingDeliveries(dir).length };
 }
 
 export function clearPendingDelivery(dir, keyOrPrefix) {
@@ -420,27 +471,7 @@ function reply(res, status, body, headers = {}) {
   res.end(JSON.stringify(body));
 }
 
-function verifyRateLimit(req, key, now = Date.now(), accountHash = null) {
-  for (const [bucket, entry] of verifyRateBuckets) {
-    if (entry.resetAt <= now) verifyRateBuckets.delete(bucket);
-  }
-  const buckets = [[`ip:${req.socket?.remoteAddress || 'unknown'}`, VERIFY_RATE_IP_MAX]];
-  if (validKeyFormat(key)) buckets.push([`account:${keyHash(key)}`, VERIFY_RATE_ACCOUNT_MAX]);
-  else if (/^[a-f0-9]{64}$/i.test(String(accountHash || ''))) {
-    buckets.push([`account:${String(accountHash).toLowerCase()}`, VERIFY_RATE_ACCOUNT_MAX]);
-  }
-  const limited = buckets.map(([name, max]) => {
-    const entry = verifyRateBuckets.get(name);
-    return entry && entry.count >= max ? entry : null;
-  }).find(Boolean);
-  if (limited) return Math.max(1, Math.ceil((limited.resetAt - now) / 1000));
-  for (const [name] of buckets) {
-    const entry = verifyRateBuckets.get(name);
-    if (!entry || entry.resetAt <= now) verifyRateBuckets.set(name, { count: 1, resetAt: now + VERIFY_RATE_WINDOW_MS });
-    else entry.count += 1;
-  }
-  return 0;
-}
+// License-endpoint throttling uses the shared limiter in ./rate-limit.mjs (scope 'license-verify'); see handleLicenseHttp.
 
 function readBody(req, maxBytes) {
   return new Promise((resolve, reject) => {
@@ -473,7 +504,16 @@ export async function handleLicenseHttp(req, res, pathname, dir = licensesDir())
       reply(res, 400, { error: 'invalid license hash' });
       return;
     }
-    const retryAfter = verifyRateLimit(req, body?.key, Date.now(), pathname === '/license/status' ? body.keyHash : null);
+    const account = validKeyFormat(body?.key)
+      ? keyHash(body.key)
+      : (/^[a-f0-9]{64}$/i.test(String(pathname === '/license/status' ? body.keyHash : '')) ? String(body.keyHash).toLowerCase() : null);
+    const retryAfter = consumeRateLimit(req, {
+      scope: 'license-verify',
+      account,
+      windowMs: VERIFY_RATE_WINDOW_MS,
+      ipMax: VERIFY_RATE_IP_MAX,
+      accountMax: VERIFY_RATE_ACCOUNT_MAX,
+    });
     if (retryAfter) {
       reply(res, 429, { error: 'too many license requests; try again later' }, { 'Retry-After': String(retryAfter) });
       return;
@@ -514,6 +554,7 @@ export async function handleLicenseHttp(req, res, pathname, dir = licensesDir())
       return;
     }
     const result = handlePaddleEvent(dir, event);
+    if (result.handled && smtpConfig()) await deliverPendingLicenses(dir);
     reply(res, 200, { received: true, handled: result.handled, action: result.action || null });
     return;
   }

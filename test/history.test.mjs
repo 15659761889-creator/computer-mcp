@@ -6,7 +6,8 @@ import { after, test } from 'node:test';
 import { HISTORY_TOOL, latestHandoff, maskSecrets, readAuditEntries, renderRecentCalls } from '../src/history.mjs';
 import { Hub } from '../src/hub.mjs';
 import { MemoryStore } from '../src/memory.mjs';
-import { createMcpServer } from '../src/server.mjs';
+import { auditLogger, createMcpServer } from '../src/server.mjs';
+import { summarizeArgs } from '../src/tools.mjs';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmcp-history-'));
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -166,6 +167,9 @@ test('an empty or missing log says so', () => {
 
 test('secrets in command lines are masked and long commands are clipped unless full is asked for', () => {
   assert.ok(!maskSecrets('curl -H "Authorization: Bearer abcdef1234567890xyz" https://x.test').includes('abcdef1234567890xyz'));
+  const auditArgs = summarizeArgs('bash', { command: 'curl -H "Authorization: Bearer abcdef1234567890xyz" --password=hunter2 https://x.test' });
+  assert.ok(!JSON.stringify(auditArgs).includes('abcdef1234567890xyz'));
+  assert.ok(!JSON.stringify(auditArgs).includes('hunter2'));
   assert.equal(maskSecrets('set password=hunter2 now'), 'set password=[masked] now');
   assert.equal(maskSecrets('DB_PASSWORD=hunter2'), 'DB_PASSWORD=[masked]');
   assert.equal(maskSecrets('{"token": "abc123"}'), '{"token": [masked]}');
@@ -185,6 +189,21 @@ test('secrets in command lines are masked and long commands are clipped unless f
   assert.ok(!brief.includes('abc999'));
   assert.match(brief, /token=\[masked\]/);
   assert.ok(render(file, { args: { full: true } }).includes('x'.repeat(800)));
+});
+
+test('auditLogger applies a final recursive credential scrub before writing', async () => {
+  const file = path.join(dir, 'safe-audit.jsonl');
+  const log = auditLogger(file);
+  log({
+    tool: 'browser',
+    args: { password: 'secret-value', token: 'bearer-value', key: 'pairing-secret', command: 'curl --password=hunter2 https://example.invalid' },
+    harmless: 'kept',
+  });
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  const raw = fs.readFileSync(file, 'utf8');
+  for (const secret of ['secret-value', 'bearer-value', 'pairing-secret', 'hunter2']) assert.ok(!raw.includes(secret));
+  assert.match(raw, /\"harmless\":\"kept\"/);
+  assert.match(raw, /\"password\":\"\[masked\]\"/);
 });
 
 test('typed text never reaches the log, so it cannot reach the reader either', () => {
@@ -274,7 +293,7 @@ test('a server with an audit log offers recent_calls and shows what really ran',
     assert.equal(tool.annotations.readOnlyHint, true);
 
     const ran = await call('bash', { command: 'echo hello-unit password=hunter2' }, { 'User-Agent': 'unit-agent/9' });
-    assert.equal(ran.isError, false);
+    assert.equal(ran.isError, false, ran.text);
     await call('memory_write', { kind: 'handoff', text: 'SENTINEL-HANDOFF-TEXT', author: 'unit-ai' });
     await settle();
 

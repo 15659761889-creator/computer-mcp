@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { homeDir, logDir } from './config.mjs';
+import { securePrivateFile, writePrivateFile } from './private-file.mjs';
 
 const IS_WINDOWS = process.platform === 'win32';
 const LOG_ROTATE_BYTES = 10 * 1024 * 1024;
@@ -90,10 +91,15 @@ export function ensureCloudflared({ explicit, proxy }) {
 }
 
 export function ensureCloudflareLogin(cloudflared, proxy) {
-  if (fs.existsSync(path.join(os.homedir(), '.cloudflared', 'cert.pem'))) return;
+  const cert = path.join(os.homedir(), '.cloudflared', 'cert.pem');
+  if (fs.existsSync(cert)) {
+    securePrivateFile(cert);
+    return;
+  }
   console.log('A browser window opens now: log in to Cloudflare and authorize your domain.');
   const login = run(cloudflared, ['tunnel', 'login'], { proxy, stdio: 'inherit' });
   if (login.status !== 0) throw new Error('Cloudflare login failed');
+  securePrivateFile(cert);
 }
 
 export function findNamedTunnel(tunnelListJson, tunnelName) {
@@ -112,6 +118,7 @@ export function ensureTunnel({ cloudflared, name, hostname, port, proxy }) {
   const tunnelName = tunnelNameFor(name);
   fs.mkdirSync(homeDir(), { recursive: true });
   const credentials = credentialsPath();
+  if (fs.existsSync(credentials)) securePrivateFile(credentials);
   let tunnel = findTunnel(cloudflared, tunnelName, proxy);
   if (!tunnel) {
     fs.rmSync(credentials, { force: true });
@@ -123,6 +130,7 @@ export function ensureTunnel({ cloudflared, name, hostname, port, proxy }) {
     if (token.status !== 0) throw new Error(`could not fetch tunnel credentials: ${token.stderr.trim()}`);
   }
 
+  securePrivateFile(credentials);
   const route = run(cloudflared, ['tunnel', 'route', 'dns', tunnel.id, hostname], { proxy });
   const routeOutput = `${route.stdout}\n${route.stderr}`;
   if (route.status !== 0) {
@@ -147,7 +155,7 @@ export function ensureTunnel({ cloudflared, name, hostname, port, proxy }) {
     '  - service: http_status:404',
     '',
   ].join('\n');
-  fs.writeFileSync(tunnelConfigPath(), yaml, { mode: 0o600 });
+  writePrivateFile(tunnelConfigPath(), yaml);
   return tunnel.id;
 }
 

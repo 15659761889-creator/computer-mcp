@@ -533,6 +533,24 @@ test('a batch delete counts every id toward the writer\'s rate limit afterwards'
   assert.throws(() => ai(store, { key: 'k.d', text: 'd' }), /Too many memory writes/);
 });
 
+test('an async memory writer waits for the lock without blocking the event loop', async () => {
+  const { file, store } = fresh();
+  await store.ready;
+  const lock = `${file}.lock`;
+  fs.writeFileSync(lock, 'held by another process');
+  let timerFired = false;
+  const write = store.writeAsync({ kind: 'fact', key: 'async.lock', text: 'the event loop remains responsive', author: 'async-agent' });
+  const release = new Promise((resolve) => setTimeout(() => {
+    timerFired = true;
+    fs.rmSync(lock, { force: true });
+    resolve();
+  }, 40));
+  const result = await Promise.all([write, release]);
+  assert.equal(timerFired, true);
+  assert.equal(result[0].entry.key, 'async.lock');
+  assert.equal(store.get({ key: 'async.lock' }).text, 'the event loop remains responsive');
+});
+
 test('the guide tells an AI to tag a project and keep its state in project.<project>.status', () => {
   assert.match(MEMORY_GUIDE, /tag notes with project/);
   assert.match(MEMORY_GUIDE, /project\.<project>\.status/);

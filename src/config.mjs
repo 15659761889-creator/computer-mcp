@@ -3,6 +3,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { securePrivateFile, writePrivateFile } from './private-file.mjs';
 
 export const DEFAULT_PORT = 8765;
 
@@ -47,6 +48,7 @@ export const joinFilePath = () => path.join(homeDir(), 'join.json');
 export function readJoinFileAt(file) {
   let raw;
   try {
+    securePrivateFile(file);
     raw = fs.readFileSync(file, 'utf8');
   } catch (err) {
     if (err.code === 'ENOENT') return null;
@@ -71,8 +73,11 @@ export function readJoinFileAt(file) {
   } catch {
     throw new Error('加入文件无效：origin 不是合法的 URL');
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error('加入文件无效：origin 必须是 http:// 或 https:// 开头');
+  const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const loopback = host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+  if (url.username || url.password || url.search || url.hash
+    || (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))) {
+    throw new Error('加入文件无效：远程 origin 必须使用 HTTPS，且不能包含凭证、查询或片段');
   }
   const wanted = typeof name === 'string' && name ? name : undefined;
   return hasKey ? { origin, id, key, name: wanted } : { origin, code, name: wanted };
@@ -80,6 +85,7 @@ export function readJoinFileAt(file) {
 
 export function loadConfig() {
   try {
+    securePrivateFile(configPath());
     return JSON.parse(fs.readFileSync(configPath(), 'utf8'));
   } catch (err) {
     if (err.code === 'ENOENT') return null;
@@ -96,7 +102,7 @@ export function requireConfig() {
 export function saveConfig(config) {
   fs.mkdirSync(homeDir(), { recursive: true });
   const tmp = `${configPath()}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  writePrivateFile(tmp, `${JSON.stringify(config, null, 2)}\n`);
   fs.renameSync(tmp, configPath());
 }
 

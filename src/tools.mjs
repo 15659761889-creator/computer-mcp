@@ -7,6 +7,7 @@ import { callDesktop, desktopSupported } from './desktop.mjs';
 import { describeJob, findJob, jobOutput, killJob, listJobs, logPathOf, startJob, waitForJob } from './jobs.mjs';
 import { DEFAULT_TIMEOUT_SECS, DEFAULT_WAIT_SECS, MAX_TIMEOUT_SECS, defaultShell } from './shell.mjs';
 import { decodeFile, encodeFile, looksBinary } from './text.mjs';
+import { maskSecrets } from './history.mjs';
 
 const MAX_FILE_BYTES = 256 * 1024 * 1024;
 const DEFAULT_READ_LINES = 2000;
@@ -452,7 +453,7 @@ export function summarizeArgs(name, args = {}) {
   const clip = (value) => (typeof value === 'string' && value.length > 2000 ? `${value.slice(0, 2000)}...` : value);
   switch (name) {
     case 'bash':
-      return { command: clip(args.command), cwd: args.cwd, shell: args.shell, background: args.background, timeout: args.timeout, wait: args.wait };
+      return { command: maskSecrets(clip(args.command)), cwd: args.cwd, shell: args.shell, background: args.background, timeout: args.timeout, wait: args.wait };
     case 'job':
       return { id: args.id, action: args.action, wait: args.wait };
     case 'ui_look':
@@ -462,7 +463,15 @@ export function summarizeArgs(name, args = {}) {
     case 'write_file':
       return { path: args.path, bytes: typeof args.content === 'string' ? args.content.length : undefined, encoding: args.encoding };
     case 'browser':
-      return { action: args.action, url: args.url, id: args.id, text: args.text, key: args.key, index: args.index, value_chars: typeof args.value === 'string' ? args.value.length : undefined };
+      return {
+        action: args.action,
+        url: typeof args.url === 'string' ? maskSecrets(args.url.split(/[?#]/, 1)[0]) : undefined,
+        id: args.id,
+        text_chars: typeof args.text === 'string' ? args.text.length : undefined,
+        key_chars: typeof args.key === 'string' ? args.key.length : undefined,
+        index: args.index,
+        value_chars: typeof args.value === 'string' ? args.value.length : undefined,
+      };
     case 'transfer':
       return { from: args.from, from_path: args.from_path, to: args.to, to_path: args.to_path, route: args.route, overwrite: args.overwrite, id: args.id, cancel: args.cancel };
     case 'edit_file':

@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { homeDir } from './config.mjs';
+import { securePrivateFile, writePrivateFile } from './private-file.mjs';
 
 export const quickLinkPath = () => path.join(homeDir(), 'quick-link.json');
 
@@ -29,7 +30,7 @@ export function saveQuickLink({ origin, token, port }) {
   const target = quickLinkPath();
   const temp = `${target}.${process.pid}.tmp`;
   try {
-    fs.writeFileSync(temp, JSON.stringify({ origin, token, port, pid: process.pid }), { mode: 0o600, flag: 'wx' });
+    writePrivateFile(temp, JSON.stringify({ origin, token, port, pid: process.pid }), { flag: 'wx' });
     fs.renameSync(temp, target);
   } finally {
     fs.rmSync(temp, { force: true });
@@ -38,6 +39,7 @@ export function saveQuickLink({ origin, token, port }) {
 
 export function clearQuickLink(pid = process.pid) {
   try {
+    securePrivateFile(quickLinkPath());
     const state = JSON.parse(fs.readFileSync(quickLinkPath(), 'utf8'));
     if (state.pid === pid) fs.rmSync(quickLinkPath(), { force: true });
   } catch (err) {
@@ -48,6 +50,7 @@ export function clearQuickLink(pid = process.pid) {
 export async function getQuickLink() {
   let state;
   try {
+    securePrivateFile(quickLinkPath());
     state = JSON.parse(fs.readFileSync(quickLinkPath(), 'utf8'));
   } catch (err) {
     if (err.code === 'ENOENT' || err instanceof SyntaxError) return null;

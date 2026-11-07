@@ -9,7 +9,9 @@ import { availableShells } from './shell.mjs';
 import { ROUTES, nodePsk } from './lan.mjs';
 import { MemoryError } from './memory.mjs';
 import { entryText } from './memory-context.mjs';
-import { refreshHubLicense } from './license.mjs';
+import { licenseExpiryTime, refreshHubLicense } from './license.mjs';
+import { consumeRateLimit } from './rate-limit.mjs';
+import { securePrivateFile, writePrivateFile } from './private-file.mjs';
 
 const POLL_HOLD_MS = 25000;
 // A node polls again at once, so this much silence means it is gone.
@@ -37,19 +39,19 @@ const EVENT_HOLD_MS = 25000;
 
 export const SECRET_TOOL = {
   name: 'type_secret',
-  description: 'Type a saved username or password into the computer without ever seeing it. The owner keeps accounts in the 万机 phone app; each use usually asks them on the phone to pick the account and allow it, which can take a minute, but accounts the owner marked as trusted in the phone app are filled without asking (secret_list shows which ones those are). Click into the field first, or name it with target or element_id, then call this once for the username and once for the password. The reply never contains the value. Use this for logins instead of asking for passwords in chat, and only type into the login form the owner expects.',
+  description: 'Type a saved username or password without ever showing the value to the AI. The owner chooses and approves the account on the phone unless it is trusted. For safety, include the exact window title and field name from ui_look; element_id may additionally confirm which matching field you mean. The hub takes a fresh ui_look and only types into one enabled editable control whose name and optional ID both match. Ambiguous, stale, disabled or non-editable targets are refused. Use this for the login form the owner expects, not to ask for passwords in chat.',
   inputSchema: {
     type: 'object',
     properties: {
       secret: { type: 'string', description: 'Which account, as the owner would name it, such as "GitHub" or "公司邮箱".' },
       part: { type: 'string', enum: ['username', 'password'], description: 'Which half of the saved account to type.' },
-      target: { type: 'string', description: 'Visible text or name of the field to type into. Default: the focused field.' },
-      element_id: { type: 'integer', description: 'Number of the field from the latest ui_look.' },
-      window: { type: 'string', description: 'Window title text or a w: handle.' },
-      press_enter: { type: 'boolean', description: 'Press Enter afterwards, to submit.' },
+      target: { type: 'string', description: 'Required exact visible name of the input control from the latest ui_look.' },
+      element_id: { type: 'integer', description: 'ID of the editable input control from the latest ui_look.' },
+      window: { type: 'string', description: 'Required exact window title, matching the latest ui_look.' },
+      press_enter: { type: 'boolean', description: 'Press Enter afterwards in the same window.' },
       reason: { type: 'string', description: 'One short sentence shown to the owner: what you are logging into and why.' },
     },
-    required: ['secret', 'part'],
+    required: ['secret', 'part', 'window', 'target'],
     additionalProperties: false,
   },
   annotations: { title: 'Type a saved secret', destructiveHint: true, openWorldHint: true },
@@ -120,8 +122,8 @@ function newCode() {
   return code;
 }
 
-function reply(res, status, body) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+function reply(res, status, body, headers = {}) {
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
   res.end(JSON.stringify(body));
 }
 
@@ -159,6 +161,7 @@ export function hubPath(home) {
 export function loadHubState(file) {
   let state;
   try {
+    securePrivateFile(file);
     state = JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
@@ -171,7 +174,7 @@ export function loadHubState(file) {
 function saveHubState(file, state) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  writePrivateFile(tmp, `${JSON.stringify(state, null, 2)}\n`);
   fs.renameSync(tmp, file);
 }
 
@@ -194,7 +197,6 @@ export class Hub {
     this.nextActivity = 1;
     this.activeCalls = new Map();
     this.recentCalls = [];
-    this.joinFailures = [];
     this.browsers = new Map();
     this.secretRequests = new Map();
     // Vault metadata synced from the phone app: id, label and username only.
@@ -284,7 +286,7 @@ export class Hub {
   // Pro verdict, from state.license (refreshed on service start and on demand).
   isPro() {
     const lic = this.state.license;
-    return Boolean(lic && lic.plan === 'pro' && lic.expiresAt && Date.parse(lic.expiresAt) > Date.now());
+    return Boolean(lic && lic.plan === 'pro' && licenseExpiryTime(lic.expiresAt) > Date.now());
   }
 
   licenseStatus() {
@@ -293,7 +295,7 @@ export class Hub {
     return { plan: this.isPro() ? 'pro' : 'free', expiresAt: lic.expiresAt || null };
   }
 
-  // Free is one computer: this hub's own machine. A second computer needs Pro.
+  // Free is this computer + 1 joined computer (2 total). A third computer needs Pro.
   // Relay accounts skip this check: their license is enforced per request instead.
   canAddComputer() {
     if (!this.selfName) return true;
@@ -540,6 +542,45 @@ export class Hub {
     return { status: 404, body: { error: 'not found' } };
   }
 
+  async handleMemoryAsync(action, method, body, lang = 'zh') {
+    const memory = this.memory;
+    if (!memory) return { status: 404, body: { error: lang === 'en' ? 'Shared memory is not turned on on this main computer' : '这台主电脑没有开启共享记忆' } };
+    await memory.ready;
+    const id = typeof body?.id === 'string' ? body.id : undefined;
+    try {
+      if (!action && method === 'GET') return this.handleMemory(action, method, body, lang);
+      if (method !== 'POST') return { status: 404, body: { error: 'not found' } };
+      if (action === 'add') {
+        const kind = body?.kind === 'handoff' ? 'handoff' : 'fact';
+        const found = kind === 'fact' && body?.key ? memory.get({ key: body.key }) : null;
+        const { entry } = await memory.writeAsync({
+          kind, text: body?.text, key: kind === 'fact' ? body?.key : undefined,
+          computer: body?.computer || undefined, project: body?.project, state: body?.state,
+          if_rev: found?.rev, by: 'owner', locked: body?.locked !== false,
+        });
+        return { status: 200, body: { id: entry.id } };
+      }
+      if (action === 'forget') {
+        await memory.forgetAsync({ id, by: 'owner' });
+        return { status: 200, body: { ok: true } };
+      }
+      if (action === 'lock') {
+        await memory.setLockAsync({ id }, body?.locked !== false);
+        return { status: 200, body: { ok: true } };
+      }
+      if (action === 'revoke') {
+        const all = body?.all === true;
+        if (all && !Number.isFinite(body?.since)) return { status: 400, body: { error: lang === 'en' ? 'Undoing every AI’s writes needs a start time' : '撤销所有 AI 的写入时要给出起始时间' } };
+        const { events } = await memory.revokeAsync({ author: all ? '*' : body?.author, since: body?.since });
+        return { status: 200, body: { events } };
+      }
+    } catch (err) {
+      if (err instanceof MemoryError) return { status: 400, body: { error: err.message } };
+      throw err;
+    }
+    return { status: 404, body: { error: 'not found' } };
+  }
+
   // ---- Pairing and management ----
 
   // The phone's codes: one use, 10 minutes. `days`: a one-use joiner EXE, which may sit
@@ -615,16 +656,18 @@ export class Hub {
     return this.state.invites.some((invite) => inviteLive(invite, Date.now()) && invite.hash === wanted);
   }
 
-  join(body) {
+  join(body, req = null) {
     const now = Date.now();
-    this.joinFailures = this.joinFailures.filter((at) => now - at < JOIN_WINDOW_MS);
-    if (this.joinFailures.length >= MAX_JOIN_FAILURES) {
-      return { status: 429, body: { error: 'too many wrong codes; try again in 10 minutes' } };
-    }
     const wanted = hashText(String(body.code ?? '').replace(/-/g, '').toUpperCase());
     const index = this.state.invites.findIndex((invite) => inviteLive(invite, now) && invite.hash === wanted);
     if (index < 0) {
-      this.joinFailures.push(now);
+      const retryAfter = consumeRateLimit(req, {
+        scope: 'hub-join', account: hashText(this.state.adminKey),
+        windowMs: JOIN_WINDOW_MS, ipMax: MAX_JOIN_FAILURES, accountMax: 60,
+      });
+      if (retryAfter) {
+        return { status: 429, body: { error: 'too many wrong codes; try again in 10 minutes' }, headers: { 'Retry-After': String(retryAfter) } };
+      }
       return { status: 403, body: { error: 'this pairing code is wrong, expired or already used' } };
     }
     if (!this.canAddComputer()) {
@@ -866,15 +909,19 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
 
   // ---- Saved accounts, typed without the AI seeing them ----
 
-  // run(uiActArgs) performs ui_act on the right computer.
+  // run(toolName, uiArgs) performs a fresh look and then ui_act on the right computer.
   async typeSecret(target, args, run) {
     const id = target.self ? 'self' : target.computer.id;
     const computerName = target.self ? this.selfName : target.computer.name;
     const hint = String(args.secret ?? '').trim().slice(0, 60);
     if (!hint) return { text: 'name the account in secret', isError: true };
     const part = args.part === 'username' ? 'username' : 'password';
-    const where = [args.window && `window "${args.window}"`, args.target && `field "${args.target}"`, args.element_id !== undefined && `element ${args.element_id}`]
-      .filter(Boolean).join(', ');
+    const hasTarget = typeof args.target === 'string' && args.target.trim().length > 0;
+    const hasId = Number.isInteger(args.element_id) && args.element_id > 0;
+    if (typeof args.window !== 'string' || !args.window.trim() || !hasTarget) {
+      return { text: 'For safety, type_secret requires the exact window title and field name from ui_look. An element_id may be added to confirm which matching field you mean.', isError: true };
+    }
+    const where = [`window "${args.window}"`, `field "${args.target}"`, ...(hasId ? [`element ${args.element_id}`] : [])].join(', ');
     const request = {
       id: randomBytes(6).toString('hex'), computerId: id, computer: computerName, hint, part,
       reason: String(args.reason ?? '').slice(0, 200), where, created: Date.now(), waiters: [],
@@ -893,14 +940,42 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
     if (this.browserLocked(id)) return { text: 'The owner is using this computer’s browser; the approved fill was not performed. Request approval again after takeover ends.', isError: true };
     const value = grant[part];
     if (!value) return { text: `The saved account "${grant.label}" has no ${part}.`, isError: true };
-    const first = { action: 'type', text: value };
-    for (const field of ['target', 'element_id', 'window']) if (args[field] !== undefined) first[field] = args[field];
-    // Clearing is select-all and delete, which outside a named field could wipe a whole document.
-    if (args.target !== undefined || args.element_id !== undefined) first.clear = true;
-    // Keys go only to a named window, so Enter must name the same one as the typing.
-    const enter = { action: 'key', keys: 'enter', ...(args.window !== undefined ? { window: args.window } : {}) };
+
+    // Never blind-type: inspect the requested window immediately before filling, and only
+    // accept a real editable UI Automation control (not OCR text, labels or buttons).
+    const lookArgs = { window: args.window, scope: 'window', ...(hasTarget ? { find: args.target } : {}) };
+    const seen = await run('ui_look', lookArgs);
+    if (!seen || seen.isError || typeof seen.text !== 'string') {
+      return { text: `Could not verify the ${part} field in window "${args.window}"; nothing was typed.`, isError: true };
+    }
+    const lines = seen.text.split(/\r?\n/);
+    const windowLine = lines.find((line) => /^window w:\S+ "/.test(line));
+    const title = /^window w:\S+ "([^"]*)"/.exec(windowLine || '')?.[1] || '';
+    const wantedWindow = args.window.trim().toLocaleLowerCase();
+    const shownWindow = title.toLocaleLowerCase();
+    if (!title || !(shownWindow === wantedWindow || (title.length === 80 && wantedWindow.startsWith(shownWindow)))) {
+      return { text: `The requested window "${args.window}" could not be confirmed; nothing was typed.`, isError: true };
+    }
+    const controls = lines.map((line) => {
+      const match = /^\[(\d+)\] ([a-z]+) "([^"]*)" \([^)]*\)(.*)$/i.exec(line);
+      return match ? { id: Number(match[1]), role: match[2].toLowerCase(), name: match[3], flags: match[4] } : null;
+    }).filter(Boolean);
+    const targetName = args.target.trim().toLocaleLowerCase();
+    const chosen = hasId
+      ? controls.find((control) => control.id === args.element_id && control.name.toLocaleLowerCase() === targetName)
+      : (() => {
+        const matches = controls.filter((control) => control.name.toLocaleLowerCase() === targetName);
+        return matches.length === 1 ? matches[0] : null;
+      })();
+    const allowedRole = chosen && (chosen.role === 'edit' || (part === 'username' && chosen.role === 'combobox'));
+    if (!chosen || !allowedRole || /\bdisabled\b/i.test(chosen.flags)) {
+      return { text: `The requested ${part} field was not verified as one enabled editable control in window "${args.window}"; nothing was typed.`, isError: true };
+    }
+    const first = { action: 'type', text: value, element_id: chosen.id, window: args.window, clear: true };
+    // Keys go only to the same named window as the verified field.
+    const enter = { action: 'key', keys: 'enter', window: args.window };
     const steps = [first, ...(args.press_enter ? [enter] : [])];
-    const result = await run({ steps, observe: false });
+    const result = await run('ui_act', { steps, observe: false });
     // Whatever the computer said back, the value itself must not reach the AI.
     const scrub = (text) => String(text ?? '').split(value).join('***');
     if (result.isError) return { text: `Typing the ${part} failed: ${scrub(result.text)}`, isError: true };
@@ -1133,8 +1208,8 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
     if (!pathname.startsWith('/hub/')) return false;
     try {
       if (pathname === '/hub/join' && req.method === 'POST') {
-        const result = this.join(await readJson(req));
-        reply(res, result.status, result.body);
+        const result = this.join(await readJson(req), req);
+        reply(res, result.status, result.body, result.headers);
         return true;
       }
       if (pathname.startsWith('/hub/node/')) {
@@ -1230,7 +1305,7 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
         }
         const memoryAction = /^memory(?:\/(add|forget|lock|revoke))?$/.exec(action);
         if (memoryAction) {
-          const done = this.handleMemory(memoryAction[1], req.method, memoryAction[1] ? await readJson(req) : null, langOf(req));
+          const done = await this.handleMemoryAsync(memoryAction[1], req.method, memoryAction[1] ? await readJson(req) : null, langOf(req));
           reply(res, done.status, done.body);
           return true;
         }

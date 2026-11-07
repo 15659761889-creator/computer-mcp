@@ -3,9 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
-import { Hub, parsePair } from '../src/hub.mjs';
-import { joinHub, startNodeLink } from '../src/node-link.mjs';
+import { Hub, parsePair, SECRET_TOOL } from '../src/hub.mjs';
+import { hubClient, joinHub, startNodeLink } from '../src/node-link.mjs';
 import { createMcpServer } from '../src/server.mjs';
+import { resetRateLimitsForTests } from '../src/rate-limit.mjs';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmcp-hub-'));
 const TOKEN = 'hub-test-token-abcdefgh';
@@ -59,15 +60,25 @@ async function addComputer(name, execute) {
   return joined;
 }
 
+test('type_secret schema requires a window and named field; element_id only disambiguates it', () => {
+  assert.deepEqual(SECRET_TOOL.inputSchema.required, ['secret', 'part', 'window', 'target']);
+  assert.equal(SECRET_TOOL.inputSchema.oneOf, undefined);
+  assert.match(SECRET_TOOL.description, /fresh ui_look/);
+  assert.match(SECRET_TOOL.description, /name and optional ID both match/);
+});
+
 test('pair text survives pasting and hand typing', () => {
   assert.deepEqual(parsePair(' cmcp://Hub.Example.com/ab23cd45 '), { origin: 'https://hub.example.com', code: 'AB23CD45' });
   assert.deepEqual(parsePair('hub.example.com AB23-CD45'), { origin: 'https://hub.example.com', code: 'AB23CD45' });
   assert.throws(() => parsePair('nonsense'));
+  assert.throws(() => hubClient('http://hub.example.com'), /HTTPS/);
+  assert.throws(() => hubClient('https://user:pass@hub.example.com'), /credentials/);
+  assert.doesNotThrow(() => hubClient('http://127.0.0.1:8765'));
 });
 
 test('a client with a cached tool list keeps working until a second computer joins', async () => {
   const result = await call('job', {});
-  assert.equal(result.isError, undefined);
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
 });
 
 test('wrong codes are refused and a code works once', async () => {
@@ -76,6 +87,28 @@ test('wrong codes are refused and a code works once', async () => {
   const joined = await joinHub({ origin: base, code: invite.code, name: 'once' });
   await assert.rejects(joinHub({ origin: base, code: invite.code, name: 'twice' }), /wrong, expired/);
   assert.equal((await admin(`computers/${joined.id}`, 'DELETE')).status, 200);
+});
+
+test('hub pairing failures are limited per IP; successful joins do not consume the failure allowance', () => {
+  resetRateLimitsForTests();
+  const limited = new Hub({
+    file: path.join(dir, 'join-rate-limit.json'), selfName: null,
+    state: { adminKey: 'join-rate-admin', computers: {}, invites: [] },
+    origin: () => 'https://hub.example.com', getToken: () => TOKEN,
+  });
+  const request = (ip) => ({ socket: { remoteAddress: ip } });
+  try {
+    for (let i = 0; i < 10; i += 1) assert.equal(limited.join({ code: 'wrong-code' }, request('192.0.2.40')).status, 403);
+    const blocked = limited.join({ code: 'wrong-code' }, request('192.0.2.40'));
+    assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers['Retry-After']) > 0);
+    assert.equal(limited.join({ code: 'wrong-code' }, request('192.0.2.41')).status, 403, 'a different IP keeps its own allowance');
+
+    for (let i = 0; i < 11; i += 1) {
+      const invite = limited.createInvite();
+      assert.equal(limited.join({ code: invite.code, name: `allowed-${i}` }, request('198.51.100.40')).status, 200);
+    }
+  } finally { limited.close(); }
 });
 
 test('management needs the admin key, not the MCP key or a computer key', async () => {
@@ -306,18 +339,19 @@ test('the phone can see and operate a joined computer\'s browser, and the AI wai
 test('a saved password is typed after the phone allows it, and the AI never sees it', async () => {
   const typed = [];
   await addComputer('delta', async (tool, args) => {
+    if (tool === 'ui_look') return { text: 'snapshot 1\nwindow w:123 "Login"\n[7] edit "Password" (10,10)\n[8] edit "Email" (20,20)' };
     typed.push([tool, args]);
     return { text: `typed into the field; it reads back as ${args.steps[0].text}` };
   });
   const before = (await (await admin('status')).json()).version;
-  const waiting = call('type_secret', { computer: 'delta', secret: 'GitHub', part: 'password', target: 'Password', press_enter: true, reason: 'log in to push code' });
+  const waiting = call('type_secret', { computer: 'delta', secret: 'GitHub', part: 'password', window: 'Login', target: 'Password', element_id: 7, press_enter: true, reason: 'log in to push code' });
 
   // The phone's long poll wakes when the request appears.
   const woke = await (await admin(`wait?since=${before}`)).json();
   assert.notEqual(woke.version, before);
   const { secretRequests } = await (await admin('status')).json();
   assert.equal(secretRequests.length, 1);
-  assert.deepEqual({ ...secretRequests[0], id: undefined }, { id: undefined, computer: 'delta', hint: 'GitHub', part: 'password', reason: 'log in to push code', where: 'field "Password"' });
+  assert.deepEqual({ ...secretRequests[0], id: undefined }, { id: undefined, computer: 'delta', hint: 'GitHub', part: 'password', reason: 'log in to push code', where: 'window "Login", field "Password", element 7' });
   const answer = await fetch(`${base}/hub/api/secrets/${secretRequests[0].id}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${adminKey}`, 'Content-Type': 'application/json' },
@@ -330,10 +364,10 @@ test('a saved password is typed after the phone allows it, and the AI never sees
   assert.doesNotMatch(JSON.stringify(result), /hunter2/);
   assert.match(result.content[0].text, /GitHub 工作号/);
   assert.equal(typed[0][0], 'ui_act');
-  assert.deepEqual(typed[0][1], { steps: [{ action: 'type', text: 'hunter2-秘密', target: 'Password', clear: true }, { action: 'key', keys: 'enter' }], observe: false });
+  assert.deepEqual(typed[0][1], { steps: [{ action: 'type', text: 'hunter2-秘密', element_id: 7, window: 'Login', clear: true }, { action: 'key', keys: 'enter', window: 'Login' }], observe: false });
 
   // Each fill needs its own approval, even for the same account.
-  const userWait = call('type_secret', { computer: 'delta', secret: 'github', part: 'username' });
+  const userWait = call('type_secret', { computer: 'delta', secret: 'github', part: 'username', window: 'Login', target: 'Email' });
   let userRequest;
   for (let i = 0; i < 50 && !userRequest; i += 1) {
     userRequest = (await (await admin('status')).json()).secretRequests[0];
@@ -344,6 +378,8 @@ test('a saved password is typed after the phone allows it, and the AI never sees
   const user = await userWait;
   assert.doesNotMatch(JSON.stringify(user), /me@example\.com/);
   assert.equal(typed[1][1].steps[0].text, 'me@example.com');
+  assert.equal(typed[1][1].steps[0].element_id, 8);
+  assert.equal(typed[1][1].steps[0].window, 'Login');
   assert.deepEqual((await (await admin('status')).json()).secretRequests, []);
 });
 
@@ -390,7 +426,7 @@ test('secret_list shows labels, usernames and the auto-allow flag, never passwor
 test('a declined secret runs nothing', async () => {
   const typed = [];
   await addComputer('epsilon', async (tool, args) => { typed.push(args); return { text: 'typed' }; });
-  const waiting = call('type_secret', { computer: 'epsilon', secret: 'Bank', part: 'password' });
+  const waiting = call('type_secret', { computer: 'epsilon', secret: 'Bank', part: 'password', window: 'Bank Login', target: 'Password' });
   let request;
   for (let i = 0; i < 50 && !request; i += 1) {
     request = (await (await admin('status')).json()).secretRequests[0];
@@ -449,11 +485,13 @@ test('takeover rejects unknown IDs and does not overwrite a pending request', as
 test('each password fill requires its own approval even after another fill', async () => {
   const hub = new Hub({ state: { adminKey: 'a', computers: {}, invites: [] }, selfName: 'mock', origin: () => 'https://example.invalid', getToken: () => 'test' });
   try {
-    const run = async () => ({ text: 'typed' });
-    const first = hub.typeSecret({ self: true }, { secret: 'GitHub', part: 'username', window: 'login' }, run);
+    const run = async (name, args) => name === 'ui_look'
+      ? { text: `window w:123 \"${args.window}\"\\n[7] edit \"${args.find}\" (10,10)` }
+      : { text: 'typed' };
+    const first = hub.typeSecret({ self: true }, { secret: 'GitHub', part: 'username', window: 'login', target: 'Username' }, run);
     hub.answerSecret([...hub.secretRequests.keys()][0], { approve: true, username: 'dummy', password: 'dummy' });
     await first;
-    const second = hub.typeSecret({ self: true }, { secret: 'GitHub', part: 'password', window: 'other' }, run);
+    const second = hub.typeSecret({ self: true }, { secret: 'GitHub', part: 'password', window: 'other', target: 'Password' }, run);
     const request = [...hub.secretRequests.keys()][0];
     assert.ok(request, 'second fill must require approval');
     hub.answerSecret(request, { approve: false });

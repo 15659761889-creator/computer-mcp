@@ -10,6 +10,8 @@ import { Hub, loadHubState } from './hub.mjs';
 import { Transfers, transfersFile } from './transfer.mjs';
 import { sendJson, serveMcp } from './server.mjs';
 import { handleLicenseHttp, keyHash, licenseActive, licenseStatusRemote, licensesDir, validKeyFormat, verifyLicense, verifyRemote } from './license.mjs';
+import { consumeRateLimit } from './rate-limit.mjs';
+import { securePrivateFile, writePrivateFile } from './private-file.mjs';
 
 // A relay is a hub on a rented server: it has no machine of its own, every computer connects
 // out to it, and it holds one account per person. Self-hosted, it holds exactly one.
@@ -18,8 +20,6 @@ const SYNC_MS = 5000;
 const RENEW_CHECK_MS = 6 * 60 * 60 * 1000;
 const RETRY_CERT_MS = 10 * 60 * 1000;
 const SIGNUP_DAYS = 7;
-const JOIN_WINDOW_MS = 10 * 60 * 1000;
-const MAX_JOIN_FAILURES = 20;
 const REMOTE_LICENSE_CACHE_MS = 60 * 1000;
 
 const hash = (value) => createHash('sha256').update(String(value)).digest();
@@ -58,6 +58,7 @@ const signupsDir = (dir) => path.join(dir, 'signups');
 
 export function loadRelayConfig(dir = relayDir()) {
   try {
+    securePrivateFile(configFile(dir));
     return JSON.parse(fs.readFileSync(configFile(dir), 'utf8'));
   } catch (err) {
     if (err.code === 'ENOENT') return null;
@@ -67,7 +68,7 @@ export function loadRelayConfig(dir = relayDir()) {
 
 export function saveRelayConfig(config, dir = relayDir()) {
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(configFile(dir), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  writePrivateFile(configFile(dir), `${JSON.stringify(config, null, 2)}\n`);
 }
 
 export function relayOrigin(config) {
@@ -96,12 +97,14 @@ export function createAccount(dir = relayDir(), label = '') {
   state.mcpToken = randomBytes(32).toString('base64url');
   state.label = label;
   state.createdAt = new Date().toISOString();
-  fs.writeFileSync(file, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  writePrivateFile(file, `${JSON.stringify(state, null, 2)}\n`);
   return { id, adminKey: state.adminKey };
 }
 
 export function readAccount(dir, id) {
-  return JSON.parse(fs.readFileSync(accountFile(dir, id), 'utf8'));
+  const file = accountFile(dir, id);
+  securePrivateFile(file);
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
 
 export function removeAccount(dir, id) {
@@ -136,7 +139,6 @@ export class Relay {
     this.log = log;
     this.hubs = new Map();
     this.challenges = new Map();
-    this.joinFailures = [];
     this.licenseSignups = new Set();
     this.licenseStatusCache = new Map();
     this.sync();
@@ -224,7 +226,7 @@ export class Relay {
         keyHash: hashHex, plan: verdict.plan || 'pro', expiresAt: verdict.expiresAt,
         ...(server ? { server } : {}),
       };
-      fs.writeFileSync(accountFile(this.dir, account.id), `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+      writePrivateFile(accountFile(this.dir, account.id), `${JSON.stringify(state, null, 2)}\n`);
       this.sync();
       return account;
     } finally {
@@ -254,6 +256,13 @@ export class Relay {
       }
       if (pathname === '/relay/signup' && req.method === 'POST') {
         const body = await readSmallJson(req);
+        const rateAccount = body.licenseKey ? keyHash(body.licenseKey)
+          : (typeof body.code === 'string' && body.code ? hash(body.code).toString('hex') : null);
+        const retryAfter = consumeRateLimit(req, { scope: 'relay-signup', account: rateAccount, ipMax: 60, accountMax: 10 });
+        if (retryAfter) {
+          sendJson(res, 429, { error: 'too many signup requests; try again later' }, { 'Retry-After': String(retryAfter) });
+          return;
+        }
         const en = String(req.headers['x-app-lang'] || '').toLowerCase().startsWith('en');
         if (body.licenseKey || body.code) {
           if (!this.config.shared) {
@@ -343,16 +352,14 @@ export class Relay {
 
   // Codes are checked across every account before the matching hub takes the join.
   async join(req, res) {
-    const now = Date.now();
-    this.joinFailures = this.joinFailures.filter((at) => now - at < JOIN_WINDOW_MS);
-    if (this.joinFailures.length >= MAX_JOIN_FAILURES) {
-      sendJson(res, 429, { error: 'too many wrong codes; try again in 10 minutes' });
-      return;
-    }
     const body = await readSmallJson(req);
     const hub = this.hubBy((h) => h.hasInvite(body.code));
     if (!hub) {
-      this.joinFailures.push(now);
+      const retryAfter = consumeRateLimit(req, { scope: 'hub-join', ipMax: 10, windowMs: 10 * 60 * 1000 });
+      if (retryAfter) {
+        sendJson(res, 429, { error: 'too many wrong codes; try again in 10 minutes' }, { 'Retry-After': String(retryAfter) });
+        return;
+      }
       sendJson(res, 403, { error: 'this pairing code is wrong, expired or already used' });
       return;
     }
@@ -360,8 +367,8 @@ export class Relay {
       sendJson(res, 402, { error: "this account's license has expired or was revoked" });
       return;
     }
-    const result = hub.join(body);
-    sendJson(res, result.status, result.body);
+    const result = hub.join(body, req);
+    sendJson(res, result.status, result.body, result.headers || {});
   }
 
   // Answers the certificate authority's ownership check; everything else moves to HTTPS.
@@ -411,6 +418,7 @@ const listen = (server, port, host) => new Promise((resolve, reject) => {
 
 async function renew(relay, config, dir, log) {
   const files = certPaths(dir);
+  if (fs.existsSync(files.account)) securePrivateFile(files.account);
   const accountKeyPem = fs.existsSync(files.account) ? fs.readFileSync(files.account, 'utf8') : undefined;
   const issued = await obtainCertificate({
     directoryUrl: config.acmeDirectory || (config.staging ? LETS_ENCRYPT_STAGING : LETS_ENCRYPT),
@@ -441,7 +449,10 @@ export async function runRelay({ dir = relayDir(), log = (line) => console.log(l
   }
 
   if (config.tls === 'files') {
-    const load = () => ({ cert: fs.readFileSync(config.certFile), key: fs.readFileSync(config.keyFile) });
+    const load = () => {
+      securePrivateFile(config.keyFile);
+      return { cert: fs.readFileSync(config.certFile), key: fs.readFileSync(config.keyFile) };
+    };
     const server = https.createServer(load(), handler);
     await listen(server, config.httpsPort || 443, config.bind);
     // Another tool renews these files, so pick up whatever it wrote.

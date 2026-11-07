@@ -53,7 +53,16 @@ test('temporary link can be recovered, but only while its secret matches the liv
     const port = server.address().port;
     saveQuickLink({ origin: 'https://unit-test.trycloudflare.com', token: fixtureToken, port });
     assert.equal(fs.existsSync(quickLinkPath()), true);
+    if (process.platform === 'win32') {
+      const grant = spawnSync('icacls.exe', [quickLinkPath(), '/grant', '*S-1-5-32-545:(F)'], { encoding: 'utf8', windowsHide: true });
+      assert.equal(grant.status, 0, grant.stderr);
+    } else fs.chmodSync(quickLinkPath(), 0o666);
     const parts = await getQuickLink();
+    if (process.platform === 'win32') {
+      const acl = spawnSync('icacls.exe', [quickLinkPath()], { encoding: 'utf8', windowsHide: true });
+      assert.equal(acl.status, 0, acl.stderr);
+      assert.doesNotMatch(acl.stdout, /BUILTIN\\Users:|S-1-5-32-545:/i, 'reading a legacy quick-link file tightens its ACL');
+    } else assert.equal(fs.statSync(quickLinkPath()).mode & 0o777, 0o600);
     assert.equal(parts.address, 'https://unit-test.trycloudflare.com/mcp');
     assert.equal(parts.key, fixtureToken);
     clearQuickLink(process.pid + 1);

@@ -1,0 +1,101 @@
+diff --git a/wanji-site/index.html b/wanji-site/index.html
+index 1396950..9bf603d 100644
+--- a/wanji-site/index.html
++++ b/wanji-site/index.html
+@@ -4,7 +4,7 @@
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+ <meta name="color-scheme" content="light dark">
+-<meta name="description" content="Wanji — one entry point lets any AI assistant control multiple computers. Self-hosted hub, relay remote access, mobile approval. Free for one computer, Pro $19/month.">
++<meta name="description" content="Wanji — one entry point lets any AI assistant control multiple computers. Self-hosted hub, relay remote access, mobile approval. Free for 2 computers (host + 1 joined), Pro $19/month.">
+ <link rel="icon" href="data:,">
+ <title>Wanji — Any AI. All your computers. One entry point.</title>
+ <link rel="preconnect" href="https://fonts.googleapis.com">
+@@ -159,7 +159,7 @@ header.site .btn{flex:none}
+           <a class="btn btn-accent" href="https://github.com/15659761889-creator/computer-mcp/releases" target="_blank" rel="noopener">Download free</a>
+           <a class="btn btn-ghost" href="#pricing">See Pro — $19/month</a>
+         </div>
+-        <p class="cta-note">Free for one computer, local use. No account needed to start. Pro is billed securely via Paddle.</p>
++        <p class="cta-note">Free for 2 computers (host + 1 joined), local use. No account needed to start. Pro is billed securely via Paddle.</p>
+       </div>
+       <div class="diagram" aria-label="How Wanji connects an AI assistant to multiple computers">
+         <h3>One MCP link, every machine</h3>
+@@ -217,7 +217,7 @@ header.site .btn{flex:none}
+         <article class="feature">
+           <div class="ic">Self-hosted</div>
+           <h3>Your hub, your rules</h3>
+-          <p>The hub runs on your computer and works on your local network for free. Stop paying and local use keeps working — Pro buys remote access, multiple computers and sync, not access to your own machine.</p>
++          <p>The hub runs on your computer and works on your local network for free. Stop paying and local use keeps working — Pro buys remote access, more than 2 computers and sync, not access to your own machine.</p>
+         </article>
+       </div>
+     </div>
+@@ -240,19 +240,19 @@ header.site .btn{flex:none}
+   <section class="alt" id="pricing">
+     <div class="wrap">
+       <h2>Pricing</h2>
+-      <p class="sec-intro">Start free on one computer. Upgrade to Pro when you want every machine, from anywhere. Full details on the <a href="/assets/pricing.html">pricing page</a>.</p>
++      <p class="sec-intro">Start free on 2 computers (host + 1 joined). Upgrade to Pro when you want every machine, from anywhere. Full details on the <a href="/assets/pricing.html">pricing page</a>.</p>
+       <div class="price-grid">
+         <article class="plan">
+           <h3>Free</h3>
+           <div class="price">$0<small> forever</small></div>
+-          <p class="for">For trying Wanji on a single computer at home.</p>
++          <p class="for">For using Wanji on a host computer plus 1 joined computer at home.</p>
+           <ul>
+-            <li>1 computer</li>
++            <li>Host + 1 joined computer (2 total)</li>
+             <li>Local / home-network use</li>
+             <li>Core computer-control tools for your AI</li>
+             <li>Mobile approval for sensitive actions</li>
+             <li class="no">Relay remote access</li>
+-            <li class="no">Multiple computers</li>
++            <li class="no">More than 2 computers</li>
+             <li class="no">Multi-computer sync</li>
+           </ul>
+           <a class="btn btn-ghost" href="https://github.com/15659761889-creator/computer-mcp/releases" target="_blank" rel="noopener">Download free</a>
+@@ -278,7 +278,7 @@ header.site .btn{flex:none}
+       <div style="margin-top:28px;overflow-x:auto">
+         <table aria-label="Free and Pro comparison">
+           <tr><th>Feature</th><th class="c">Free</th><th class="c">Pro — $19/mo</th></tr>
+-          <tr><td>Computers</td><td class="c">1</td><td class="c"><strong>Unlimited</strong></td></tr>
++          <tr><td>Computers</td><td class="c">2 (host + 1 joined)</td><td class="c"><strong>Unlimited</strong></td></tr>
+           <tr><td>Where you can connect from</td><td class="c">Home network only</td><td class="c"><strong>Anywhere, via relay</strong></td></tr>
+           <tr><td>Works with any MCP-compatible AI</td><td class="c">✓</td><td class="c">✓</td></tr>
+           <tr><td>Mobile approval for sensitive actions</td><td class="c">✓</td><td class="c">✓</td></tr>
+@@ -303,7 +303,7 @@ header.site .btn{flex:none}
+             <a class="btn btn-primary" href="https://github.com/15659761889-creator/computer-mcp/releases" target="_blank" rel="noopener">Windows installer — GitHub Releases</a>
+             <a class="btn btn-ghost" href="https://github.com/15659761889-creator/computer-mcp/releases" target="_blank" rel="noopener">Android app (APK) — same page</a>
+           </div>
+-          <p style="font-size:14px;color:var(--muted)">Pro subscribers receive a license key by email after checkout. Enter it once in the manager or with <span class="mono">wanji license &lt;key&gt;</span> to unlock relay, multiple computers and sync.</p>
++          <p style="font-size:14px;color:var(--muted)">Pro subscribers receive a license key by email after checkout. Enter it once in the manager or with <span class="mono">wanji license &lt;key&gt;</span> to unlock relay, more than 2 computers and sync.</p>
+         </div>
+         <div class="panel" id="signup">
+           <h3>Join the launch list</h3>
+@@ -327,7 +327,7 @@ header.site .btn{flex:none}
+       <div class="faq">
+         <details><summary>Is Wanji a cloud computer?</summary><p>No. Wanji is self-hosted software that runs on computers you already own. Pro adds a relay that only forwards traffic so you can reach your own hub from outside your home network — it does not store your files or run your tasks.</p></details>
+         <details><summary>Which AI assistants work with Wanji?</summary><p>Any assistant that supports MCP (Model Context Protocol), including Claude, ChatGPT and Gemini. Wanji is not tied to a single model or provider.</p></details>
+-        <details><summary>What happens if I cancel Pro?</summary><p>Your subscription ends at the close of the paid period. Wanji keeps working locally on the Free plan — one computer, home network. You lose relay remote access, extra computers and sync, not access to your own machine.</p></details>
++        <details><summary>What happens if I cancel Pro?</summary><p>Your subscription ends at the close of the paid period. Wanji keeps working locally on the Free plan — up to 2 computers (host + 1 joined), home network. You lose relay remote access, extra computers and sync, not access to your own machine.</p></details>
+         <details><summary>Can Wanji see my passwords?</summary><p>Saved credentials stay in the vault on your own devices. Typing a saved password is a sensitive action: it pauses for approval in the phone app, and the password itself is never shown in the AI conversation. The relay forwards traffic and does not store vault contents.</p></details>
+         <details><summary>How do refunds work?</summary><p>If Wanji Pro does not work as described, contact us within 14 days of purchase for a refund through Paddle. See the full <a href="/assets/refund.html">Refund Policy</a>.</p></details>
+         <details><summary>Which platforms are supported?</summary><p>The hub and manager run on Windows; additional Windows computers and Linux machines can join the hub, and the companion approval app runs on Android.</p></details>
+diff --git a/wanji-site/assets/pricing.html b/wanji-site/assets/pricing.html
+index 566ff70..11ad5dc 100644
+--- a/wanji-site/assets/pricing.html
++++ b/wanji-site/assets/pricing.html
+@@ -6,12 +6,12 @@
+ <header><a class="logo" href="../index.html">← Wanji</a><nav><a href="../index.html#features">Features</a> &nbsp;·&nbsp; <a href="https://github.com/15659761889-creator/computer-mcp/releases">Download</a></nav></header>
+ <h1>Pricing</h1><p class="sub">Start free. Pay only when you want every computer, from anywhere.</p>
+ <div class="grid">
+-<div class="plan"><h2 style="margin-top:0">Free</h2><div class="price">$0 <small>forever</small></div><ul><li>1 computer</li><li>Local / home-network use only</li><li>Core computer-control tools for any MCP-compatible AI</li><li>Mobile approval for sensitive actions</li><li>Manual update downloads from GitHub Releases</li></ul><a class="btn" href="https://github.com/15659761889-creator/computer-mcp/releases">Download free</a></div>
++<div class="plan"><h2 style="margin-top:0">Free</h2><div class="price">$0 <small>forever</small></div><ul><li>Host + 1 joined computer (2 total)</li><li>Local / home-network use only</li><li>Core computer-control tools for any MCP-compatible AI</li><li>Mobile approval for sensitive actions</li><li>Manual update downloads from GitHub Releases</li></ul><a class="btn" href="https://github.com/15659761889-creator/computer-mcp/releases">Download free</a></div>
+ <div class="plan pro"><h2 style="margin-top:0">Wanji Pro</h2><div class="price">$19 <small>/ month</small></div><ul><li><strong>Unlimited computers</strong> on your hub</li><li><strong>Relay remote access</strong> — connect from anywhere</li><li><strong>Multi-computer sync</strong> for skills, tasks and shared notes</li><li>Mobile approval for sensitive actions</li><li>All software updates while subscribed</li><li>Cancel anytime; Free local use continues after cancellation</li></ul><a class="btn btn-a" href="../index.html#signup">Get Wanji Pro</a></div>
+ </div>
+ <h2>Compare plans</h2>
+ <table><tr><th>Feature</th><th>Free</th><th>Pro — $19/mo</th></tr>
+-<tr><td>Computers</td><td>1</td><td>Unlimited</td></tr>
++<tr><td>Computers</td><td>2 (host + 1 joined)</td><td>Unlimited</td></tr>
+ <tr><td>Connection</td><td>Home network only</td><td>Anywhere, via relay</td></tr>
+ <tr><td>Any MCP-compatible AI</td><td>Yes</td><td>Yes</td></tr>
+ <tr><td>Mobile approval</td><td>Yes</td><td>Yes</td></tr>
