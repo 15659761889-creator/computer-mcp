@@ -768,7 +768,7 @@ async function relayLicenseCommand({ flags, positional }) {
         return undefined;
       }
       for (const { keyHash: hash, record } of rows) {
-        console.log(`${hash.slice(0, 8)}  ${record.email}  ${record.status}  ${record.plan}  until ${record.expiresAt}  ${record.machines?.length || 0} machine(s)`);
+        console.log(`${hash.slice(0, 8)}  ${record.email}  ${record.status}  ${record.plan}  until ${record.expiresAt}  ${record.machines?.length || 0} machine(s)${record.sandbox ? '  [sandbox]' : ''}`);
       }
       return undefined;
     }

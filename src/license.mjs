@@ -98,7 +98,7 @@ function writeRecord(dir, hashHex, record) {
 
 // The operator issues a key (by hand for now, by Paddle webhook later). The raw key is
 // returned once and never stored; the file is named by its hash.
-export function createLicense(dir, { email, days = 30, plan = 'pro', subscriptionId = null } = {}) {
+export function createLicense(dir, { email, days = 30, plan = 'pro', subscriptionId = null, sandbox = false } = {}) {
   if (typeof email !== 'string' || !email.trim() || email.length > 120) throw new Error('a buyer email is required');
   const nDays = Number.isFinite(days) && days > 0 ? Math.min(days, 3650) : 30;
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -114,6 +114,7 @@ export function createLicense(dir, { email, days = 30, plan = 'pro', subscriptio
       expiresAt: new Date(now.getTime() + nDays * 86400000).toISOString(),
       createdAt: now.toISOString(),
       machines: [],
+      ...(sandbox ? { sandbox: true } : {}),
     };
     writeRecord(dir, keyHash(key), record);
     return { key, record };
@@ -175,9 +176,12 @@ export function revokeLicense(dir, keyOrPrefix) {
 function extendLicenseBySubscription(dir, subscriptionId, endsAt) {
   const found = findLicenseBySubscription(dir, subscriptionId);
   if (!found || found.record.status !== 'active') return null;
-  if (endsAt && Number.isFinite(Date.parse(endsAt))
-    && (!Number.isFinite(Date.parse(found.record.expiresAt || '')) || Date.parse(endsAt) > Date.parse(found.record.expiresAt))) {
-    found.record.expiresAt = new Date(endsAt).toISOString();
+  // A sandbox renewal never runs past SANDBOX_LICENSE_DAYS from now.
+  const cap = found.record.sandbox ? Date.now() + SANDBOX_LICENSE_DAYS * 86400000 : Infinity;
+  const until = Math.min(Date.parse(endsAt || ''), cap);
+  if (Number.isFinite(until)
+    && (!Number.isFinite(Date.parse(found.record.expiresAt || '')) || until > Date.parse(found.record.expiresAt))) {
+    found.record.expiresAt = new Date(until).toISOString();
   }
   writeRecord(dir, found.keyHash, found.record);
   return found;
@@ -407,16 +411,11 @@ export async function refreshHubLicense(hub, home = homeDir()) {
 
 // ---- Paddle webhook (entry point; inert until the secret is configured) ----
 
-export function paddleSecret() {
-  return process.env.WANJI_PADDLE_WEBHOOK_SECRET || '';
-}
-
-// Paddle API key (WANJI_PADDLE_API_KEY, or paddle-api-key.txt in the Wanji folder).
-// Subscription events carry only customer_id, so the buyer's email is looked up with it.
-export function paddleApiKey(env = process.env, home = homeDir()) {
-  if (env.WANJI_PADDLE_API_KEY) return env.WANJI_PADDLE_API_KEY.trim();
+// A Paddle setting from an environment variable, or else a file in the Wanji folder.
+function paddleSetting(envName, fileName, env, home) {
+  if (env[envName]) return env[envName].trim();
   try {
-    const file = path.join(home, 'paddle-api-key.txt');
+    const file = path.join(home, fileName);
     securePrivateFile(file);
     return fs.readFileSync(file, 'utf8').trim();
   } catch {
@@ -424,10 +423,28 @@ export function paddleApiKey(env = process.env, home = homeDir()) {
   }
 }
 
-// Sandbox keys contain _sdbx_; WANJI_PADDLE_API_URL overrides both.
-export function paddleApiBase(apiKey, env = process.env) {
+// Paddle's live and sandbox accounts sign webhooks with different secrets. Sandbox is
+// for test purchases: its licenses are marked and last at most SANDBOX_LICENSE_DAYS,
+// so a test card never buys real Pro.
+export const SANDBOX_LICENSE_DAYS = 3;
+const PADDLE_MODES = {
+  live: { secret: ['WANJI_PADDLE_WEBHOOK_SECRET', 'paddle-webhook-secret.txt'], apiKey: ['WANJI_PADDLE_API_KEY', 'paddle-api-key.txt'] },
+  sandbox: { secret: ['WANJI_PADDLE_SANDBOX_WEBHOOK_SECRET', 'paddle-sandbox-webhook-secret.txt'], apiKey: ['WANJI_PADDLE_SANDBOX_API_KEY', 'paddle-sandbox-api-key.txt'] },
+};
+
+export function paddleSecret(mode = 'live', env = process.env, home = homeDir()) {
+  return paddleSetting(...PADDLE_MODES[mode].secret, env, home);
+}
+
+// Subscription events carry only customer_id, so the buyer's email is looked up with the API key.
+export function paddleApiKey(env = process.env, home = homeDir(), mode = 'live') {
+  return paddleSetting(...PADDLE_MODES[mode].apiKey, env, home);
+}
+
+// Sandbox mode, or a key containing _sdbx_, uses the sandbox API; WANJI_PADDLE_API_URL overrides both.
+export function paddleApiBase(apiKey, env = process.env, mode = 'live') {
   if (env.WANJI_PADDLE_API_URL) return secureServerOrigin(env.WANJI_PADDLE_API_URL);
-  return /_sdbx_/.test(apiKey) ? 'https://sandbox-api.paddle.com' : 'https://api.paddle.com';
+  return mode === 'sandbox' || /_sdbx_/.test(apiKey) ? 'https://sandbox-api.paddle.com' : 'https://api.paddle.com';
 }
 
 const paddleEmailOf = (data) => data.customer?.email || data.customer_email || null;
@@ -435,14 +452,14 @@ const creatingEvent = (type) => type === 'subscription.created' || type === 'sub
 
 // Fills data.customer_email on an event that will create a license. Returns false
 // when the email is still unknown, so the webhook answers an error and Paddle retries.
-export async function fillPaddleEmail(dir, event, { env = process.env, home = homeDir(), fetchImpl = fetch } = {}) {
+export async function fillPaddleEmail(dir, event, { env = process.env, home = homeDir(), fetchImpl = fetch, mode = 'live' } = {}) {
   const data = event?.data;
   if (!creatingEvent(event?.event_type) || !data || typeof data !== 'object' || paddleEmailOf(data)) return true;
   if (findLicenseBySubscription(dir, data.subscription_id || data.id)) return true;
-  const apiKey = paddleApiKey(env, home);
+  const apiKey = paddleApiKey(env, home, mode);
   if (!apiKey || typeof data.customer_id !== 'string' || !/^ctm_[a-z0-9]+$/i.test(data.customer_id)) return false;
   try {
-    const res = await fetchImpl(`${paddleApiBase(apiKey, env)}/customers/${data.customer_id}`, {
+    const res = await fetchImpl(`${paddleApiBase(apiKey, env, mode)}/customers/${data.customer_id}`, {
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(10000),
     });
@@ -543,7 +560,7 @@ export function clearPendingDelivery(dir, keyOrPrefix) {
 }
 
 // Paddle sends the billing period on transactions and subscriptions under different names.
-export function handlePaddleEvent(dir, event) {
+export function handlePaddleEvent(dir, event, { mode = 'live' } = {}) {
   const type = event?.event_type;
   const data = event?.data && typeof event.data === 'object' ? event.data : {};
   const subscription = data.subscription && typeof data.subscription === 'object' ? data.subscription : {};
@@ -561,7 +578,9 @@ export function handlePaddleEvent(dir, event) {
       return { handled: true, action: 'extended', keyHash: existing.keyHash, email: kept?.record.email || existing.record.email };
     }
     if (!email) return { handled: false, reason: 'no buyer email in event' };
-    const { key, record } = createLicense(dir, { email, days: daysFrom(endsAt), subscriptionId });
+    const sandbox = mode === 'sandbox';
+    const days = sandbox ? Math.min(daysFrom(endsAt), SANDBOX_LICENSE_DAYS) : daysFrom(endsAt);
+    const { key, record } = createLicense(dir, { email, days, subscriptionId, sandbox });
     queuePendingDelivery(dir, key, email);
     return { handled: true, action: 'created', keyHash: keyHash(key), email, expiresAt: record.expiresAt };
   }
@@ -650,8 +669,8 @@ export async function handleLicenseHttp(req, res, pathname, dir = licensesDir())
     return;
   }
   if (pathname === '/license/webhook' && req.method === 'POST') {
-    const secret = paddleSecret();
-    if (!secret) {
+    const secrets = Object.keys(PADDLE_MODES).map((mode) => ({ mode, secret: paddleSecret(mode) })).filter((s) => s.secret);
+    if (!secrets.length) {
       reply(res, 503, { error: 'license webhook is not configured yet; set WANJI_PADDLE_WEBHOOK_SECRET' });
       return;
     }
@@ -662,7 +681,9 @@ export async function handleLicenseHttp(req, res, pathname, dir = licensesDir())
       reply(res, err.status || 400, { error: err.message || 'bad request' });
       return;
     }
-    if (!verifyPaddleSignature(raw, req.headers['paddle-signature'], secret)) {
+    // Which account sent it follows from which secret signed it.
+    const mode = secrets.find((s) => verifyPaddleSignature(raw, req.headers['paddle-signature'], s.secret))?.mode;
+    if (!mode) {
       reply(res, 401, { error: 'bad signature' });
       return;
     }
@@ -673,13 +694,13 @@ export async function handleLicenseHttp(req, res, pathname, dir = licensesDir())
       reply(res, 400, { error: 'invalid JSON' });
       return;
     }
-    if (!(await fillPaddleEmail(dir, event))) {
+    if (!(await fillPaddleEmail(dir, event, { mode }))) {
       // A non-2xx answer makes Paddle send the event again later.
-      console.error(`Paddle ${event?.event_type}: could not look up the buyer email (check WANJI_PADDLE_API_KEY)`);
+      console.error(`Paddle ${mode} ${event?.event_type}: could not look up the buyer email (check the ${mode} API key)`);
       reply(res, 503, { error: 'could not look up the buyer email; retry later' });
       return;
     }
-    const result = handlePaddleEvent(dir, event);
+    const result = handlePaddleEvent(dir, event, { mode });
     if (result.handled && smtpConfig()) await deliverPendingLicenses(dir);
     reply(res, 200, { received: true, handled: result.handled, action: result.action || null });
     return;

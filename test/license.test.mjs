@@ -429,6 +429,41 @@ test('the Paddle webhook asks for a retry when the buyer email cannot be found',
   }
 });
 
+test('sandbox webhooks make short, marked licenses and live ones are untouched', async () => {
+  const live = 'whsec-live-secret';
+  const sandbox = 'whsec-sandbox-secret';
+  const post = async (secret, event) => {
+    const raw = JSON.stringify(event);
+    const ts = String(Math.floor(Date.now() / 1000));
+    const h1 = createHmac('sha256', secret).update(`${ts}:${raw}`).digest('hex');
+    return fetch(`${verifyBase}/license/webhook`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Paddle-Signature': `ts=${ts};h1=${h1}` }, body: raw });
+  };
+  const yearAway = new Date(Date.now() + 365 * 86400000).toISOString();
+  const created = (sub, email) => ({ event_type: 'subscription.created', data: { id: sub, customer: { email }, current_billing_period: { ends_at: yearAway } } });
+  const record = (sub) => listLicenses(licDir).find((e) => e.record.subscriptionId === sub)?.record;
+  process.env.WANJI_PADDLE_SANDBOX_WEBHOOK_SECRET = sandbox;
+  try {
+    assert.equal((await post(live, created('sub_live_x', 'live@example.com'))).status, 401, 'only the sandbox secret is set');
+    assert.equal((await post(sandbox, created('sub_sbx_1', 'sbx@example.com'))).status, 200);
+    const sbx = record('sub_sbx_1');
+    assert.equal(sbx.sandbox, true);
+    assert.ok(Date.parse(sbx.expiresAt) <= Date.now() + 3 * 86400000 + 60000, 'a sandbox license lasts at most 3 days');
+    const renewed = await post(sandbox, { event_type: 'transaction.completed', data: { subscription_id: 'sub_sbx_1', billing_period: { ends_at: yearAway } } });
+    assert.equal(renewed.status, 200);
+    assert.ok(Date.parse(record('sub_sbx_1').expiresAt) <= Date.now() + 3 * 86400000 + 60000, 'a sandbox renewal stays capped');
+    process.env.WANJI_PADDLE_WEBHOOK_SECRET = live;
+    assert.equal((await post(live, created('sub_live_1', 'live@example.com'))).status, 200);
+    const real = record('sub_live_1');
+    assert.equal(real.sandbox, undefined);
+    assert.equal(real.expiresAt.slice(0, 10), yearAway.slice(0, 10), 'a live license follows the billing period');
+    assert.equal((await post('whsec-other', created('sub_x', 'x@example.com'))).status, 401);
+  } finally {
+    delete process.env.WANJI_PADDLE_SANDBOX_WEBHOOK_SECRET;
+    delete process.env.WANJI_PADDLE_WEBHOOK_SECRET;
+    for (const p of listPendingDeliveries(licDir)) clearPendingDelivery(licDir, p.key);
+  }
+});
+
 test('SMTP license delivery is opt-in and clears the manual queue only after success', async () => {
   const created = handlePaddleEvent(licDir, {
     event_type: 'subscription.created',
