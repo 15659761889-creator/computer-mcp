@@ -516,7 +516,7 @@ export function createMcpServer({ name, getToken, auditFile, allowSse = true, on
         return;
       }
       // The license server's routes: verifying a key needs no login.
-      if (pathname === '/license/verify' || pathname === '/license/webhook') {
+      if (pathname === '/license/verify' || pathname === '/license/unbind' || pathname === '/license/status' || pathname === '/license/webhook') {
         await handleLicenseHttp(req, res, pathname, licensesDir());
         return;
       }
