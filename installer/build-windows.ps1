@@ -43,10 +43,20 @@ Copy-Item -LiteralPath $cloud -Destination (Join-Path $runtime "cloudflared.exe"
 foreach($dir in @("bin","src","desktop","web")) {
   Copy-Item -Path (Join-Path $root $dir) -Destination (Join-Path $app $dir) -Recurse -Force
 }
-Copy-Item -LiteralPath (Join-Path $root "package.json") -Destination $app -Force
-Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination $app -Force
+# What a buyer gets: only the fields the app reads (no repository, homepage or license), no
+# developer README, the buyer EULA instead of the repository LICENSE, and minified code.
+$appPackage = [ordered]@{ name = "wanji"; version = $package.version; private = $true; type = $package.type; bin = $package.bin; engines = $package.engines }
+[IO.File]::WriteAllText((Join-Path $app "package.json"), ($appPackage | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding $false))
 Get-ChildItem -LiteralPath $app -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $root "LICENSE") -Destination (Join-Path $licenses "WANJI_LICENSE.txt") -Force
+$tools = Join-Path $root "build\tools"
+if(-not (Test-Path -LiteralPath (Join-Path $tools "node_modules\esbuild"))) {
+  New-Item -ItemType Directory -Force -Path $tools | Out-Null
+  & npm.cmd install --prefix $tools --no-fund --no-audit esbuild@0.28.2 | Out-Null
+  if($LASTEXITCODE -ne 0) {throw "Installing esbuild into build\tools failed."}
+}
+& $node (Join-Path $PSScriptRoot "protect.mjs") $app
+if($LASTEXITCODE -ne 0) {throw "Minifying the app failed."}
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "EULA.txt") -Destination (Join-Path $licenses "WANJI_LICENSE.txt") -Force
 # A standalone Windows installer must contain the HTML used by browser handoff.
 $handoffHtml = Join-Path $app "web\handoff.html"
 if(-not (Test-Path -LiteralPath $handoffHtml)) {throw "Missing browser takeover page in staged app: $handoffHtml"}
