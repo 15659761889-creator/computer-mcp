@@ -52,6 +52,7 @@ namespace WanjiWindows {
     private const string BuyUrl = "https://wanji.3618.app/#pricing";
     private string plan;            // "free", "pro" or null while unknown
     private string planExpires;
+    private bool proConnected;
     private readonly System.Windows.Forms.Timer ticker;
     private bool refreshing;
 
@@ -107,7 +108,7 @@ namespace WanjiWindows {
       hint = AddLabel(area, T("链接就是电脑控制权限，请勿分享给不信任的人。", "The link is control of this computer. Don’t share it with anyone you don’t trust."), 15, 72, false);
       hint.ForeColor = Color.FromArgb(120, 130, 143);
       buyLink = new LinkLabel { Text = T("升级 Pro：固定地址 · 更多电脑 →", "Upgrade to Pro: fixed address · more computers →"), AutoSize = true, Location = new Point(360, 12), Visible = false, Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold), LinkColor = Color.FromArgb(14, 117, 105) };
-      buyLink.LinkClicked += (s, e) => OpenBuyPage();
+      buyLink.LinkClicked += (s, e) => { if (plan == "pro") ConnectPro(null); else OpenBuyPage(); };
       area.Controls.Add(buyLink);
       hint.Font = new Font("Microsoft YaHei UI", 8.5f);
 
@@ -125,7 +126,7 @@ namespace WanjiWindows {
 
       AddLabel(area, T("复制连接信息", "Copy connection info"), 15, 306, true);
       modeSelect = new ComboBox { Location = new Point(397, 302), Width = 219, DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Microsoft YaHei UI", 9) };
-      modeSelect.Items.AddRange(new object[] { T("自动选择", "Automatic"), T("临时隧道", "Temporary tunnel"), T("固定域名", "Fixed domain") });
+      modeSelect.Items.AddRange(new object[] { T("自动选择", "Automatic"), T("临时隧道", "Temporary tunnel"), T("固定域名", "Fixed domain"), T("Pro 固定链接", "Pro fixed link") });
       modeSelect.SelectedIndex = 0;
       modeSelect.SelectedIndexChanged += (s, e) => RefreshStatus();
       area.Controls.Add(modeSelect);
@@ -199,7 +200,14 @@ namespace WanjiWindows {
         return output.Trim();
       }
     }
+    private bool ProConnected() {
+      try { return Run("pro --json").Contains("\"connected\":true"); } catch { return false; }
+    }
     private string CurrentMode() {
+      if (modeSelect.SelectedIndex == 0 || modeSelect.SelectedIndex == 3) {
+        if (ProConnected()) return "pro";
+        if (modeSelect.SelectedIndex == 3) return null;
+      }
       if (modeSelect.SelectedIndex != 2) {
         try { Run("link --quick --address"); return "quick"; } catch {}
       }
@@ -213,7 +221,8 @@ namespace WanjiWindows {
       refreshing = true;
       try {
         var mode = CurrentMode();
-        if (mode == "quick") { status.Text = T("● 临时隧道已连接", "● Temporary tunnel connected"); hint.Text = T("可以复制完整链接，也可以分别复制地址和密钥。", "You can copy the full link, or copy the address and key separately."); }
+        if (mode == "pro") { status.Text = T("● Pro 固定链接已就绪（链接不会变）", "● Pro fixed link ready (it doesn't change)"); hint.Text = T("把完整链接给 AI 就能控制电脑；这台电脑开机会自动连上。", "Give the full link to your AI; this computer reconnects by itself after a restart."); }
+        else if (mode == "quick") { status.Text = T("● 临时隧道已连接", "● Temporary tunnel connected"); hint.Text = T("可以复制完整链接，也可以分别复制地址和密钥。", "You can copy the full link, or copy the address and key separately."); }
         else if (mode == "fixed") { status.Text = T("● 已配置固定域名（使用复制按钮获取连接信息）", "● Fixed domain configured (use the copy buttons to get the connection info)"); hint.Text = T("固定域名的有效性请另用 status 命令确认。", "To check whether the fixed domain works, use the status command."); }
         else { status.Text = T("○ 尚未启动连接", "○ Not connected yet"); hint.Text = T("点击「启动临时连接」，不需要 Node.js 或 Cloudflare 账号。", "Click “Start temporary connection”; no Node.js or Cloudflare account is needed."); }
         full.Enabled = address.Enabled = key.Enabled = mode != null;
@@ -228,8 +237,8 @@ namespace WanjiWindows {
     private void CopyPart(string part) {
       try {
         var mode = LinkMode();
-        var option = part == "address" ? " --address" : part == "key" ? " --key" : " --show";
-        var value = Run("link --" + mode + option);
+        var option = part == "address" ? " --address" : part == "key" ? " --key" : (mode == "pro" ? " --link" : " --show");
+        var value = Run((mode == "pro" ? "pro" : "link --" + mode) + option);
         if (string.IsNullOrWhiteSpace(value)) throw new Exception(T("未能取得连接信息。", "Couldn’t get the connection info."));
         Clipboard.SetText(value);
         status.Text = T("✓ 已复制", "✓ Copied\u0020") + (part == "full" ? T("完整链接", "full link") : part == "address" ? T("MCP 地址", "MCP address") : T("密钥", "key"));
@@ -368,20 +377,23 @@ namespace WanjiWindows {
     private void LoadPlan() {
       System.Threading.ThreadPool.QueueUserWorkItem(_ => {
         string found = null, expires = null;
+        bool connected = false;
         try {
           var json = Run("license --json", 15000);
           var m = Regex.Match(json, "\"plan\"\\s*:\\s*\"(free|pro)\"");
           if (m.Success) found = m.Groups[1].Value;
           var e = Regex.Match(json, "\"expiresAt\"\\s*:\\s*\"([^\"]+)\"");
           if (e.Success) { DateTime d; expires = DateTime.TryParse(e.Groups[1].Value, out d) ? d.ToLocalTime().ToString("yyyy-MM-dd") : e.Groups[1].Value; }
+          if (found == "pro") connected = ProConnected();
         } catch {}
         try {
           if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)(() => {
-            plan = found; planExpires = expires;
+            plan = found; planExpires = expires; proConnected = connected;
             planButton.Text = found == "pro" ? T("Pro · 到期 ", "Pro · until ") + expires
               : found == "free" ? T("免费版 · 查看权限", "Free · see what's included")
               : T("套餐：查不到，点此重试", "Plan: unknown, click to retry");
-            buyLink.Visible = found == "free";
+            buyLink.Text = found == "pro" ? T("开通 Pro 固定链接 →", "Set up your Pro fixed link →") : T("升级 Pro：开箱即用 · 更多电脑 →", "Upgrade to Pro: works out of the box · more computers →");
+            buyLink.Visible = found == "free" || (found == "pro" && !connected);
             planButton.BackColor = found == "pro" ? Color.FromArgb(14, 117, 105) : Color.FromArgb(52, 80, 120);
           }));
         } catch (InvalidOperationException) { /* The user closed this window. */ }
@@ -390,7 +402,7 @@ namespace WanjiWindows {
     private void ShowPlan() {
       if (plan == null) { planButton.Text = T("套餐：检查中...", "Plan: checking..."); LoadPlan(); return; }
       string text = plan == "pro"
-        ? T("当前套餐：Wanji Pro（到期 " + planExpires + "）\n\n你可以：\n• 控制这台电脑，并加入更多电脑（不限台数）\n• 用固定远程地址让 AI 直接控制电脑，不用自己搭隧道\n• 用「启动临时连接」或自己的域名，也都可以\n\n到期不续费会回到免费版，这台电脑本身照常能用。",
+        ? T("当前套餐：Wanji Pro（到期 " + planExpires + "）" + (proConnected ? "" : "\n还没开通固定链接：关闭本窗口后点主界面的「开通 Pro 固定链接」。") + "\n\n你可以：\n• 控制这台电脑，并加入更多电脑（不限台数）\n• 用固定远程地址让 AI 直接控制电脑，不用自己搭隧道\n• 用「启动临时连接」或自己的域名，也都可以\n\n到期不续费会回到免费版，这台电脑本身照常能用。",
             "Current plan: Wanji Pro (until " + planExpires + ")\n\nYou can:\n• Control this computer and join more (no limit)\n• Let your AI control your computers directly through a fixed remote address, with no tunnel to set up\n• Still use the temporary connection or your own domain\n\nIf it isn't renewed, Wanji goes back to Free; this computer keeps working.")
         : T("当前套餐：免费版\n\n你可以：\n• 控制这台电脑，再加入 1 台（一共 2 台）\n• 点「启动临时连接」生成临时隧道，让 AI 远程连接\n  （链接每次重启都会变，要重新复制给 AI）\n• 固定域名、自建中继：需要你自己的域名或服务器，自行配置\n\n需要 Pro（$19/月）才能：\n• 加入第 3 台及更多电脑\n• 开箱即用的固定远程地址，AI 直接控制，不用自己搭隧道",
             "Current plan: Free\n\nYou can:\n• Control this computer and join 1 more (2 in total)\n• Click “Start temporary connection” to get a temporary tunnel for remote AI access\n  (the link changes on every restart; give the AI the new one)\n• Fixed domain or your own relay: needs your own domain or server, set up by you\n\nPro ($19/month) adds:\n• A 3rd computer and more\n• A fixed remote address out of the box: your AI controls your computers directly, no tunnel to set up");
@@ -420,9 +432,18 @@ namespace WanjiWindows {
       if (form.ShowDialog(this) != DialogResult.OK) return;
       var licenseKey = Regex.Replace(box.Text, @"\s", "");
       if (!Regex.IsMatch(licenseKey, @"^[A-Za-z0-9-]{16,40}$")) { MessageBox.Show(T("密钥格式不对，请从邮件里重新复制。", "That key doesn't look right; copy it again from the email.")); return; }
-      planButton.Text = T("套餐：激活中...", "Plan: activating...");
-      try { StartCliTask("license " + Q(licenseKey), T("激活 Pro", "Activate Pro"), LoadPlan); }
-      catch (Exception ex) { MessageBox.Show(ex.Message, T("激活失败", "Activation failed")); LoadPlan(); }
+      ConnectPro(licenseKey);
+    }
+    // Activates the key (if given), opens the Pro account on the official relay and joins this
+    // computer to it. Joining installs desktop control too, which can take a few minutes.
+    private void ConnectPro(string licenseKey) {
+      planButton.Text = T("套餐：开通中...", "Plan: setting up...");
+      hint.Text = T("正在开通 Pro：第一次要下载桌面控制组件（约 500 MB），可能要几分钟，请不要关闭窗口。如果弹出“是否允许更改”，请点“是”。", "Setting up Pro: the first time downloads desktop control (~500 MB) and can take a few minutes. Keep this window open; if Windows asks to allow changes, click Yes.");
+      try {
+        var args = "pro" + (licenseKey != null ? " " + Q(licenseKey) : "");
+        if (!string.IsNullOrWhiteSpace(proxy.Text)) args += " --proxy " + Q(proxy.Text.Trim());
+        StartCliTask(args, T("开通 Pro", "Pro setup"), () => { if (modeSelect.SelectedIndex != 0) modeSelect.SelectedIndex = 0; LoadPlan(); });
+      } catch (Exception ex) { MessageBox.Show(ex.Message, T("开通失败", "Pro setup failed")); LoadPlan(); }
     }
     private void JoinHub() {
       var code = pairCode.Text.Trim();

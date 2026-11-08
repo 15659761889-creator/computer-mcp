@@ -16,9 +16,11 @@ export const PADDLE_TOLERANCE_MS = 300 * 1000;
 export const VERIFY_RATE_WINDOW_MS = 60 * 1000;
 export const VERIFY_RATE_IP_MAX = 60;
 export const VERIFY_RATE_ACCOUNT_MAX = 10;
-// v1 license server: the owner's hub, already public. Override with --server or
-// WANJI_LICENSE_SERVER; a buyer never needs to know it, it is in the Paddle email.
-export const DEFAULT_LICENSE_SERVER = 'https://pc-test-mcp.3618.app';
+// The official relay, which also answers /license/*. Override with --server or
+// WANJI_LICENSE_SERVER; a buyer never needs to know it.
+export const DEFAULT_LICENSE_SERVER = 'https://wanji-api.3618.app';
+// Where Pro accounts live: the same official relay.
+export const DEFAULT_RELAY = 'https://wanji-api.3618.app';
 
 // A Pro verdict stays usable this long without reaching the license server.
 export const OFFLINE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -26,7 +28,8 @@ export const OFFLINE_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 // A computer trusts only verdicts signed by one of these, so editing license.json
 // cannot make it Pro.
 const LICENSE_PUBLIC_KEYS = [
-  'MCowBQYDK2VwAyEAACSFPq5Ojcz08MKoyaZd1ODo4UWN3KtpjBwhU2FGmHQ=', // pc-test license server, made 2026-11-07
+  // The 2026-11-07 key was deleted with pc-test's old install, so 0.6.9 clients can never be Pro.
+  'MCowBQYDK2VwAyEAo3AYu6W2MNCbmX0B9nNtCTZPUcoLZGHgiwAwZcoMZTc=', // official relay (WanjiOfficial on pc-test), made 2026-11-08
 ];
 let trustedKeys = LICENSE_PUBLIC_KEYS;
 // Tests sign with a key of their own; nothing in the product calls this.

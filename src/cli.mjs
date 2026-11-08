@@ -25,7 +25,7 @@ import {
   runRelay, saveRelayConfig, signupLink, validHost,
 } from './relay.mjs';
 import {
-  DEFAULT_LICENSE_SERVER, clearPendingDelivery, createLicense, listLicenses, listPendingDeliveries,
+  DEFAULT_LICENSE_SERVER, DEFAULT_RELAY, clearPendingDelivery, createLicense, listLicenses, listPendingDeliveries,
   licensesDir, localLicenseStatus, newMachineId, readLocalLicense, refreshLocalLicense, removeLocalLicense, revokeLicense,
   saveVerdict, unbindRemote, verifyRemote,
 } from './license.mjs';
@@ -96,6 +96,8 @@ const HELP = `wanji: give this computer its own fixed MCP link
       --remove                remove the license from this computer
       --json                  print the plan as JSON (plan, expiresAt), never the key
   wanji license unbind <machineId>  free one machine slot on the license server
+  wanji pro [key]      Pro out of the box: activate, join the official relay, print the fixed link
+      --link | --address | --key   print the saved fixed link (or its parts)
   wanji relay license create --email <email> [--days 30]
                               make a Pro license key (printed once, for the buyer)
   wanji relay license list    list issued keys by buyer, status and expiry
@@ -754,6 +756,86 @@ async function licenseCommand({ flags, positional }) {
   return undefined;
 }
 
+// Pro out of the box: the license key opens an account on the official relay, and this
+// computer joins it, so the AI gets a fixed link without any tunnel to set up.
+// The account's admin key is kept in pro.json: the relay cannot hand it out twice.
+const proFile = () => path.join(homeDir(), 'pro.json');
+const readPro = () => {
+  try { return JSON.parse(fs.readFileSync(proFile(), 'utf8')); } catch { return null; }
+};
+
+// Retried: TLS through a local proxy or VPN sometimes resets for a moment.
+async function relayRequest(origin, pathname, options = {}) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await relayRequestOnce(origin, pathname, options);
+    } catch (err) {
+      if (attempt >= 4) throw new Error(`could not reach ${origin}: ${err.message}. Check the network; if it needs a proxy, add --proxy http://host:port`);
+      await new Promise((resolve) => { setTimeout(resolve, attempt * 2000); });
+    }
+  }
+}
+
+async function relayRequestOnce(origin, pathname, { method = 'GET', key, body, proxy } = {}) {
+  if (method === 'POST') {
+    const answer = await hubClient(origin, proxy)(pathname, { key, body, timeoutMs: 30000 });
+    return { ok: answer.status >= 200 && answer.status < 300, status: answer.status, body: answer.body };
+  }
+  const res = await fetch(new URL(pathname, origin), {
+    headers: key ? { Authorization: `Bearer ${key}` } : {}, signal: AbortSignal.timeout(30000),
+  });
+  return { ok: res.ok, status: res.status, body: await res.json().catch(() => ({})) };
+}
+
+async function proCommand({ flags, positional }) {
+  const pro = readPro();
+  if (flags.link || flags.address || flags.key || flags.json) {
+    // Read from disk only: the manager asks every few seconds.
+    if (flags.json) {
+      console.log(JSON.stringify({ connected: Boolean(pro?.mcp?.full), relay: pro?.relay || null }));
+      return undefined;
+    }
+    if (!pro?.mcp?.full) throw new Error('Pro is not connected on this computer yet; run: wanji pro <key>');
+    console.log(flags.address ? pro.mcp.address : flags.key ? pro.mcp.key : pro.mcp.full);
+    return undefined;
+  }
+  // A computer already on the relay counts as joined, which licenseCommand refuses; skip it when already Pro.
+  if (positional[0] && localLicenseStatus().plan !== 'pro') await licenseCommand({ flags: {}, positional: [positional[0]] });
+  const local = readLocalLicense();
+  if (localLicenseStatus().plan !== 'pro' || !local?.key) {
+    throw new Error('this computer has no active Pro license; run: wanji pro <key>');
+  }
+  const relay = (typeof flags.relay === 'string' ? flags.relay : null) || pro?.relay || process.env.WANJI_RELAY || DEFAULT_RELAY;
+  const existing = loadConfig();
+  const proxy = typeof flags.proxy === 'string' ? flags.proxy : existing?.proxy;
+  if (existing?.hostname) {
+    throw new Error(`this computer already has its own fixed domain as "${existing.name}"; Pro uses the official relay instead`);
+  }
+  let adminKey = pro?.relay === relay ? pro.adminKey : null;
+  if (!adminKey) {
+    const signup = await relayRequest(relay, '/relay/signup', { method: 'POST', proxy, body: { licenseKey: local.key, machineId: local.machineId } });
+    if (!signup.ok || !signup.body?.adminKey) {
+      throw new Error(`the Pro relay refused: ${signup.body?.error || signup.status}. If this key was set up on another computer before, ask the seller to move it.`);
+    }
+    adminKey = signup.body.adminKey;
+    // Saved before anything else can fail: the relay will not give this key out again.
+    writePrivateFile(proFile(), `${JSON.stringify({ relay, adminKey }, null, 2)}\n`);
+  }
+  const status = await relayRequest(relay, '/hub/api/status', { key: adminKey });
+  if (!status.ok || !status.body?.mcp?.full) throw new Error(`the Pro relay answered ${status.status}: ${status.body?.error || 'no link'}`);
+  writePrivateFile(proFile(), `${JSON.stringify({ relay, adminKey, mcp: status.body.mcp }, null, 2)}\n`);
+  if (existing?.joined?.origin === relay) {
+    console.log(`This computer is already on your Pro account as "${existing.name}".`);
+  } else {
+    const name = typeof flags.name === 'string' ? flags.name : os.hostname().toLowerCase();
+    const created = await relayRequest(relay, '/hub/api/computers', { method: 'POST', key: adminKey, proxy, body: { name } });
+    if (!created.ok) throw new Error(`could not add this computer to your Pro account: ${created.body?.error || created.status}`);
+    await finishJoin(existing, { ...created.body, origin: relay }, flags);
+  }
+  console.log(`\nPro is ready. Give your AI this fixed link (it does not change):\n${status.body.mcp.full}\n\nKeep it private: it is control of your computers.`);
+  return undefined;
+}
+
 async function relayLicenseCommand({ flags, positional }) {
   const sub = positional.shift();
   const dir = licensesDir();
@@ -1093,6 +1175,8 @@ export async function main(argv) {
       return routeCommand(parsed.positional);
     case 'license':
       return licenseCommand(parsed);
+    case 'pro':
+      return proCommand(parsed);
     case 'relay':
       return relayCommand(parsed);
     case 'run':
