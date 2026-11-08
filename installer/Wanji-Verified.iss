@@ -1,5 +1,5 @@
 #define AppName "万机"
-#define AppVersion "0.6.12"
+#define AppVersion "0.6.13"
 
 [Setup]
 ; Chinese Windows gets the Chinese wizard, anything else English, without asking.

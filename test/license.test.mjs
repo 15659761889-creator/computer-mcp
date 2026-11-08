@@ -658,3 +658,28 @@ test('a manual renewal extends the same key from its expiry, or from now once it
   assert.equal(extendLicense(dir, key, 30), null, 'a revoked key stays revoked');
   assert.equal(extendLicense(dir, lapsed.key, 0), null, 'days must be positive');
 });
+
+test('another computer of the same Pro key joins the account with the key, up to the machine limit', async () => {
+  const { key } = createLicense(licDir, { email: 'multi-pc@example.com', days: 30 });
+  const noAccount = await relayPost('/relay/signup', { licenseKey: key, machineId: 'pc-0', join: true, name: 'pc0' });
+  assert.equal(noAccount.status, 403);
+  assert.equal((await noAccount.json()).code, 'no-account', 'joining needs an account first');
+  const first = await relayPost('/relay/signup', { licenseKey: key, machineId: 'pc-1' });
+  const { adminKey } = await first.json();
+  const second = await relayPost('/relay/signup', { licenseKey: key, machineId: 'pc-2' });
+  assert.equal((await second.json()).code, 'already-registered', 'the CLI switches to joining on this code');
+  const joined = await relayPost('/relay/signup', { licenseKey: key, machineId: 'pc-2', join: true, name: 'second' });
+  assert.equal(joined.status, 200);
+  const body = await joined.json();
+  assert.ok(body.id && body.key && body.name === 'second', 'the new computer gets its own id and key');
+  const status = await (await fetch(`${relayBase}/hub/api/status`, { headers: { Authorization: `Bearer ${adminKey}` } })).json();
+  assert.equal(body.mcp.full, status.mcp.full, 'every computer of the key gets the same fixed link');
+  assert.equal(body.adminKey, undefined, 'joining never hands out the admin key');
+  for (const n of [3, 4, 5]) {
+    assert.equal((await relayPost('/relay/signup', { licenseKey: key, machineId: `pc-${n}`, join: true, name: `pc${n}` })).status, 200);
+  }
+  const sixth = await relayPost('/relay/signup', { licenseKey: key, machineId: 'pc-6', join: true, name: 'pc6' });
+  assert.equal((await sixth.json()).code, 'too-many-machines', 'a sixth machine is refused');
+  const wrong = await relayPost('/relay/signup', { licenseKey: generateKey(), machineId: 'pc-x', join: true, name: 'x' });
+  assert.equal(wrong.status, 403, 'an unknown key joins nothing');
+});

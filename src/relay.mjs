@@ -234,6 +234,27 @@ export class Relay {
     }
   }
 
+  // Another computer of the same Pro buyer: the key is checked against one of its machine
+  // slots, and the computer joins the account that key opened. The key is the credential.
+  async joinWithLicense(key, machineId, name, info) {
+    if (!validKeyFormat(key) || typeof machineId !== 'string' || !machineId) return { error: 'invalid' };
+    const hashHex = keyHash(key);
+    const hub = this.hubBy((h) => h.state.license?.keyHash === hashHex);
+    if (!hub) return { error: 'no-account' };
+    const server = this.config.licenseServer || process.env.WANJI_LICENSE_SERVER || null;
+    let verdict;
+    try {
+      verdict = server ? await verifyRemote(server, key, machineId) : verifyLicense(licensesDir(), key, machineId);
+    } catch {
+      return { error: 'license-server-unavailable' };
+    }
+    if (!verdict.valid) return { error: verdict.reason || 'invalid' };
+    const created = hub.createComputer(name, info);
+    const origin = this.origin();
+    const token = hub.state.mcpToken;
+    return { ...created, mcp: { full: `${origin}/t/${token}/mcp`, address: `${origin}/mcp`, key: token } };
+  }
+
   async handle(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, GET, DELETE, OPTIONS');
@@ -269,9 +290,11 @@ export class Relay {
             sendJson(res, 403, { error: en ? 'This relay serves one person' : '这个中继只服务一个人' });
             return;
           }
-          const result = body.licenseKey
-            ? await this.signupWithLicense(body.licenseKey, body.machineId)
-            : await this.signup(body.code, body.machineId);
+          const result = body.licenseKey && body.join
+            ? await this.joinWithLicense(body.licenseKey, body.machineId, body.name, body.info)
+            : body.licenseKey
+              ? await this.signupWithLicense(body.licenseKey, body.machineId)
+              : await this.signup(body.code, body.machineId);
           if (!result || result.error) {
             const why = {
               invalid: en ? 'This license key is not valid' : '这个许可证密钥无效',
@@ -280,11 +303,13 @@ export class Relay {
               'too-many-machines': en ? 'This license is already used on too many computers' : '这个许可证已在太多台电脑上用过',
               'already-registered': en ? 'This license already has a relay account. Use that account’s app key instead.' : '这个许可证已经创建过中继账号，请使用该账号的管理密钥连接',
               'license-server-unavailable': en ? 'Could not reach the license server' : '暂时无法连接许可证服务器',
+              'no-account': en ? 'This license has no Pro account yet' : '这个许可证还没有开通 Pro 账号',
             }[result?.error] || (en ? 'This invite is invalid or has expired' : '这个邀请无效或已过期');
-            sendJson(res, 403, { error: why });
+            // code lets the CLI tell "this key already has an account" from real failures.
+            sendJson(res, 403, { error: why, code: result?.error || 'invalid' });
             return;
           }
-          sendJson(res, 200, { adminKey: result.adminKey });
+          sendJson(res, 200, body.join ? { id: result.id, key: result.key, name: result.name, mcp: result.mcp } : { adminKey: result.adminKey });
           return;
         }
         sendJson(res, 403, { error: en

@@ -812,31 +812,55 @@ async function proCommand({ flags, positional }) {
   if (existing?.hostname) {
     throw new Error(`this computer already has its own fixed domain as "${existing.name}"; Pro uses the official relay instead`);
   }
+  const name = typeof flags.name === 'string' ? flags.name : os.hostname().toLowerCase();
+  const savePro = (data) => writePrivateFile(proFile(), `${JSON.stringify({ relay, ...data }, null, 2)}\n`);
+  // The first computer opens the account and keeps its admin key; any later computer of the
+  // same key joins that account with the key itself (one machine slot each) and keeps only the link.
+  const joinWithKey = async () => {
+    const answer = await relayRequest(relay, '/relay/signup', {
+      method: 'POST', proxy, body: { licenseKey: local.key, machineId: local.machineId, join: true, name, info: {} },
+    });
+    if (!answer.ok || !answer.body?.mcp?.full) throw new Error(`the Pro relay refused: ${answer.body?.error || answer.status}`);
+    savePro({ mcp: answer.body.mcp });
+    return answer.body;
+  };
   let adminKey = pro?.relay === relay ? pro.adminKey : null;
-  if (!adminKey) {
+  let mcp = pro?.relay === relay ? pro.mcp : null;
+  let created = null;
+  if (!adminKey && !mcp) {
     const signup = await relayRequest(relay, '/relay/signup', { method: 'POST', proxy, body: { licenseKey: local.key, machineId: local.machineId } });
-    if (!signup.ok || !signup.body?.adminKey) {
-      throw new Error(`the Pro relay refused: ${signup.body?.error || signup.status}. If this key was set up on another computer before, ask the seller to move it.`);
+    if (signup.ok && signup.body?.adminKey) {
+      adminKey = signup.body.adminKey;
+      // Saved before anything else can fail: the relay will not give this key out again.
+      savePro({ adminKey });
+    } else if (signup.body?.code === 'already-registered') {
+      created = await joinWithKey();
+      ({ mcp } = created);
+    } else {
+      throw new Error(`the Pro relay refused: ${signup.body?.error || signup.status}`);
     }
-    adminKey = signup.body.adminKey;
-    // Saved before anything else can fail: the relay will not give this key out again.
-    writePrivateFile(proFile(), `${JSON.stringify({ relay, adminKey }, null, 2)}\n`);
   }
-  const status = await relayRequest(relay, '/hub/api/status', { key: adminKey });
-  if (!status.ok || !status.body?.mcp?.full) throw new Error(`the Pro relay answered ${status.status}: ${status.body?.error || 'no link'}`);
-  writePrivateFile(proFile(), `${JSON.stringify({ relay, adminKey, mcp: status.body.mcp }, null, 2)}\n`);
+  if (adminKey) {
+    const status = await relayRequest(relay, '/hub/api/status', { key: adminKey });
+    if (!status.ok || !status.body?.mcp?.full) throw new Error(`the Pro relay answered ${status.status}: ${status.body?.error || 'no link'}`);
+    ({ mcp } = status.body);
+    savePro({ adminKey, mcp });
+  }
   if (existing?.joined?.origin === relay) {
     // Already on the account (a reinstall keeps pro.json and config.json): set the
     // service up again, since uninstalling removed its startup task.
     console.log(`This computer is already on your Pro account as "${existing.name}"; making sure it runs.`);
     await finishJoin(existing, { ...existing.joined, name: existing.name, repaired: true }, flags);
   } else {
-    const name = typeof flags.name === 'string' ? flags.name : os.hostname().toLowerCase();
-    const created = await relayRequest(relay, '/hub/api/computers', { method: 'POST', key: adminKey, proxy, body: { name } });
-    if (!created.ok) throw new Error(`could not add this computer to your Pro account: ${created.body?.error || created.status}`);
-    await finishJoin(existing, { ...created.body, origin: relay }, flags);
+    if (!created && adminKey) {
+      const answer = await relayRequest(relay, '/hub/api/computers', { method: 'POST', key: adminKey, proxy, body: { name } });
+      if (!answer.ok) throw new Error(`could not add this computer to your Pro account: ${answer.body?.error || answer.status}`);
+      created = answer.body;
+    }
+    if (!created) created = await joinWithKey();
+    await finishJoin(existing, { id: created.id, key: created.key, name: created.name, origin: relay }, flags);
   }
-  console.log(`\nPro is ready. Give your AI this fixed link (it does not change):\n${status.body.mcp.full}\n\nKeep it private: it is control of your computers.`);
+  console.log(`\nPro is ready. Give your AI this fixed link (it does not change):\n${mcp.full}\n\nKeep it private: it is control of your computers.`);
   return undefined;
 }
 
