@@ -47,6 +47,9 @@ namespace WanjiWindows {
     private readonly Button key;
     private readonly TextBox pairCode;
     private readonly Button planButton;
+    private readonly LinkLabel buyLink;
+    // Where Free users go to buy Pro; the site decides what that page offers.
+    private const string BuyUrl = "https://wanji.3618.app/#pricing";
     private string plan;            // "free", "pro" or null while unknown
     private string planExpires;
     private readonly System.Windows.Forms.Timer ticker;
@@ -103,6 +106,9 @@ namespace WanjiWindows {
       status.ForeColor = Color.FromArgb(43, 114, 83);
       hint = AddLabel(area, T("链接就是电脑控制权限，请勿分享给不信任的人。", "The link is control of this computer. Don’t share it with anyone you don’t trust."), 15, 72, false);
       hint.ForeColor = Color.FromArgb(120, 130, 143);
+      buyLink = new LinkLabel { Text = T("升级 Pro：固定地址 · 更多电脑 →", "Upgrade to Pro: fixed address · more computers →"), AutoSize = true, Location = new Point(360, 12), Visible = false, Font = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Bold), LinkColor = Color.FromArgb(14, 117, 105) };
+      buyLink.LinkClicked += (s, e) => OpenBuyPage();
+      area.Controls.Add(buyLink);
       hint.Font = new Font("Microsoft YaHei UI", 8.5f);
 
       AddLabel(area, T("临时连接（无需域名）", "Temporary connection (no domain needed)"), 15, 113, true);
@@ -375,6 +381,7 @@ namespace WanjiWindows {
             planButton.Text = found == "pro" ? T("Pro · 到期 ", "Pro · until ") + expires
               : found == "free" ? T("免费版 · 查看权限", "Free · see what's included")
               : T("套餐：查不到，点此重试", "Plan: unknown, click to retry");
+            buyLink.Visible = found == "free";
             planButton.BackColor = found == "pro" ? Color.FromArgb(14, 117, 105) : Color.FromArgb(52, 80, 120);
           }));
         } catch (InvalidOperationException) { /* The user closed this window. */ }
@@ -392,11 +399,15 @@ namespace WanjiWindows {
       var keyButton = new Button { Text = plan == "pro" ? T("换一个 Pro 密钥", "Use another Pro key") : T("输入 Pro 密钥", "Enter Pro key"), Location = new Point(20, 320), Size = new Size(150, 34) };
       keyButton.Click += (s, e) => { form.Close(); EnterLicenseKey(); };
       var buyButton = new Button { Text = T("购买 Pro", "Buy Pro"), Location = new Point(180, 320), Size = new Size(120, 34), Visible = plan != "pro" };
-      buyButton.Click += (s, e) => { try { Process.Start("https://wanji.3618.app/#pricing"); } catch {} };
+      buyButton.Click += (s, e) => OpenBuyPage();
       var closeButton = new Button { Text = T("关闭", "Close"), Location = new Point(390, 320), Size = new Size(100, 34), DialogResult = DialogResult.OK };
       form.Controls.Add(keyButton); form.Controls.Add(buyButton); form.Controls.Add(closeButton);
       form.AcceptButton = closeButton;
       form.ShowDialog(this);
+    }
+    private void OpenBuyPage() {
+      try { Process.Start(BuyUrl); }
+      catch { Clipboard.SetText(BuyUrl); MessageBox.Show(T("打不开浏览器，购买地址已复制：\n", "Couldn't open a browser; the address was copied:\n") + BuyUrl); }
     }
     private void EnterLicenseKey() {
       var form = new Form { Text = T("输入 Pro 密钥", "Enter Pro key"), Width = 460, Height = 190, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, Font = Font };

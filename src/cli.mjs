@@ -722,7 +722,7 @@ async function licenseCommand({ flags, positional }) {
       if (!status.fresh) void refreshLocalLicense().catch(() => {});
       console.log(`Wanji Pro until ${status.expiresAt}${status.fresh ? '' : ' (cached; checking again in the background)'}.`);
     } else {
-      console.log('Free plan: this computer + 1 more. Remote access: a temporary tunnel (the link changes when it restarts); a fixed address or your own relay is yours to set up. Pro ($19/month): a fixed address out of the box and more computers; run: wanji license <key>.');
+      console.log('Free plan: this computer + 1 more. Remote access: a temporary tunnel (the link changes when it restarts); a fixed address or your own relay is yours to set up. Pro ($19/month): a fixed address out of the box and more computers. Buy Pro: https://wanji.3618.app/#pricing, then run: wanji license <key>.');
     }
     return undefined;
   }
