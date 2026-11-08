@@ -55,6 +55,7 @@ namespace WanjiWindows {
     private bool proConnected;
     private readonly System.Windows.Forms.Timer ticker;
     private bool refreshing;
+    private bool settingUpPro;
 
     public ManagerForm() {
       node = Path.Combine(root, "runtime", "node.exe");
@@ -111,6 +112,7 @@ namespace WanjiWindows {
       buyLink.LinkClicked += (s, e) => { if (plan == "pro") ConnectPro(null); else OpenBuyPage(); };
       area.Controls.Add(buyLink);
       hint.Font = new Font("Microsoft YaHei UI", 8.5f);
+      hint.MaximumSize = new Size(600, 0);  // long hints wrap instead of widening the page
 
       AddLabel(area, T("临时连接（无需域名）", "Temporary connection (no domain needed)"), 15, 113, true);
       start = AddButton(area, T("▶ 启动临时连接", "▶ Start temporary connection"), 15, 152, 298, Color.FromArgb(37, 99, 235));
@@ -217,7 +219,7 @@ namespace WanjiWindows {
       return null;
     }
     private void RefreshStatus() {
-      if (refreshing) return;
+      if (refreshing || settingUpPro) return;
       refreshing = true;
       try {
         var mode = CurrentMode();
@@ -335,7 +337,7 @@ namespace WanjiWindows {
     }
     // Launch the bundled Node executable directly: cmd.exe /k nested quotes break on some Windows PCs.
     // Consume both streams asynchronously and report the final result in the GUI.
-    private void StartCliTask(string args, string title, Action done = null) {
+    private void StartCliTask(string args, string title, Action done = null, string successText = null) {
       var psi = new ProcessStartInfo(node, Q(cli) + " " + args) {
         UseShellExecute = false, CreateNoWindow = true,
         RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = root,
@@ -364,6 +366,7 @@ namespace WanjiWindows {
         if (result.Length > 2000) result = result.Substring(result.Length - 2000);
         try {
           if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)(() => {
+            if (exitCode == 0 && successText != null) result = successText;
             MessageBox.Show(this, string.IsNullOrWhiteSpace(result) ? (exitCode == 0 ? T("操作已完成。", "Done.") : T("操作失败，未提供错误信息。", "Failed, and no error message was given.")) : result,
               title + (exitCode == 0 ? T("成功", "\u0020succeeded") : T("失败", "\u0020failed")), MessageBoxButtons.OK,
               exitCode == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Error);
@@ -409,13 +412,15 @@ namespace WanjiWindows {
       var form = new Form { Text = T("套餐与权限", "Plan and what's included"), Width = 520, Height = 420, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, Font = Font };
       form.Controls.Add(new Label { Text = text, Location = new Point(20, 18), Size = new Size(470, 290) });
       var keyButton = new Button { Text = plan == "pro" ? T("换一个 Pro 密钥", "Use another Pro key") : T("输入 Pro 密钥", "Enter Pro key"), Location = new Point(20, 320), Size = new Size(150, 34) };
-      keyButton.Click += (s, e) => { form.Close(); EnterLicenseKey(); };
+      bool wantKey = false;
+      keyButton.Click += (s, e) => { wantKey = true; form.Close(); };
       var buyButton = new Button { Text = T("购买 Pro", "Buy Pro"), Location = new Point(180, 320), Size = new Size(120, 34), Visible = plan != "pro" };
       buyButton.Click += (s, e) => OpenBuyPage();
       var closeButton = new Button { Text = T("关闭", "Close"), Location = new Point(390, 320), Size = new Size(100, 34), DialogResult = DialogResult.OK };
       form.Controls.Add(keyButton); form.Controls.Add(buyButton); form.Controls.Add(closeButton);
       form.AcceptButton = closeButton;
       form.ShowDialog(this);
+      if (wantKey) EnterLicenseKey();
     }
     private void OpenBuyPage() {
       try { Process.Start(BuyUrl); }
@@ -423,7 +428,7 @@ namespace WanjiWindows {
     }
     private void EnterLicenseKey() {
       var form = new Form { Text = T("输入 Pro 密钥", "Enter Pro key"), Width = 460, Height = 190, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, Font = Font };
-      form.Controls.Add(new Label { Text = T("粘贴购买后邮件里的密钥：", "Paste the key from your purchase email:"), Location = new Point(18, 16), AutoSize = true });
+      form.Controls.Add(new Label { Text = T("粘贴卖家发给你的密钥（形如 WANJI-XXXX-XXXX-XXXX-XXXX）：", "Paste the key the seller sent you (like WANJI-XXXX-XXXX-XXXX-XXXX):"), Location = new Point(18, 16), AutoSize = true });
       var box = new TextBox { Location = new Point(20, 46), Width = 405 };
       var ok = new Button { Text = T("激活", "Activate"), Location = new Point(225, 92), Size = new Size(95, 32), DialogResult = DialogResult.OK };
       var cancel = new Button { Text = T("取消", "Cancel"), Location = new Point(330, 92), Size = new Size(95, 32), DialogResult = DialogResult.Cancel };
@@ -442,8 +447,14 @@ namespace WanjiWindows {
       try {
         var args = "pro" + (licenseKey != null ? " " + Q(licenseKey) : "");
         if (!string.IsNullOrWhiteSpace(proxy.Text)) args += " --proxy " + Q(proxy.Text.Trim());
-        StartCliTask(args, T("开通 Pro", "Pro setup"), () => { if (modeSelect.SelectedIndex != 0) modeSelect.SelectedIndex = 0; LoadPlan(); });
-      } catch (Exception ex) { MessageBox.Show(ex.Message, T("开通失败", "Pro setup failed")); LoadPlan(); }
+        settingUpPro = true;
+        StartCliTask(args, T("开通 Pro", "Pro setup"), () => {
+          settingUpPro = false;
+          if (modeSelect.SelectedIndex != 0) modeSelect.SelectedIndex = 0;
+          RefreshStatus(); LoadPlan();
+        }, T("Pro 已开通。\n\n点主界面的「复制完整链接」，把链接给你的 AI（Claude、ChatGPT 等支持 MCP 的都行），AI 就能控制这台电脑。\n链接不会变；这台电脑开机会自动连上。\n\n链接等于电脑的控制权，不要分享给别人。",
+          "Pro is set up.\n\nClick “Copy full link” and give it to your AI (Claude, ChatGPT or any MCP client); it can then control this computer.\nThe link doesn't change, and this computer reconnects by itself after a restart.\n\nThe link is control of your computer; don't share it."));
+      } catch (Exception ex) { settingUpPro = false; MessageBox.Show(ex.Message, T("开通失败", "Pro setup failed")); LoadPlan(); }
     }
     private void JoinHub() {
       var code = pairCode.Text.Trim();

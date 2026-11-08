@@ -1,7 +1,9 @@
 #define AppName "万机"
-#define AppVersion "0.6.10"
+#define AppVersion "0.6.12"
 
 [Setup]
+; Chinese Windows gets the Chinese wizard, anything else English, without asking.
+ShowLanguageDialog=auto
 AppId={{C99AD54F-186F-4F5A-8F49-CC1D9C7FA7B0}
 AppName={#AppName}
 AppVersion={#AppVersion}
@@ -31,10 +33,11 @@ VersionInfoCompany=万机
 VersionInfoProductName=万机
 
 [Languages]
+Name: "chinesesimp"; MessagesFile: "ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项"; Flags: unchecked
+Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加选项"
 Name: "gitbash"; Description: "给 AI 下载 Bash 命令行（约 60 MB，需要联网；不勾选则用 PowerShell，之后可在管理器里切换）"; GroupDescription: "AI 命令行"; Flags: unchecked
 
 [Files]
@@ -51,4 +54,11 @@ Name: "{userdesktop}\万机"; Filename: "{app}\Wanji.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\runtime\node.exe"; Parameters: """{app}\app\bin\wanji.mjs"" shell bash"; WorkingDir: "{app}"; StatusMsg: "正在下载 Bash 命令行..."; Tasks: gitbash; Flags: runhidden waituntilterminated
-Filename: "{app}\Wanji.exe"; Description: "Launch 万机"; Flags: nowait postinstall skipifsilent
+; A reinstall over a Pro computer (pro.json kept by the uninstaller) brings its service back.
+Filename: "{app}\runtime\node.exe"; Parameters: """{app}\app\bin\wanji.mjs"" pro"; WorkingDir: "{app}"; StatusMsg: "正在恢复 Pro 连接..."; Flags: runhidden waituntilterminated; Check: FileExists(ExpandConstant('{userappdata}\computer-mcp\pro.json'))
+Filename: "{app}\Wanji.exe"; Description: "启动万机"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+; Stop the background service and remove its startup task; its node.exe lives in {app} and is
+; about to be deleted. License and Pro account files stay, so a reinstall keeps Pro.
+Filename: "{app}\runtime\node.exe"; Parameters: """{app}\app\bin\wanji.mjs"" uninstall --from-settings"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated; RunOnceId: "WanjiStopService"

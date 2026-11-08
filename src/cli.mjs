@@ -825,7 +825,10 @@ async function proCommand({ flags, positional }) {
   if (!status.ok || !status.body?.mcp?.full) throw new Error(`the Pro relay answered ${status.status}: ${status.body?.error || 'no link'}`);
   writePrivateFile(proFile(), `${JSON.stringify({ relay, adminKey, mcp: status.body.mcp }, null, 2)}\n`);
   if (existing?.joined?.origin === relay) {
-    console.log(`This computer is already on your Pro account as "${existing.name}".`);
+    // Already on the account (a reinstall keeps pro.json and config.json): set the
+    // service up again, since uninstalling removed its startup task.
+    console.log(`This computer is already on your Pro account as "${existing.name}"; making sure it runs.`);
+    await finishJoin(existing, { ...existing.joined, name: existing.name, repaired: true }, flags);
   } else {
     const name = typeof flags.name === 'string' ? flags.name : os.hostname().toLowerCase();
     const created = await relayRequest(relay, '/hub/api/computers', { method: 'POST', key: adminKey, proxy, body: { name } });
