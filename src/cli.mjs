@@ -25,7 +25,7 @@ import {
   runRelay, saveRelayConfig, signupLink, validHost,
 } from './relay.mjs';
 import {
-  DEFAULT_LICENSE_SERVER, DEFAULT_RELAY, clearPendingDelivery, createLicense, listLicenses, listPendingDeliveries,
+  DEFAULT_LICENSE_SERVER, DEFAULT_RELAY, clearPendingDelivery, createLicense, extendLicense, listLicenses, listPendingDeliveries,
   licensesDir, localLicenseStatus, newMachineId, readLocalLicense, refreshLocalLicense, removeLocalLicense, revokeLicense,
   saveVerdict, unbindRemote, verifyRemote,
 } from './license.mjs';
@@ -101,6 +101,7 @@ const HELP = `wanji: give this computer its own fixed MCP link
   wanji relay license create --email <email> [--days 30]
                               make a Pro license key (printed once, for the buyer)
   wanji relay license list    list issued keys by buyer, status and expiry
+  wanji relay license extend <key|prefix> --days <n>  renew a key by hand (same key, longer)
   wanji relay license revoke <key|prefix>
                               cancel a key at once
   wanji relay license pending list keys a payment made that nobody emailed yet
@@ -861,6 +862,14 @@ async function relayLicenseCommand({ flags, positional }) {
       }
       return undefined;
     }
+    case 'extend': {
+      const target = positional[0];
+      const days = Number(flags.days);
+      if (!target || !(days > 0)) throw new Error('usage: wanji relay license extend <key|prefix> --days <n>');
+      const done = extendLicense(dir, target, days);
+      console.log(done ? `Extended the license for ${done.record.email} until ${done.record.expiresAt}.` : 'No active license key matches that.');
+      return undefined;
+    }
     case 'revoke': {
       const target = positional[0];
       if (!target) throw new Error('usage: wanji relay license revoke <key|prefix>');
@@ -884,7 +893,7 @@ async function relayLicenseCommand({ flags, positional }) {
       return undefined;
     }
     default:
-      throw new Error('usage: wanji relay license create|list|revoke|pending|sent');
+      throw new Error('usage: wanji relay license create|list|extend|revoke|pending|sent');
   }
 }
 

@@ -158,17 +158,32 @@ export function findLicenseBySubscription(dir, subscriptionId) {
   return listLicenses(dir).find((entry) => entry.record.subscriptionId === subscriptionId) || null;
 }
 
-export function revokeLicense(dir, keyOrPrefix) {
-  let hashHex = null;
-  if (validKeyFormat(keyOrPrefix)) {
-    hashHex = keyHash(keyOrPrefix);
-  } else if (/^[a-f0-9]{8,64}$/.test(String(keyOrPrefix || '').toLowerCase())) {
+// A full key, or the hash prefix that `relay license list` shows (must match one record).
+function resolveLicenseHash(dir, keyOrPrefix) {
+  if (validKeyFormat(keyOrPrefix)) return keyHash(keyOrPrefix);
+  if (/^[a-f0-9]{8,64}$/.test(String(keyOrPrefix || '').toLowerCase())) {
     const hits = listLicenses(dir).filter((entry) => entry.keyHash.startsWith(String(keyOrPrefix).toLowerCase()));
-    if (hits.length !== 1) return null;
-    hashHex = hits[0].keyHash;
-  } else {
-    return null;
+    return hits.length === 1 ? hits[0].keyHash : null;
   }
+  return null;
+}
+
+// A renewal paid by hand: the same key runs `days` longer, counted from its current
+// expiry, or from now if it has already run out. A revoked key stays revoked.
+export function extendLicense(dir, keyOrPrefix, days) {
+  const hashHex = resolveLicenseHash(dir, keyOrPrefix);
+  if (!hashHex || !Number.isFinite(days) || days <= 0 || days > 3650) return null;
+  const record = readLicenseByHash(dir, hashHex);
+  if (!record || record.status !== 'active') return null;
+  const from = Math.max(Date.now(), licenseExpiryTime(record.expiresAt) || 0);
+  record.expiresAt = new Date(from + days * 86400000).toISOString();
+  writeRecord(dir, hashHex, record);
+  return { keyHash: hashHex, record };
+}
+
+export function revokeLicense(dir, keyOrPrefix) {
+  const hashHex = resolveLicenseHash(dir, keyOrPrefix);
+  if (!hashHex) return null;
   const record = readLicenseByHash(dir, hashHex);
   if (!record) return null;
   record.status = 'revoked';

@@ -8,7 +8,7 @@ import { after, before, test } from 'node:test';
 import { Hub } from '../src/hub.mjs';
 import {
   clearPendingDelivery, createLicense, deliverPendingLicenses, formatKey, generateKey, handleLicenseHttp, handlePaddleEvent,
-  keyHash, licenseActive, licensesDir, listLicenses, listPendingDeliveries, localLicenseStatus,
+  extendLicense, keyHash, licenseActive, licensesDir, listLicenses, listPendingDeliveries, localLicenseStatus,
   newMachineId, normalizeKey, readLicense, readLocalLicense, refreshLocalLicense, removeLocalLicense, revokeLicense,
   fillPaddleEmail, licensePublicKey, saveLocalLicense, signVerdict, trustLicenseKeysForTesting, unbindLicenseMachine, unbindRemote, validKeyFormat, verifyLicense, verifyPaddleSignature, verifyRemote,
 } from '../src/license.mjs';
@@ -635,4 +635,26 @@ test('license verification is rate-limited per IP across different keys', async 
     assert.equal(res.status, 200);
   }
   assert.equal(limited, true, 'different license keys from the same IP still hit the IP limit');
+});
+
+test('a manual renewal extends the same key from its expiry, or from now once it has run out', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmcp-extend-'));
+  const { key, record } = createLicense(dir, { email: 'renew@example.com', days: 10 });
+  const before = Date.parse(record.expiresAt);
+  const done = extendLicense(dir, key, 31);
+  assert.equal(Date.parse(done.record.expiresAt), before + 31 * 86400000, 'counted from the current expiry');
+  assert.equal(verifyLicense(dir, key, 'm1').valid, true);
+
+  const lapsed = createLicense(dir, { email: 'lapsed@example.com', days: 1 });
+  const lapsedHash = keyHash(lapsed.key);
+  const file = path.join(dir, `${lapsedHash}.json`);
+  const old = JSON.parse(fs.readFileSync(file, 'utf8'));
+  old.expiresAt = new Date(Date.now() - 5 * 86400000).toISOString();
+  fs.writeFileSync(file, JSON.stringify(old));
+  const renewed = extendLicense(dir, lapsedHash.slice(0, 8), 30);
+  assert.ok(Date.parse(renewed.record.expiresAt) > Date.now() + 29 * 86400000, 'counted from now once lapsed');
+
+  revokeLicense(dir, key);
+  assert.equal(extendLicense(dir, key, 30), null, 'a revoked key stays revoked');
+  assert.equal(extendLicense(dir, lapsed.key, 0), null, 'days must be positive');
 });
