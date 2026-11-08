@@ -337,7 +337,7 @@ namespace WanjiWindows {
     }
     // Launch the bundled Node executable directly: cmd.exe /k nested quotes break on some Windows PCs.
     // Consume both streams asynchronously and report the final result in the GUI.
-    private void StartCliTask(string args, string title, Action done = null, string successText = null) {
+    private void StartCliTask(string args, string title, Action done = null, string successText = null, Action<string> onLine = null) {
       var psi = new ProcessStartInfo(node, Q(cli) + " " + args) {
         UseShellExecute = false, CreateNoWindow = true,
         RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = root,
@@ -346,7 +346,11 @@ namespace WanjiWindows {
       var process = new Process { StartInfo = psi };
       var output = new StringBuilder();
       var errors = new StringBuilder();
-      process.OutputDataReceived += (s, e) => { if (e.Data != null) lock (output) output.AppendLine(e.Data); };
+      process.OutputDataReceived += (s, e) => {
+        if (e.Data == null) return;
+        lock (output) output.AppendLine(e.Data);
+        if (onLine != null) try { if (!IsDisposed && IsHandleCreated) BeginInvoke(onLine, e.Data); } catch (InvalidOperationException) { }
+      };
       process.ErrorDataReceived += (s, e) => { if (e.Data != null) lock (errors) errors.AppendLine(e.Data); };
       try {
         if (!process.Start()) throw new Exception(T("无法启动 万机。", "Couldn’t start Wanji."));
@@ -426,6 +430,20 @@ namespace WanjiWindows {
       try { Process.Start(BuyUrl); }
       catch { Clipboard.SetText(BuyUrl); MessageBox.Show(T("打不开浏览器，购买地址已复制：\n", "Couldn't open a browser; the address was copied:\n") + BuyUrl); }
     }
+    private static string ProStep(string line) {
+      if (line.StartsWith("Wanji Pro until")) return T("密钥已激活，正在开通 Pro 账号", "Key activated, opening the Pro account");
+      if (line.StartsWith("This computer is already on your Pro account")) return T("这台电脑已在 Pro 账号里，正在检查服务", "Already on the Pro account, checking the service");
+      if (line.StartsWith("Setting up automatic start")) return T("设置开机自动启动（如果弹出“是否允许更改”，请点“是”）", "Setting up automatic start (if Windows asks to allow changes, click Yes)");
+      if (line.StartsWith("Installing the program files")) return T("安装程序文件", "Installing the program files");
+      if (line.StartsWith("Installing desktop control...")) return T("准备桌面控制（看屏幕、点鼠标）", "Preparing desktop control");
+      if (line.StartsWith("No Python found")) return T("下载 Python（约 15 MB）", "Downloading Python (about 15 MB)");
+      if (line.StartsWith("Creating the desktop control environment")) return T("创建桌面控制的运行环境", "Creating the desktop control environment");
+      if (line.StartsWith("Installing desktop control packages")) return T("下载桌面控制组件（约 500 MB，最慢的一步）", "Downloading desktop control packages (about 500 MB, the slowest step)");
+      if (line.Contains("retrying from")) return T("下载慢，换国内镜像重试", "Slow download, retrying from a mirror");
+      if (line.StartsWith("Downloading OCR models")) return T("下载文字识别模型并检查", "Downloading OCR models and checking them");
+      if (line.StartsWith("Desktop control is ready")) return T("桌面控制已就绪，正在启动服务", "Desktop control ready, starting the service");
+      return null;
+    }
     private void EnterLicenseKey() {
       var form = new Form { Text = T("输入 Pro 密钥", "Enter Pro key"), Width = 460, Height = 190, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, Font = Font };
       form.Controls.Add(new Label { Text = T("粘贴卖家发给你的密钥（形如 WANJI-XXXX-XXXX-XXXX-XXXX）：", "Paste the key the seller sent you (like WANJI-XXXX-XXXX-XXXX-XXXX):"), Location = new Point(18, 16), AutoSize = true });
@@ -448,12 +466,25 @@ namespace WanjiWindows {
         var args = "pro" + (licenseKey != null ? " " + Q(licenseKey) : "");
         if (!string.IsNullOrWhiteSpace(proxy.Text)) args += " --proxy " + Q(proxy.Text.Trim());
         settingUpPro = true;
+        var started = DateTime.Now;
+        string step = T("激活密钥", "Activating the key");
+        Action show = () => {
+          var t = DateTime.Now - started;
+          status.Text = T("开通 Pro 中（已用 ", "Setting up Pro (") + (int)t.TotalMinutes + T(" 分 ", " min ") + t.Seconds + T(" 秒）", " s)");
+          hint.Text = T("当前：", "Now: ") + step + T("。第一次开通要下载约 500 MB，通常 2 到 5 分钟，请不要关闭窗口。", ". The first setup downloads about 500 MB and usually takes 2 to 5 minutes; keep this window open.");
+        };
+        var clock = new System.Windows.Forms.Timer { Interval = 1000 };
+        clock.Tick += (s, e) => show();
+        clock.Start();
+        show();
         StartCliTask(args, T("开通 Pro", "Pro setup"), () => {
+          clock.Stop(); clock.Dispose();
           settingUpPro = false;
           if (modeSelect.SelectedIndex != 0) modeSelect.SelectedIndex = 0;
           RefreshStatus(); LoadPlan();
         }, T("Pro 已开通。\n\n点主界面的「复制完整链接」，把链接给你的 AI（Claude、ChatGPT 等支持 MCP 的都行），AI 就能控制这台电脑。\n链接不会变；这台电脑开机会自动连上。\n\n链接等于电脑的控制权，不要分享给别人。",
-          "Pro is set up.\n\nClick “Copy full link” and give it to your AI (Claude, ChatGPT or any MCP client); it can then control this computer.\nThe link doesn't change, and this computer reconnects by itself after a restart.\n\nThe link is control of your computer; don't share it."));
+          "Pro is set up.\n\nClick “Copy full link” and give it to your AI (Claude, ChatGPT or any MCP client); it can then control this computer.\nThe link doesn't change, and this computer reconnects by itself after a restart.\n\nThe link is control of your computer; don't share it."),
+          line => { var next = ProStep(line); if (next != null) { step = next; show(); } });
       } catch (Exception ex) { settingUpPro = false; MessageBox.Show(ex.Message, T("开通失败", "Pro setup failed")); LoadPlan(); }
     }
     private void JoinHub() {
