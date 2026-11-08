@@ -94,6 +94,7 @@ const HELP = `wanji: give this computer its own fixed MCP link
   wanji license [key]  Pro license: free is this computer + 1, Pro ($19/month) adds more
       --server <url>          license server (default: the Wanji license server)
       --remove                remove the license from this computer
+      --json                  print the plan as JSON (plan, expiresAt), never the key
   wanji license unbind <machineId>  free one machine slot on the license server
   wanji relay license create --email <email> [--days 30]
                               make a Pro license key (printed once, for the buyer)
@@ -702,7 +703,7 @@ async function licenseCommand({ flags, positional }) {
   }
   if (flags.remove) {
     removeLocalLicense();
-    console.log('License removed. This computer is back to the free plan (this computer + 1, local use).');
+    console.log('License removed. This computer is back to the free plan (this computer + 1 more, temporary tunnel).');
     await hubApi('license/refresh', { method: 'POST' }).catch(() => {});
     return undefined;
   }
@@ -714,11 +715,14 @@ async function licenseCommand({ flags, positional }) {
       status = await refreshLocalLicense().catch(() => status);
       if (status.plan === 'pro') await hubApi('license/refresh', { method: 'POST' }).catch(() => {});
     }
-    if (status.plan === 'pro') {
+    if (flags.json) {
+      // For the Windows manager: plan and expiry only, never the key.
+      console.log(JSON.stringify({ plan: status.plan === 'pro' ? 'pro' : 'free', expiresAt: status.plan === 'pro' ? status.expiresAt : null, fresh: status.fresh === true }));
+    } else if (status.plan === 'pro') {
       if (!status.fresh) void refreshLocalLicense().catch(() => {});
       console.log(`Wanji Pro until ${status.expiresAt}${status.fresh ? '' : ' (cached; checking again in the background)'}.`);
     } else {
-      console.log('Free plan: this computer + 1, local use. Pro ($19/month) adds more computers and remote access; run: wanji license <key>.');
+      console.log('Free plan: this computer + 1 more. Remote access: a temporary tunnel (the link changes when it restarts); a fixed address or your own relay is yours to set up. Pro ($19/month): a fixed address out of the box and more computers; run: wanji license <key>.');
     }
     return undefined;
   }

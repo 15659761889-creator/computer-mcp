@@ -46,6 +46,9 @@ namespace WanjiWindows {
     private readonly Button address;
     private readonly Button key;
     private readonly TextBox pairCode;
+    private readonly Button planButton;
+    private string plan;            // "free", "pro" or null while unknown
+    private string planExpires;
     private readonly System.Windows.Forms.Timer ticker;
     private bool refreshing;
 
@@ -75,10 +78,21 @@ namespace WanjiWindows {
         Text = UiLang.English ? "中文" : "English", Width = 90, Height = 30, FlatStyle = FlatStyle.Flat,
         ForeColor = Color.White, BackColor = Color.FromArgb(52, 80, 120), Location = new Point(560, 14), Cursor = Cursors.Hand
       };
-      header.Resize += (s, e) => { langButton.Left = Math.Max(10, header.ClientSize.Width - langButton.Width - 24); };
       langButton.FlatAppearance.BorderColor = Color.FromArgb(120, 150, 190);
       langButton.Click += (s, e) => { UiLang.Save(!UiLang.English); Application.Restart(); };
       header.Controls.Add(langButton);
+      // Which plan this is and what it allows, one click away from the header.
+      planButton = new Button {
+        Text = T("套餐：检查中...", "Plan: checking..."), Width = 200, Height = 30, FlatStyle = FlatStyle.Flat,
+        ForeColor = Color.White, BackColor = Color.FromArgb(52, 80, 120), Location = new Point(350, 14), Cursor = Cursors.Hand
+      };
+      planButton.FlatAppearance.BorderColor = Color.FromArgb(120, 150, 190);
+      planButton.Click += (s, e) => ShowPlan();
+      header.Controls.Add(planButton);
+      header.Resize += (s, e) => {
+        langButton.Left = Math.Max(10, header.ClientSize.Width - langButton.Width - 24);
+        planButton.Left = Math.Max(140, langButton.Left - planButton.Width - 10);
+      };
 
       var area = new Panel { Dock = DockStyle.Fill, Padding = new Padding(24, 18, 24, 12), AutoScroll = true };
       Controls.Add(area);
@@ -153,7 +167,7 @@ namespace WanjiWindows {
 
       ticker = new System.Windows.Forms.Timer { Interval = 3500 };
       ticker.Tick += (s, e) => RefreshStatus();
-      Shown += (s, e) => { RefreshStatus(); ticker.Start(); OfferJoinFile(); };
+      Shown += (s, e) => { RefreshStatus(); LoadPlan(); ticker.Start(); OfferJoinFile(); };
       FormClosed += (s, e) => ticker.Stop();
     }
 
@@ -306,7 +320,7 @@ namespace WanjiWindows {
     }
     // Launch the bundled Node executable directly: cmd.exe /k nested quotes break on some Windows PCs.
     // Consume both streams asynchronously and report the final result in the GUI.
-    private void StartCliTask(string args, string title) {
+    private void StartCliTask(string args, string title, Action done = null) {
       var psi = new ProcessStartInfo(node, Q(cli) + " " + args) {
         UseShellExecute = false, CreateNoWindow = true,
         RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = root,
@@ -339,9 +353,65 @@ namespace WanjiWindows {
               title + (exitCode == 0 ? T("成功", "\u0020succeeded") : T("失败", "\u0020failed")), MessageBoxButtons.OK,
               exitCode == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Error);
             RefreshStatus();
+            if (done != null) done();
           }));
         } catch (InvalidOperationException) { /* The user closed this window. */ }
       });
+    }
+    // Reads the plan off the UI thread: with a saved key the CLI may ask the license server.
+    private void LoadPlan() {
+      System.Threading.ThreadPool.QueueUserWorkItem(_ => {
+        string found = null, expires = null;
+        try {
+          var json = Run("license --json", 15000);
+          var m = Regex.Match(json, "\"plan\"\\s*:\\s*\"(free|pro)\"");
+          if (m.Success) found = m.Groups[1].Value;
+          var e = Regex.Match(json, "\"expiresAt\"\\s*:\\s*\"([^\"]+)\"");
+          if (e.Success) { DateTime d; expires = DateTime.TryParse(e.Groups[1].Value, out d) ? d.ToLocalTime().ToString("yyyy-MM-dd") : e.Groups[1].Value; }
+        } catch {}
+        try {
+          if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)(() => {
+            plan = found; planExpires = expires;
+            planButton.Text = found == "pro" ? T("Pro · 到期 ", "Pro · until ") + expires
+              : found == "free" ? T("免费版 · 查看权限", "Free · see what's included")
+              : T("套餐：查不到，点此重试", "Plan: unknown, click to retry");
+            planButton.BackColor = found == "pro" ? Color.FromArgb(14, 117, 105) : Color.FromArgb(52, 80, 120);
+          }));
+        } catch (InvalidOperationException) { /* The user closed this window. */ }
+      });
+    }
+    private void ShowPlan() {
+      if (plan == null) { planButton.Text = T("套餐：检查中...", "Plan: checking..."); LoadPlan(); return; }
+      string text = plan == "pro"
+        ? T("当前套餐：Wanji Pro（到期 " + planExpires + "）\n\n你可以：\n• 控制这台电脑，并加入更多电脑（不限台数）\n• 用固定远程地址让 AI 直接控制电脑，不用自己搭隧道\n• 用「启动临时连接」或自己的域名，也都可以\n\n到期不续费会回到免费版，这台电脑本身照常能用。",
+            "Current plan: Wanji Pro (until " + planExpires + ")\n\nYou can:\n• Control this computer and join more (no limit)\n• Let your AI control your computers directly through a fixed remote address, with no tunnel to set up\n• Still use the temporary connection or your own domain\n\nIf it isn't renewed, Wanji goes back to Free; this computer keeps working.")
+        : T("当前套餐：免费版\n\n你可以：\n• 控制这台电脑，再加入 1 台（一共 2 台）\n• 点「启动临时连接」生成临时隧道，让 AI 远程连接\n  （链接每次重启都会变，要重新复制给 AI）\n• 固定域名、自建中继：需要你自己的域名或服务器，自行配置\n\n需要 Pro（$19/月）才能：\n• 加入第 3 台及更多电脑\n• 开箱即用的固定远程地址，AI 直接控制，不用自己搭隧道",
+            "Current plan: Free\n\nYou can:\n• Control this computer and join 1 more (2 in total)\n• Click “Start temporary connection” to get a temporary tunnel for remote AI access\n  (the link changes on every restart; give the AI the new one)\n• Fixed domain or your own relay: needs your own domain or server, set up by you\n\nPro ($19/month) adds:\n• A 3rd computer and more\n• A fixed remote address out of the box: your AI controls your computers directly, no tunnel to set up");
+      var form = new Form { Text = T("套餐与权限", "Plan and what's included"), Width = 520, Height = 420, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, Font = Font };
+      form.Controls.Add(new Label { Text = text, Location = new Point(20, 18), Size = new Size(470, 290) });
+      var keyButton = new Button { Text = plan == "pro" ? T("换一个 Pro 密钥", "Use another Pro key") : T("输入 Pro 密钥", "Enter Pro key"), Location = new Point(20, 320), Size = new Size(150, 34) };
+      keyButton.Click += (s, e) => { form.Close(); EnterLicenseKey(); };
+      var buyButton = new Button { Text = T("购买 Pro", "Buy Pro"), Location = new Point(180, 320), Size = new Size(120, 34), Visible = plan != "pro" };
+      buyButton.Click += (s, e) => { try { Process.Start("https://wanji.3618.app/#pricing"); } catch {} };
+      var closeButton = new Button { Text = T("关闭", "Close"), Location = new Point(390, 320), Size = new Size(100, 34), DialogResult = DialogResult.OK };
+      form.Controls.Add(keyButton); form.Controls.Add(buyButton); form.Controls.Add(closeButton);
+      form.AcceptButton = closeButton;
+      form.ShowDialog(this);
+    }
+    private void EnterLicenseKey() {
+      var form = new Form { Text = T("输入 Pro 密钥", "Enter Pro key"), Width = 460, Height = 190, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, Font = Font };
+      form.Controls.Add(new Label { Text = T("粘贴购买后邮件里的密钥：", "Paste the key from your purchase email:"), Location = new Point(18, 16), AutoSize = true });
+      var box = new TextBox { Location = new Point(20, 46), Width = 405 };
+      var ok = new Button { Text = T("激活", "Activate"), Location = new Point(225, 92), Size = new Size(95, 32), DialogResult = DialogResult.OK };
+      var cancel = new Button { Text = T("取消", "Cancel"), Location = new Point(330, 92), Size = new Size(95, 32), DialogResult = DialogResult.Cancel };
+      form.Controls.Add(box); form.Controls.Add(ok); form.Controls.Add(cancel);
+      form.AcceptButton = ok; form.CancelButton = cancel;
+      if (form.ShowDialog(this) != DialogResult.OK) return;
+      var licenseKey = Regex.Replace(box.Text, @"\s", "");
+      if (!Regex.IsMatch(licenseKey, @"^[A-Za-z0-9-]{16,40}$")) { MessageBox.Show(T("密钥格式不对，请从邮件里重新复制。", "That key doesn't look right; copy it again from the email.")); return; }
+      planButton.Text = T("套餐：激活中...", "Plan: activating...");
+      try { StartCliTask("license " + Q(licenseKey), T("激活 Pro", "Activate Pro"), LoadPlan); }
+      catch (Exception ex) { MessageBox.Show(ex.Message, T("激活失败", "Activation failed")); LoadPlan(); }
     }
     private void JoinHub() {
       var code = pairCode.Text.Trim();
