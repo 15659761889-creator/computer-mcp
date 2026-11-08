@@ -24,6 +24,7 @@ import {
   appLink, createAccount, createSignup, listAccounts, loadRelayConfig, readAccount, relayDir, relayOrigin, removeAccount,
   runRelay, saveRelayConfig, signupLink, validHost,
 } from './relay.mjs';
+import { panelUrl } from './relay-panel.mjs';
 import {
   DEFAULT_LICENSE_SERVER, DEFAULT_RELAY, clearPendingDelivery, createLicense, extendLicense, listLicenses, listPendingDeliveries,
   licensesDir, localLicenseStatus, newMachineId, readLocalLicense, refreshLocalLicense, removeLocalLicense, revokeLicense,
@@ -98,6 +99,7 @@ const HELP = `wanji: give this computer its own fixed MCP link
   wanji license unbind <machineId>  free one machine slot on the license server
   wanji pro [key]      Pro out of the box: activate, join the official relay, print the fixed link
       --link | --address | --key   print the saved fixed link (or its parts)
+  wanji relay panel [--open]  address of the operator's control panel (127.0.0.1 only)
   wanji relay license create --email <email> [--days 30]
                               make a Pro license key (printed once, for the buyer)
   wanji relay license list    list issued keys by buyer, status and expiry
@@ -985,6 +987,16 @@ async function relayCommand({ flags, positional }) {
       if (!licenseKey) throw new Error('usage: wanji relay invite <licenseKey>');
       const { code, days } = createSignup(dir, licenseKey);
       showLink(signupLink(config, code), `Licensed signup invite, valid for ${days} days and one use. The license is checked when they scan it.`);
+      return undefined;
+    }
+    case 'panel': {
+      // The relay serves the panel itself (127.0.0.1 only); this prints its address.
+      const url = panelUrl(dir, need());
+      console.log(`Control panel (this computer only, while the relay runs):
+${url}`);
+      if (flags.open && process.platform === 'win32') {
+        spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], { detached: true, stdio: 'ignore' }).unref();
+      }
       return undefined;
     }
     case 'users':

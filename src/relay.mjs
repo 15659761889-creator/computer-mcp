@@ -12,6 +12,7 @@ import { sendJson, serveMcp } from './server.mjs';
 import { handleLicenseHttp, keyHash, licenseActive, licenseStatusRemote, licensesDir, validKeyFormat, verifyLicense, verifyRemote } from './license.mjs';
 import { consumeRateLimit } from './rate-limit.mjs';
 import { securePrivateFile, writePrivateFile } from './private-file.mjs';
+import { startPanel } from './relay-panel.mjs';
 
 // A relay is a hub on a rented server: it has no machine of its own, every computer connects
 // out to it, and it holds one account per person. Self-hosted, it holds exactly one.
@@ -441,6 +442,16 @@ const listen = (server, port, host) => new Promise((resolve, reject) => {
   });
 });
 
+// The operator's panel (127.0.0.1 only). A busy port must not keep the relay down.
+async function openPanel(relay, dir, config, log) {
+  if (config.panel === false) return;
+  try {
+    await startPanel(relay, { dir, config, log });
+  } catch (err) {
+    log(`control panel not started: ${err.message}`);
+  }
+}
+
 async function renew(relay, config, dir, log) {
   const files = certPaths(dir);
   if (fs.existsSync(files.account)) securePrivateFile(files.account);
@@ -470,6 +481,7 @@ export async function runRelay({ dir = relayDir(), log = (line) => console.log(l
     const server = http.createServer(handler);
     await listen(server, config.port || 8770, config.bind || '127.0.0.1');
     log(`relay listening on ${config.bind || '127.0.0.1'}:${config.port || 8770} (plain HTTP), public at ${relay.origin()}`);
+    await openPanel(relay, dir, config, log);
     return relay;
   }
 
@@ -483,6 +495,7 @@ export async function runRelay({ dir = relayDir(), log = (line) => console.log(l
     // Another tool renews these files, so pick up whatever it wrote.
     setInterval(() => { try { server.setSecureContext(load()); } catch { /* keep the old one */ } }, RENEW_CHECK_MS).unref();
     log(`relay listening on port ${config.httpsPort || 443}, public at ${relay.origin()}`);
+    await openPanel(relay, dir, config, log);
     return relay;
   }
 
@@ -512,6 +525,7 @@ export async function runRelay({ dir = relayDir(), log = (line) => console.log(l
       log(`certificate renewal failed, will retry: ${err.message}`);
     }
   }, Math.min(RENEW_CHECK_MS, 60 * 60 * 1000)).unref();
+  await openPanel(relay, dir, config, log);
   return relay;
 }
 
