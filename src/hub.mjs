@@ -671,7 +671,7 @@ export class Hub {
       return { status: 403, body: { error: 'this pairing code is wrong, expired or already used' } };
     }
     if (!this.canAddComputer()) {
-      return { status: 403, body: { error: 'adding another computer needs Wanji Pro (buy: https://wanji.3618.app/#pricing); then run: wanji license <key>' } };
+      return { status: 403, body: { error: 'adding another computer needs Wanji Pro (buy: https://wanji.3618.app/assets/buy.html); then run: wanji pro <key>' } };
     }
     const invite = this.state.invites[index];
     if (invite.reusable) {
@@ -1296,7 +1296,7 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
         }
         if (action === 'computers' && req.method === 'POST') {
           if (!this.canAddComputer()) {
-            reply(res, 403, { error: 'adding another computer needs Wanji Pro (buy: https://wanji.3618.app/#pricing); then run: wanji license <key>' });
+            reply(res, 403, { error: 'adding another computer needs Wanji Pro (buy: https://wanji.3618.app/assets/buy.html); then run: wanji pro <key>' });
             return true;
           }
           const created = this.createComputer((await readJson(req))?.name);

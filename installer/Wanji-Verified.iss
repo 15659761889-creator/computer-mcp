@@ -1,5 +1,5 @@
 #define AppName "万机"
-#define AppVersion "0.6.9"
+#define AppVersion "0.6.10"
 
 [Setup]
 AppId={{C99AD54F-186F-4F5A-8F49-CC1D9C7FA7B0}

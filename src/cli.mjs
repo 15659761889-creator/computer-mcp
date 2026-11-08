@@ -91,7 +91,7 @@ const HELP = `wanji: give this computer its own fixed MCP link
   wanji relay invite <licenseKey>  make a one-use signup invite for a licensed customer
   wanji relay users    list the people on this relay
   wanji relay remove-user <id>
-  wanji license [key]  Pro license: free is this computer + 1, Pro ($19/month) adds more
+  wanji license [key]  Pro license: free is this computer + 1, Pro (¥99/month) adds more
       --server <url>          license server (default: the Wanji license server)
       --remove                remove the license from this computer
       --json                  print the plan as JSON (plan, expiresAt), never the key
@@ -724,7 +724,7 @@ async function licenseCommand({ flags, positional }) {
       if (!status.fresh) void refreshLocalLicense().catch(() => {});
       console.log(`Wanji Pro until ${status.expiresAt}${status.fresh ? '' : ' (cached; checking again in the background)'}.`);
     } else {
-      console.log('Free plan: this computer + 1 more. Remote access: a temporary tunnel (the link changes when it restarts); a fixed address or your own relay is yours to set up. Pro ($19/month): a fixed address out of the box and more computers. Buy Pro: https://wanji.3618.app/#pricing, then run: wanji license <key>.');
+      console.log('Free plan: this computer + 1 more. Remote access: a temporary tunnel (the link changes when it restarts); a fixed address or your own relay is yours to set up. Pro (¥99/month): out of the box through the official relay, a fixed link and more computers. Buy Pro: https://wanji.3618.app/assets/buy.html, then run: wanji pro <key>.');
     }
     return undefined;
   }

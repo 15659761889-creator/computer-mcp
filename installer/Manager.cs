@@ -49,7 +49,7 @@ namespace WanjiWindows {
     private readonly Button planButton;
     private readonly LinkLabel buyLink;
     // Where Free users go to buy Pro; the site decides what that page offers.
-    private const string BuyUrl = "https://wanji.3618.app/#pricing";
+    private const string BuyUrl = "https://wanji.3618.app/assets/buy.html";
     private string plan;            // "free", "pro" or null while unknown
     private string planExpires;
     private bool proConnected;
@@ -404,8 +404,8 @@ namespace WanjiWindows {
       string text = plan == "pro"
         ? T("当前套餐：Wanji Pro（到期 " + planExpires + "）" + (proConnected ? "" : "\n还没开通固定链接：关闭本窗口后点主界面的「开通 Pro 固定链接」。") + "\n\n你可以：\n• 控制这台电脑，并加入更多电脑（不限台数）\n• 用固定远程地址让 AI 直接控制电脑，不用自己搭隧道\n• 用「启动临时连接」或自己的域名，也都可以\n\n到期不续费会回到免费版，这台电脑本身照常能用。",
             "Current plan: Wanji Pro (until " + planExpires + ")\n\nYou can:\n• Control this computer and join more (no limit)\n• Let your AI control your computers directly through a fixed remote address, with no tunnel to set up\n• Still use the temporary connection or your own domain\n\nIf it isn't renewed, Wanji goes back to Free; this computer keeps working.")
-        : T("当前套餐：免费版\n\n你可以：\n• 控制这台电脑，再加入 1 台（一共 2 台）\n• 点「启动临时连接」生成临时隧道，让 AI 远程连接\n  （链接每次重启都会变，要重新复制给 AI）\n• 固定域名、自建中继：需要你自己的域名或服务器，自行配置\n\n需要 Pro（$19/月）才能：\n• 加入第 3 台及更多电脑\n• 开箱即用的固定远程地址，AI 直接控制，不用自己搭隧道",
-            "Current plan: Free\n\nYou can:\n• Control this computer and join 1 more (2 in total)\n• Click “Start temporary connection” to get a temporary tunnel for remote AI access\n  (the link changes on every restart; give the AI the new one)\n• Fixed domain or your own relay: needs your own domain or server, set up by you\n\nPro ($19/month) adds:\n• A 3rd computer and more\n• A fixed remote address out of the box: your AI controls your computers directly, no tunnel to set up");
+        : T("当前套餐：免费版\n\n你可以：\n• 控制这台电脑，再加入 1 台（一共 2 台）\n• 点「启动临时连接」生成临时隧道，让 AI 远程连接\n  （链接每次重启都会变，要重新复制给 AI）\n• 固定域名、自建中继：需要你自己的域名或服务器，自行配置\n\n需要 Pro（¥99/月）才能：\n• 加入第 3 台及更多电脑\n• 开箱即用的固定远程地址，AI 直接控制，不用自己搭隧道",
+            "Current plan: Free\n\nYou can:\n• Control this computer and join 1 more (2 in total)\n• Click “Start temporary connection” to get a temporary tunnel for remote AI access\n  (the link changes on every restart; give the AI the new one)\n• Fixed domain or your own relay: needs your own domain or server, set up by you\n\nPro (¥99/month) adds:\n• A 3rd computer and more\n• A fixed remote address out of the box: your AI controls your computers directly, no tunnel to set up");
       var form = new Form { Text = T("套餐与权限", "Plan and what's included"), Width = 520, Height = 420, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, Font = Font };
       form.Controls.Add(new Label { Text = text, Location = new Point(20, 18), Size = new Size(470, 290) });
       var keyButton = new Button { Text = plan == "pro" ? T("换一个 Pro 密钥", "Use another Pro key") : T("输入 Pro 密钥", "Enter Pro key"), Location = new Point(20, 320), Size = new Size(150, 34) };
