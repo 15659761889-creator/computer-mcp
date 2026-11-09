@@ -246,6 +246,9 @@ export class Hub {
     this.state = state || loadHubState(file);
     this.live = new Map();
     this.nextCall = 1;
+    // Call ids carry a per-process prefix: a node remembers the ids it has run and skips repeats,
+    // so ids counted from 1 again after a restart were silently dropped and hung forever.
+    this.callPrefix = randomBytes(4).toString('hex');
     this.nextActivity = 1;
     this.activeCalls = new Map();
     this.recentCalls = [];
@@ -413,7 +416,7 @@ export class Hub {
     }
     const live = this.liveFor(computer.id);
     return new Promise((resolve) => {
-      const call = { id: String(this.nextCall++), tool, args, resolve, onStage };
+      const call = { id: `${this.callPrefix}-${this.nextCall++}`, tool, args, resolve, onStage };
       live.queue.push(call);
       this.flush(live);
     });
