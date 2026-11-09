@@ -313,12 +313,13 @@ namespace WanjiWindows {
         StartCliTask(args, T("配置固定连接", "Set up fixed connection"));
       } catch (Exception ex) { MessageBox.Show(ex.Message, T("配置失败", "Setup failed")); }
     }
-    private void ShowAppQr() {
+    // The Android app scans its own code; an iPhone's camera opens the web app (https link).
+    private void ShowAppQr(bool iphone = false) {
       try {
         Cursor = Cursors.WaitCursor;
-        var lines = Run("app --rows", 60000).Split('\n');
+        var lines = Run(iphone ? "app --rows --iphone" : "app --rows", 60000).Split('\n');
         if (lines.Length < 22) throw new Exception(T("未能生成二维码。", "Couldn’t generate the QR code."));
-        var form = new Form { Text = T("连接手机 App", "Connect phone app"), ClientSize = new Size(440, 500), StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, BackColor = Color.White };
+        var form = new Form { Text = iphone ? T("连接 iPhone", "Connect iPhone") : T("连接手机 App", "Connect phone app"), ClientSize = new Size(440, 500), StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, BackColor = Color.White };
         int size = lines[1].Trim().Length, scale = 360 / (size + 2);
         var image = new Bitmap((size + 2) * scale, (size + 2) * scale);
         using (var g = Graphics.FromImage(image)) {
@@ -326,11 +327,16 @@ namespace WanjiWindows {
           for (int y = 0; y < size; y++) { var row = lines[y + 1].Trim(); for (int x = 0; x < size; x++) if (row[x] == '1') g.FillRectangle(Brushes.Black, (x + 1) * scale, (y + 1) * scale, scale, scale); }
         }
         form.Controls.Add(new PictureBox { Image = image, SizeMode = PictureBoxSizeMode.CenterImage, Location = new Point(20, 15), Size = new Size(400, 380) });
-        form.Controls.Add(new Label { Text = T("打开手机上的 万机，点“扫码连接”。\n这个二维码等于所有电脑的钥匙，不要给别人看。", "Open Wanji on your phone and tap “Scan to connect”.\nThis QR code is the key to all your computers; don’t show it to anyone."), Location = new Point(20, 405), Size = new Size(400, 50), TextAlign = ContentAlignment.MiddleCenter });
+        form.Controls.Add(new Label { Text = iphone
+          ? T("用 iPhone 相机扫码，会在 Safari 里打开万机。\n这个二维码等于所有电脑的钥匙，不要给别人看。", "Scan with the iPhone camera; Wanji opens in Safari.\nThis QR code is the key to all your computers; don’t show it to anyone.")
+          : T("打开手机上的 万机，点“扫码连接”。\n这个二维码等于所有电脑的钥匙，不要给别人看。", "Open Wanji on your phone and tap “Scan to connect”.\nThis QR code is the key to all your computers; don’t show it to anyone."), Location = new Point(20, 405), Size = new Size(400, 50), TextAlign = ContentAlignment.MiddleCenter });
         var text = lines[0].Trim();
-        var copy = new Button { Text = T("扫不了？复制连接文本", "Can’t scan? Copy the connection text"), Location = new Point(120, 458), Size = new Size(200, 32) };
+        var copy = new Button { Text = T("扫不了？复制连接文本", "Can’t scan? Copy the connection text"), Location = new Point(225, 458), Size = new Size(195, 32) };
         copy.Click += (s, e) => { Clipboard.SetText(text); copy.Text = T("已复制", "Copied"); };
         form.Controls.Add(copy);
+        var other = new Button { Text = iphone ? T("换成安卓 App 的二维码", "Show the Android QR code") : T("用的是 iPhone？", "Using an iPhone?"), Location = new Point(20, 458), Size = new Size(195, 32) };
+        other.Click += (s, e) => { form.Close(); BeginInvoke(new Action(() => ShowAppQr(!iphone))); };
+        form.Controls.Add(other);
         form.ShowDialog(this);
       } catch (Exception ex) { MessageBox.Show(ex.Message, T("无法连接手机", "Couldn’t connect the phone"), MessageBoxButtons.OK, MessageBoxIcon.Warning); }
       finally { Cursor = Cursors.Default; }

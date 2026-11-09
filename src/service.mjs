@@ -17,6 +17,7 @@ import { Transfers, handleXferLan, isXferTool, runXfer, transfersFile, xferPsk }
 import { refreshHubLicense } from './license.mjs';
 import { WHOAMI } from './private-file.mjs';
 import { spawnTunnel, tunnelConfigPath } from './tunnel.mjs';
+import { loadVapid, vapidPath } from './web-push.mjs';
 import {
   installLinuxAutostart, linuxAutostartState, removeLinuxAutostart, startLinuxService, stopLinuxService,
 } from './autostart-linux.mjs';
@@ -165,6 +166,7 @@ export async function runService() {
   }) : null;
   if (hub) {
     hub.transfers = new Transfers({ hub, file: transfersFile(hubPath(homeDir())) });
+    try { hub.vapid = loadVapid(vapidPath(homeDir())); } catch { /* push stays off */ }
     const lan = await openLan(config, {
       pskFor: (identity) => (identity.startsWith('n:') ? hub.lanPsk(identity) : xferPsk(identity)),
       handle: (req, res, identity) => (identity.startsWith('t:') ? handleXferLan(req, res, identity) : hub.handleLan(req, res, identity)),

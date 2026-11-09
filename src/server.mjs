@@ -13,6 +13,7 @@ import { TaskStore, TASK_TOOLS, TASK_NAMES } from './tasks.mjs';
 import { availableShells, defaultShell, findBash } from './shell.mjs';
 import { ALL_TOOLS, callTool, hasTool, summarizeArgs, TOOLS } from './tools.mjs';
 import { TRANSFER_TOOL } from './transfer.mjs';
+import { isWebAppPath, serveWebApp } from './web-app.mjs';
 import { handleLicenseHttp, licensesDir } from './license.mjs';
 
 const VERSION = '0.6.15';
@@ -526,6 +527,10 @@ export function createMcpServer({ name, getToken, auditFile, allowSse = true, on
         return;
       }
       if (hub && await hub.handle(req, res, pathname)) return;
+      if (hub && isWebAppPath(pathname)) {
+        serveWebApp(req, res, pathname);
+        return;
+      }
       if (pathname === '/healthz') {
         sendJson(res, 200, { ok: true, service: 'wanji' });
         return;

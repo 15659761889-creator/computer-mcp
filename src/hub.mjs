@@ -12,6 +12,7 @@ import { entryText } from './memory-context.mjs';
 import { licenseExpiryTime, refreshHubLicense } from './license.mjs';
 import { consumeRateLimit } from './rate-limit.mjs';
 import { securePrivateFile, writePrivateFile } from './private-file.mjs';
+import { sendPush, validSubscription } from './web-push.mjs';
 
 const POLL_HOLD_MS = 25000;
 // A node polls again at once, so this much silence means it is gone.
@@ -36,6 +37,7 @@ export const BROWSER_METHODS = ['handoff_start', 'handoff_list', 'handoff_select
 const SECRET_WAIT_MS = 120 * 1000;
 const SECRET_REQUEST_MS = 10 * 60 * 1000;
 const EVENT_HOLD_MS = 25000;
+const MAX_PUSH_SUBSCRIPTIONS = 10;
 
 export const SECRET_TOOL = {
   name: 'type_secret',
@@ -213,6 +215,8 @@ export class Hub {
     // Set by the service when shared memory is on (memory.mjs).
     this.memory = null;
     this.toolCatalog = null;
+    // Set by the service or relay: the VAPID keys for Web Push to the iPhone app.
+    this.vapid = null;
     this.sweeper = setInterval(() => this.sweep(), 5000);
     this.sweeper.unref();
   }
@@ -888,6 +892,7 @@ export class Hub {
       this.takeoverHistory.set(request.id, request);
       if (this.takeoverHistory.size > 1000) this.takeoverHistory.delete(this.takeoverHistory.keys().next().value);
       this.bump();
+      this.notify({ kind: 'takeover', tag: `takeover-${id}`, computer: id, title: 'AI 需要你帮忙', body: `${computerName} 的浏览器需要你接手（人机验证或登录）` });
       return {
         text: `Asked the owner to take over the browser "${started.title}" on ${computerName} in the 万机 phone app.
 id: ${request.id}
@@ -928,6 +933,7 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
     };
     this.secretRequests.set(request.id, request);
     this.bump();
+    this.notify({ kind: 'secret', tag: `secret-${request.id}`, title: `AI 想输入「${hint}」的${part === 'username' ? '用户名' : '密码'}`, body: `${computerName} · 打开万机批准或拒绝` });
     const grant = await new Promise((resolve) => {
       request.waiters.push(resolve);
       setTimeout(() => {
@@ -1006,17 +1012,19 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
   // before typing. A password sent here by mistake is dropped, never stored, and never
   // returned. The flag itself is set only in the phone app, never by any MCP tool.
 
-  setVaultMeta(entries) {
+  // Each phone keeps its own list (Android sends no device), so two phones do not erase each other.
+  setVaultMeta(entries, device = 'phone') {
     if (!Array.isArray(entries)) throw Object.assign(new Error('entries must be an array'), { status: 400 });
     if (entries.length > 100) throw Object.assign(new Error('too many accounts'), { status: 400 });
-    const next = new Map();
+    const from = String(device || 'phone').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40) || 'phone';
+    const next = new Map([...this.vaultAccounts].filter(([, entry]) => entry.device !== from));
     for (const entry of entries) {
       if (!entry || typeof entry !== 'object') throw Object.assign(new Error('each account needs id, label and username'), { status: 400 });
       const id = String(entry.id ?? '').trim().slice(0, 80);
       const label = String(entry.label ?? '').trim().slice(0, 60);
       const username = String(entry.username ?? '').trim().slice(0, 120);
       if (!id || !label) throw Object.assign(new Error('each account needs id, label and username'), { status: 400 });
-      next.set(id, { id, label, username, autoAllow: entry.autoAllow === true });
+      next.set(`${from}:${id}`, { id, label, username, autoAllow: entry.autoAllow === true, device: from });
     }
     this.vaultAccounts = next;
     this.bump();
@@ -1036,6 +1044,45 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
   }
 
   // Answers at once when something changed since the app's last look, otherwise when something does.
+  // ---- Web Push to the iPhone app ----
+
+  addPushSubscription(body) {
+    if (!this.vapid) return { status: 404, body: { error: 'push is not set up on this server' } };
+    const sub = body?.subscription;
+    if (!validSubscription(sub)) return { status: 400, body: { error: 'invalid push subscription' } };
+    const entry = {
+      endpoint: sub.endpoint,
+      keys: { p256dh: String(sub.keys.p256dh), auth: String(sub.keys.auth) },
+      device: String(body.device || '').slice(0, 60),
+      created: Date.now(),
+    };
+    const list = (this.state.webPush || []).filter((s) => s.endpoint !== entry.endpoint);
+    list.push(entry);
+    this.state.webPush = list.slice(-MAX_PUSH_SUBSCRIPTIONS);
+    this.save();
+    return { status: 200, body: { ok: true, devices: this.state.webPush.length } };
+  }
+
+  removePushSubscription(endpoint) {
+    const before = this.state.webPush?.length || 0;
+    this.state.webPush = (this.state.webPush || []).filter((s) => s.endpoint !== endpoint);
+    if (this.state.webPush.length !== before) this.save();
+    return before - this.state.webPush.length;
+  }
+
+  // Never throws and never blocks the caller's reply; resolves to how many devices took it.
+  async notify(message) {
+    const subs = this.state.webPush || [];
+    if (!this.vapid || !subs.length) return 0;
+    const results = await Promise.all(subs.map((sub) => sendPush(sub, message, this.vapid).catch(() => 'failed')));
+    const gone = new Set(subs.filter((_, i) => results[i] === 'gone').map((s) => s.endpoint));
+    if (gone.size) {
+      this.state.webPush = (this.state.webPush || []).filter((s) => !gone.has(s.endpoint));
+      try { this.save(); } catch { /* the next change saves it */ }
+    }
+    return results.filter((r) => r === 'ok').length;
+  }
+
   waitForEvent(since, res) {
     if (String(since) !== String(this.version)) {
       reply(res, 200, { version: this.version });
@@ -1275,8 +1322,28 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
         }
         // Vault metadata from the phone app: labels and usernames only.
         if (action === 'vault-meta' && req.method === 'POST') {
-          const saved = this.setVaultMeta((await readJson(req))?.entries);
+          const body = await readJson(req);
+          const saved = this.setVaultMeta(body?.entries, body?.device);
           reply(res, 200, { accounts: saved });
+          return true;
+        }
+        if (action === 'push/key' && req.method === 'GET') {
+          reply(res, this.vapid ? 200 : 404, this.vapid ? { publicKey: this.vapid.publicKey } : { error: 'push is not set up on this server' });
+          return true;
+        }
+        if (action === 'push/subscribe' && req.method === 'POST') {
+          const result = this.addPushSubscription(await readJson(req));
+          reply(res, result.status, result.body);
+          return true;
+        }
+        if (action === 'push/unsubscribe' && req.method === 'POST') {
+          const body = await readJson(req);
+          reply(res, 200, { removed: this.removePushSubscription(body?.endpoint) });
+          return true;
+        }
+        if (action === 'push/test' && req.method === 'POST') {
+          const sent = await this.notify({ kind: 'test', tag: 'test', title: '万机', body: '通知已打开，AI 需要你时会提醒你' });
+          reply(res, 200, { sent });
           return true;
         }
         if (action === 'invites' && req.method === 'POST') {

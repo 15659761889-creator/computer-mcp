@@ -58,6 +58,7 @@ const HELP = `wanji: give this computer its own fixed MCP link
       --show                  print the complete MCP URL (for scripts)
   wanji app            connect the phone app: shows a QR code, and makes this the main computer
       --rows                  print the connection text and QR rows (for the Windows manager)
+      --iphone                a QR code the iPhone camera opens (the web app at https://<host>/app/)
   wanji invite         make a one-time pairing code for adding another computer
       --file [path]           instead, pre-register a computer and write a join file (default: Desktop\join.json)
       --exe [path]            instead, build a one-click joiner EXE the new computer just runs (default: Desktop\Wanji-Join.exe);
@@ -344,10 +345,36 @@ function printQr(rows) {
   }
 }
 
+// The Android app scans wanji://host/key; an iPhone's camera opens the https link, which
+// is the web app on the same server (the key rides in the #fragment, never sent to it).
+export function phoneLink(host, adminKey, iphone = false) {
+  return iphone ? `https://${host}/app/#pair=${adminKey}` : `wanji://${host}/${adminKey}`;
+}
+
+function showPhoneLink(text, flags) {
+  const rows = qrRows(text);
+  if (flags.rows) {
+    console.log(text);
+    console.log(rows.join('\n'));
+    return;
+  }
+  console.log(flags.iphone
+    ? '\nScan this with the iPhone camera; it opens 万机 in Safari. It is the key to all your computers, so show it to no one.\n'
+    : '\nOpen the 万机 app on your phone and scan this. It is the key to all your computers, so show it to no one.\n');
+  printQr(rows);
+  console.log(`\nOr copy this into the app:\n${text}\n`);
+}
+
 // Turning the hub on is safe for clients already connected: until a second computer joins, they keep working unchanged.
 async function appCommand(flags) {
   const config = requireConfig();
-  if (config.joined) throw new Error('this computer is already joined to a main computer; connect the phone app on that one');
+  if (config.joined) {
+    // A Pro computer: the phone pairs with the relay account this computer is on.
+    const pro = readPro();
+    if (!pro?.adminKey || pro.relay !== config.joined.origin) throw new Error('this computer is already joined to a main computer; connect the phone app on that one');
+    showPhoneLink(phoneLink(new URL(pro.relay).host, pro.adminKey, flags.iphone === true), flags);
+    return;
+  }
   if (!config.hostname) throw new Error('the main computer needs a fixed address first; run: wanji setup <name> --domain <your-domain>');
   if (!config.hubEnabled) {
     saveConfig({ ...config, hubEnabled: true });
@@ -358,16 +385,7 @@ async function appCommand(flags) {
     await waitFor(() => localHealthy(config.port), 30);
   }
   const { adminKey } = loadHubState(hubPath(homeDir()));
-  const text = `wanji://${config.hostname}/${adminKey}`;
-  const rows = qrRows(text);
-  if (flags.rows) {
-    console.log(text);
-    console.log(rows.join('\n'));
-    return;
-  }
-  console.log('\nOpen the 万机 app on your phone and scan this. It is the key to all your computers, so show it to no one.\n');
-  printQr(rows);
-  console.log(`\nOr copy this into the app:\n${text}\n`);
+  showPhoneLink(phoneLink(config.hostname, adminKey, flags.iphone === true), flags);
 }
 
 // The Desktop the person actually sees: OneDrive and folder redirection often move it

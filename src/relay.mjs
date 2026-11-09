@@ -13,6 +13,8 @@ import { handleLicenseHttp, keyHash, licenseActive, licenseStatusRemote, license
 import { consumeRateLimit } from './rate-limit.mjs';
 import { securePrivateFile, writePrivateFile } from './private-file.mjs';
 import { startPanel } from './relay-panel.mjs';
+import { isWebAppPath, serveWebApp } from './web-app.mjs';
+import { loadVapid, vapidPath } from './web-push.mjs';
 
 // A relay is a hub on a rented server: it has no machine of its own, every computer connects
 // out to it, and it holds one account per person. Self-hosted, it holds exactly one.
@@ -170,11 +172,25 @@ export class Relay {
       try {
         const hub = new Hub({ file: accountFile(this.dir, id), origin: () => this.origin(), getToken: () => hub.state.mcpToken });
         hub.transfers = new Transfers({ hub, file: transfersFile(accountFile(this.dir, id)) });
+        hub.vapid = this.vapid();
         this.hubs.set(id, hub);
       } catch (err) {
         this.log(`account ${id} could not be loaded: ${err.message}`);
       }
     }
+  }
+
+  // One VAPID key pair for the whole relay; push is optional, so a failure only logs.
+  vapid() {
+    if (this.vapidKeys === undefined) {
+      try {
+        this.vapidKeys = loadVapid(vapidPath(this.dir));
+      } catch (err) {
+        this.vapidKeys = null;
+        this.log(`web push keys could not be loaded: ${err.message}`);
+      }
+    }
+    return this.vapidKeys;
   }
 
   hubBy(test) {
@@ -274,6 +290,10 @@ export class Relay {
       }
       if (pathname === '/healthz') {
         sendJson(res, 200, { ok: true, service: 'wanji-relay' });
+        return;
+      }
+      if (isWebAppPath(pathname)) {
+        serveWebApp(req, res, pathname);
         return;
       }
       if (pathname === '/relay/signup' && req.method === 'POST') {
