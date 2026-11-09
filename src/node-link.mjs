@@ -63,6 +63,29 @@ export function hubClient(origin, proxy) {
   });
 }
 
+// Validate a pre-registered join file without changing either computer. Supplying the id
+// as well as the key prevents a valid key for a different computer being paired by mistake.
+export async function verifyJoinedComputer({ origin, id, key, proxy }) {
+  if (typeof id !== 'string' || !id || typeof key !== 'string' || !key) {
+    throw new Error('the join file is missing the computer ID or key');
+  }
+  const send = hubClient(origin, proxy);
+  let answer = null;
+  // A brief network/TLS interruption must not invalidate a perfectly good join file.
+  for (let attempt = 1; attempt <= 4 && !(answer && answer.status < 500); attempt += 1) {
+    if (attempt > 1) await sleep(attempt * 2000);
+    answer = await send('/hub/node/ping', { key, body: { id }, timeoutMs: 20000 }).catch(() => null);
+  }
+  if (answer?.status === 200) return;
+  if (answer?.status === 401) {
+    throw new Error('this join file is no longer valid: the main computer does not recognize this computer ID and key. Ask the main computer for a new join file.');
+  }
+  if (answer) {
+    throw new Error('could not verify the join file with ' + origin + ' (the main computer answered ' + answer.status + '); check the main computer and try again');
+  }
+  throw new Error('could not reach ' + origin + ' to verify the join file. Check the network; if it needs a proxy, add --proxy http://host:port');
+}
+
 export async function joinHub({ origin, code, name, proxy }) {
   const send = hubClient(origin, proxy);
   let answer;

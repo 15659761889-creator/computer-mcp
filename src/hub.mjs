@@ -1334,7 +1334,12 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
     } else if (pathname === '/hub/node/settings' && req.method === 'POST') {
       reply(res, 200, this.nodeCheckIn(computer, await readJson(req)));
     } else if (pathname === '/hub/node/ping') {
-      reply(res, 200, { ok: true });
+      const body = await readJson(req);
+      if (body?.id !== undefined && body.id !== computer.id) {
+        reply(res, 401, { error: 'this computer does not match the supplied ID' });
+      } else {
+        reply(res, 200, { ok: true });
+      }
     } else {
       reply(res, 404, { error: 'not found' });
     }

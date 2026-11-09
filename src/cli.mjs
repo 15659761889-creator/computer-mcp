@@ -19,7 +19,7 @@ import { connectionParts, copyToClipboard, getQuickLink } from './link.mjs';
 import { defaultShell, findBash, saveShellChoice, shellChoice } from './shell.mjs';
 import { installBash } from './bash-install.mjs';
 import { hubPath, loadHubState, parsePair } from './hub.mjs';
-import { hubClient, joinHub } from './node-link.mjs';
+import { hubClient, joinHub, verifyJoinedComputer } from './node-link.mjs';
 import {
   appLink, createAccount, createSignup, listAccounts, loadRelayConfig, readAccount, relayDir, relayOrigin, removeAccount,
   runRelay, saveRelayConfig, signupLink, validHost,
@@ -654,6 +654,12 @@ async function joinSteps({ flags, positional }) {
       }
       return finishJoin(existing, { ...created, origin: joined.origin }, flags, file);
     }
+    await verifyJoinedComputer({
+      origin: joined.origin,
+      id: joined.id,
+      key: joined.key,
+      proxy: flags.proxy === true ? undefined : flags.proxy || existing?.proxy,
+    });
     return finishJoin(existing, { ...joined, name }, flags, file);
   }
   const { origin, code } = parsePair(positional.join(' '));

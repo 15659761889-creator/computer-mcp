@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { Hub, parsePair, SECRET_TOOL } from '../src/hub.mjs';
-import { hubClient, joinHub, startNodeLink } from '../src/node-link.mjs';
+import { hubClient, joinHub, startNodeLink, verifyJoinedComputer } from '../src/node-link.mjs';
 import { createMcpServer } from '../src/server.mjs';
 import { resetRateLimitsForTests } from '../src/rate-limit.mjs';
 
@@ -87,6 +87,29 @@ test('wrong codes are refused and a code works once', async () => {
   const joined = await joinHub({ origin: base, code: invite.code, name: 'once' });
   await assert.rejects(joinHub({ origin: base, code: invite.code, name: 'twice' }), /wrong, expired/);
   assert.equal((await admin(`computers/${joined.id}`, 'DELETE')).status, 200);
+});
+
+test('pre-registered join credentials are checked against both computer ID and key', async () => {
+  const response = await admin('computers', 'POST', { name: 'pre-registered' });
+  assert.equal(response.status, 201);
+  const created = await response.json();
+  try {
+    await verifyJoinedComputer({ origin: base, id: created.id, key: created.key });
+    await assert.rejects(
+      verifyJoinedComputer({ origin: base, id: 'wrong-computer-id', key: created.key }),
+      /join file is no longer valid/,
+    );
+    await assert.rejects(
+      verifyJoinedComputer({ origin: base, id: created.id, key: 'wrong-computer-key' }),
+      /join file is no longer valid/,
+    );
+  } finally {
+    assert.equal((await admin('computers/' + created.id, 'DELETE')).status, 200);
+  }
+  await assert.rejects(
+    verifyJoinedComputer({ origin: base, id: created.id, key: created.key }),
+    /join file is no longer valid/,
+  );
 });
 
 test('hub pairing failures are limited per IP; successful joins do not consume the failure allowance', () => {
