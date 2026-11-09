@@ -48,6 +48,10 @@ namespace WanjiWindows {
     private readonly TextBox pairCode;
     private readonly Button planButton;
     private readonly LinkLabel buyLink;
+    private readonly Button updateButton;
+    private Label subtitleLabel;
+    private string updateVersion;
+    private string updateNotes;
     // Where Free users go to buy Pro; the site decides what that page offers.
     private const string BuyUrl = "https://wanji.3618.app/assets/buy.html";
     private string plan;            // "free", "pro" or null while unknown
@@ -94,9 +98,20 @@ namespace WanjiWindows {
       planButton.FlatAppearance.BorderColor = Color.FromArgb(120, 150, 190);
       planButton.Click += (s, e) => ShowPlan();
       header.Controls.Add(planButton);
+      subtitleLabel = subtitle;
+      // Shown only when the update server offers a newer signed version.
+      updateButton = new Button {
+        Width = 300, Height = 28, FlatStyle = FlatStyle.Flat, Visible = false, Cursor = Cursors.Hand,
+        ForeColor = Color.White, BackColor = Color.FromArgb(22, 163, 74), Location = new Point(350, 54),
+        Font = new Font("Microsoft YaHei UI", 9, FontStyle.Bold)
+      };
+      updateButton.FlatAppearance.BorderColor = Color.FromArgb(74, 222, 128);
+      updateButton.Click += (s, e) => InstallUpdate();
+      header.Controls.Add(updateButton);
       header.Resize += (s, e) => {
         langButton.Left = Math.Max(10, header.ClientSize.Width - langButton.Width - 24);
         planButton.Left = Math.Max(140, langButton.Left - planButton.Width - 10);
+        updateButton.Left = Math.Max(140, langButton.Right - updateButton.Width);
       };
 
       var area = new Panel { Dock = DockStyle.Fill, Padding = new Padding(24, 18, 24, 12), AutoScroll = true };
@@ -176,7 +191,7 @@ namespace WanjiWindows {
 
       ticker = new System.Windows.Forms.Timer { Interval = 3500 };
       ticker.Tick += (s, e) => RefreshStatus();
-      Shown += (s, e) => { RefreshStatus(); LoadPlan(); ticker.Start(); OfferJoinFile(); };
+      Shown += (s, e) => { RefreshStatus(); LoadPlan(); ticker.Start(); OfferJoinFile(); CheckUpdate(); };
       FormClosed += (s, e) => ticker.Stop();
     }
 
@@ -382,6 +397,56 @@ namespace WanjiWindows {
               exitCode == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Error);
             RefreshStatus();
             if (done != null) done();
+          }));
+        } catch (InvalidOperationException) { /* The user closed this window. */ }
+      });
+    }
+    // Off the UI thread; a failed check just shows nothing.
+    private void CheckUpdate() {
+      System.Threading.ThreadPool.QueueUserWorkItem(_ => {
+        string[] lines;
+        try { lines = Run("update --check --plain", 25000).Split('\n'); } catch { return; }
+        if (lines.Length < 2 || lines[0].Trim() != "available") return;
+        try {
+          if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)(() => {
+            updateVersion = lines[1].Trim();
+            updateNotes = lines.Length > 2 ? lines[2].Trim() : "";
+            updateButton.Text = T("有新版本 " + updateVersion + " · 点击更新", "Update to " + updateVersion);
+            updateButton.Visible = true;
+            subtitleLabel.Visible = false;
+          }));
+        } catch (InvalidOperationException) { /* The user closed this window. */ }
+      });
+    }
+    // Downloads and verifies through the CLI (signature + SHA-256), then hands over to the
+    // installer and closes, so Wanji.exe can be replaced. The installer reopens the manager.
+    private void InstallUpdate() {
+      var text = T("更新到 万机 " + updateVersion + "？", "Update Wanji to " + updateVersion + "?")
+        + (string.IsNullOrEmpty(updateNotes) ? "" : "\n\n" + updateNotes)
+        + T("\n\n更新时这台电脑会断开几秒钟，然后自动连回；管理器会关闭，更新完自动重新打开。", "\n\nThis computer disconnects for a few seconds and then reconnects; the manager closes and reopens after the update.");
+      if (MessageBox.Show(this, text, T("更新万机", "Update Wanji"), MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+      updateButton.Enabled = false;
+      updateButton.Text = T("正在下载更新...", "Downloading the update...");
+      System.Threading.ThreadPool.QueueUserWorkItem(_ => {
+        string file = null, error = null;
+        try {
+          var output = Run("update --download", 15 * 60 * 1000).Split('\n');
+          file = output[output.Length - 1].Trim();
+          if (!file.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || !File.Exists(file)) throw new Exception(T("没有拿到更新安装包。", "The update installer was not downloaded."));
+        } catch (Exception ex) { error = ex.Message; }
+        try {
+          if (!IsDisposed && IsHandleCreated) BeginInvoke((Action)(() => {
+            if (error == null) {
+              try { Process.Start(new ProcessStartInfo(file, "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /UPDATE=1") { UseShellExecute = true }); }
+              catch (Exception ex) { error = ex.Message; }
+            }
+            if (error != null) {
+              MessageBox.Show(this, error, T("更新失败", "Update failed"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+              updateButton.Enabled = true;
+              updateButton.Text = T("有新版本 " + updateVersion + " · 点击更新", "Update to " + updateVersion);
+              return;
+            }
+            Close();
           }));
         } catch (InvalidOperationException) { /* The user closed this window. */ }
       });

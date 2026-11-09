@@ -35,6 +35,7 @@ import { securePrivateDirectory, writePrivateFile } from './private-file.mjs';
 import {
   checkPublic, deleteTunnel, ensureCloudflared, ensureCloudflareLogin, ensureTunnel, tunnelLogPath,
 } from './tunnel.mjs';
+import { checkUpdate, downloadUpdate } from './update.mjs';
 
 const HELP = `wanji: give this computer its own fixed MCP link
 
@@ -129,6 +130,8 @@ const HELP = `wanji: give this computer its own fixed MCP link
                               Git Bash first when it is missing (Windows, about 60 MB)
       --proxy <url>           proxy for the download
   wanji update         make the service run this installed version
+      --check [--plain]       ask the update server whether a newer signed version exists
+      --download              download it, check its signature and SHA-256, print the installer path
   wanji autostart [off]  start automatically with the computer (Windows: logon task;
                               Linux: systemd user service, plus a keeper in Windows under WSL)
   wanji start | stop   start or stop the service
@@ -1268,6 +1271,19 @@ export async function main(argv) {
       await installDesktop({ proxy: parsed.flags.proxy === true ? undefined : parsed.flags.proxy || loadConfig()?.proxy });
       return undefined;
     case 'update':
+      // --check / --download: the signed one-click update the Windows manager offers.
+      if (parsed.flags.check || parsed.flags.download) {
+        const info = await checkUpdate();
+        const notes = String(info.notes || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+        if (parsed.flags.check) {
+          if (parsed.flags.plain) console.log([info.available ? 'available' : 'none', info.version || info.current, notes].join('\n'));
+          else console.log(info.available ? `万机 ${info.version} is available (this is ${info.current}).${notes ? `\n${notes}` : ''}` : `Up to date (${info.current}).`);
+          return undefined;
+        }
+        if (!info.available) throw new Error(`already up to date (${info.current})`);
+        console.log(await downloadUpdate(info));
+        return undefined;
+      }
       requireConfig();
       await stopService();
       installAppCopy();

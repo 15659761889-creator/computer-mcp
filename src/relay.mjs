@@ -292,6 +292,17 @@ export class Relay {
         sendJson(res, 200, { ok: true, service: 'wanji-relay' });
         return;
       }
+      // The signed one-click update manifest (installer/publish-update.mjs writes it).
+      if (pathname === '/update/latest.json' && (req.method === 'GET' || req.method === 'HEAD')) {
+        let body;
+        try { body = fs.readFileSync(path.join(this.dir, 'update', 'latest.json')); } catch { body = null; }
+        if (!body) sendJson(res, 404, { error: 'no update published' });
+        else {
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': body.length, 'Cache-Control': 'no-store' });
+          res.end(req.method === 'HEAD' ? undefined : body);
+        }
+        return;
+      }
       if (isWebAppPath(pathname)) {
         serveWebApp(req, res, pathname);
         return;

@@ -1,7 +1,9 @@
 param(
   [string]$NodeExe = "",
   [string]$CloudflaredExe = "",
-  [string]$InnoCompiler = ""
+  [string]$InnoCompiler = "",
+  # Builds Wanji-UpdateTest-*.exe: own AppId and folder, no service steps (for testing updates).
+  [switch]$TestBuild
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -31,7 +33,8 @@ foreach($f in @("NODE_LICENSE.txt","CLOUDFLARED_LICENSE.txt")) {
   if(-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot $f))) {throw "Missing license: $f"}
 }
 $package = Get-Content -Raw -LiteralPath (Join-Path $root "package.json") | ConvertFrom-Json
-if($package.version -ne "0.6.15") {throw "Installer metadata expects 万机 package version 0.6.15."}
+$version = $package.version
+if($version -notmatch '^\d+\.\d+\.\d+$') {throw "package.json version $version is not x.y.z"}
 if(Test-Path -LiteralPath $app) { Remove-Item -LiteralPath $app -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $stage,$app,$runtime,$licenses | Out-Null
 $compiler = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
@@ -68,9 +71,13 @@ if($LASTEXITCODE -ne 0) {throw "Bundled Node smoke test failed."}
 & (Join-Path $runtime "cloudflared.exe") --version | Out-Null
 if($LASTEXITCODE -ne 0) {throw "Bundled Cloudflare binary smoke test failed."}
 Write-Output "Building the installer..."
-& $iscc "/Q" (Join-Path $PSScriptRoot "Wanji-Verified.iss")
+$nodeSha = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $runtime "node.exe")).Hash
+$cloudSha = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $runtime "cloudflared.exe")).Hash
+$defines = @("/DAppVersion=$version", "/DNodeSha=$nodeSha", "/DCloudflaredSha=$cloudSha")
+if($TestBuild) { $defines += "/DTestBuild=1" }
+& $iscc "/Q" @defines (Join-Path $PSScriptRoot "Wanji-Verified.iss")
 if($LASTEXITCODE -ne 0) {throw "Inno Setup compilation failed."}
-$target = Join-Path $root "dist\Wanji-Setup-0.6.15-Windows-x64.exe"
+$target = Join-Path $root ("dist\" + $(if($TestBuild) {"Wanji-UpdateTest-"} else {"Wanji-Setup-"}) + "$version-Windows-x64.exe")
 if(-not (Test-Path -LiteralPath $target)) {throw "Installer was not produced."}
 $sha = Get-FileHash -Algorithm SHA256 -LiteralPath $target
 Write-Output "INSTALLER=$target"
