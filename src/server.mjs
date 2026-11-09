@@ -200,9 +200,9 @@ async function runLocal(name, args, context, handoffTool) {
 
 // Picks the machine named in the call. While the hub has no other computers, a client still
 // using its cached tool list can leave computer out, because there is only one place to run.
-async function runThroughHub(name, args, context, handoffTool) {
+async function runThroughHub(name, args, context, handoffTool, onStage) {
   const { computer, ...rest } = args ?? {};
-  if (computer === undefined && context.hub.selfName && !context.hub.hasOthers()) return runThroughHub(name, { ...rest, computer: context.hub.selfName }, context, handoffTool);
+  if (computer === undefined && context.hub.selfName && !context.hub.hasOthers()) return runThroughHub(name, { ...rest, computer: context.hub.selfName }, context, handoffTool, onStage);
   if (!context.hub.names()) return { text: 'No computer is connected yet, so nothing was run. Add one in the 万机 phone app.', isError: true };
   if (computer === undefined) return { text: `Name the computer in the computer parameter. Available: ${context.hub.names()}. If your tool list has no such parameter, refresh this connector.`, isError: true };
   const target = context.hub.resolve(computer);
@@ -216,14 +216,14 @@ async function runThroughHub(name, args, context, handoffTool) {
   if (name === SECRET_TOOL.name) {
     return context.hub.typeSecret(target, rest, (toolName, uiArgs) => (target.self && context.hub.selfName
       ? runLocal(toolName, uiArgs, context, false)
-      : context.hub.forward(target.computer, toolName, uiArgs)));
+      : context.hub.forward(target.computer, toolName, uiArgs, onStage)));
   }
   // The vault list lives on the hub itself, not on any one computer.
   if (name === SECRET_LIST_TOOL.name) {
     return context.hub.secretList();
   }
   if (target.self && context.hub.selfName) return runLocal(name, rest, context, handoffTool);
-  return context.hub.forward(target.computer, name, rest);
+  return context.hub.forward(target.computer, name, rest, onStage);
 }
 
 // Recognize common read-only commands using fixed labels. Never send the command itself to the feed.
@@ -232,6 +232,39 @@ function activityAction(name, args) {
   if (/^\s*(rg|grep|find|findstr|select-string)\s/i.test(args.command)) return 'search';
   if (/^\s*(ls|dir|get-childitem)(\s|$)/i.test(args.command)) return 'list_files';
   return name;
+}
+
+// One line for the phone feed: what the AI is running, built from the audit summary, so secrets
+// are masked and typed text shows only its length.
+const DETAIL_CHARS = 400;
+export function activityDetail(name, args = {}) {
+  const s = summarizeArgs(name, args ?? {});
+  const at = (id, x, y) => (id != null ? `#${id}` : x != null ? `(${x},${y})` : '');
+  const act = (step) => {
+    const bits = [step.action || 'click'];
+    if (step.target) bits.push(`"${step.target}"`);
+    const where = at(step.element_id, step.x, step.y);
+    if (where) bits.push(where);
+    if (step.keys) bits.push(step.keys);
+    if (step.text_chars != null) bits.push(`(${step.text_chars} chars)`);
+    if (step.window) bits.push(`@${step.window}`);
+    return bits.join(' ');
+  };
+  let line;
+  switch (name) {
+    case 'bash': line = `${s.command ?? ''}${s.cwd ? `  (in ${s.cwd})` : ''}${s.background ? '  [background]' : ''}`; break;
+    case 'job': line = s.id ? `${s.action || 'status'} ${s.id}` : 'list'; break;
+    case 'read_file': case 'write_file': case 'edit_file': line = s.path; break;
+    case 'ui_look': line = [s.window && `@${s.window}`, s.scope, s.region && `region ${s.region.left},${s.region.top},${s.region.right},${s.region.bottom}`, s.find && `find "${s.find}"`].filter(Boolean).join(' ') || 'active window'; break;
+    case 'ui_act': line = s.steps ? s.steps.map(act).join(' → ') : act(s); break;
+    case 'browser': line = [s.action, s.url, s.index != null && `#${s.index}`].filter(Boolean).join(' '); break;
+    case 'transfer': line = s.cancel ? `cancel ${s.id}` : `${s.from}:${s.from_path} → ${s.to}:${s.to_path}`; break;
+    case SECRET_TOOL.name: line = `${args.secret ?? ''} (${args.part ?? ''})`; break;
+    case 'request_human_takeover': line = typeof args.reason === 'string' ? args.reason : ''; break;
+    default: return null;
+  }
+  line = maskSecrets(String(line ?? '').replace(/\s+/g, ' ').trim());
+  return line ? (line.length > DETAIL_CHARS ? `${line.slice(0, DETAIL_CHARS)}…` : line) : null;
 }
 
 function activityStatus(name, outcome) {
@@ -284,7 +317,9 @@ async function callAndAudit(id, params, context) {
     const target = own && typeof args?.computer === 'string' ? hub.resolve(args.computer) : null;
     const localDefault = own && args?.computer === undefined && !hub.hasOthers();
     const computer = target?.self || localDefault ? hub.selfName || null : target?.computer?.name ?? null;
-    finishActivity = hub.startActivity(activityAction(name, args), computer);
+    // Calls for another computer wait at this hub (the relay) until that computer picks them up.
+    const forwarded = Boolean(target && !target.self);
+    finishActivity = hub.startActivity(activityAction(name, args), computer, activityDetail(name, actionArgs), forwarded ? 'relay' : 'computer');
   }
   let outcome;
   try {
@@ -344,7 +379,7 @@ async function callAndAudit(id, params, context) {
       const task = canListTasks && context.tasks ? context.tasks.latestActivity() : null;
       outcome = { text: renderRecentCalls({ file: context.auditFile, args: args ?? {}, active, handoff: context.memory ? latestHandoff(context.memory) : null, task }) };
     } else if (context.hub) {
-      outcome = await runThroughHub(name, actionArgs, context, handoffTool);
+      outcome = await runThroughHub(name, actionArgs, context, handoffTool, finishActivity?.stage);
     } else if (name === 'ui_act' && context.handoff.locked()) {
       outcome = { text: 'Human has temporary control of the browser; wait for check_human_takeover to report complete.', isError: true };
     } else {

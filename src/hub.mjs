@@ -269,16 +269,25 @@ export class Hub {
     return computer ? nodePsk(computer.keyHash) : null;
   }
 
-  // The phone feed stays in memory and never stores tool arguments or results.
-  startActivity(action, computer) {
-    const entry = { id: this.nextActivity++, action, computer, startedAt: Date.now() };
+  // The phone feed stays in memory only, never on disk. detail is a short, secret-masked summary
+  // of what runs (the command, path or click target); results are never kept.
+  // stage: 'relay' while waiting to be handed to the computer, 'computer' once it has it.
+  startActivity(action, computer, detail = null, stage = 'relay') {
+    const entry = { id: this.nextActivity++, action, computer, detail, stage, startedAt: Date.now() };
     const start = performance.now();
     this.activeCalls.set(entry.id, entry);
-    return (status) => {
+    const finish = (status) => {
       this.activeCalls.delete(entry.id);
-      this.recentCalls.unshift({ ...entry, status, durationMs: Math.round(performance.now() - start) });
+      this.recentCalls.unshift({ ...entry, stage: 'done', status, durationMs: Math.round(performance.now() - start) });
       if (this.recentCalls.length > 80) this.recentCalls.pop();
     };
+    finish.stage = (next) => {
+      if (this.activeCalls.has(entry.id)) {
+        entry.stage = next;
+        if (next === 'computer' && !entry.arrivedAt) entry.arrivedAt = Date.now();
+      }
+    };
+    return finish;
   }
 
   // ---- What the AI sees ----
@@ -343,7 +352,8 @@ export class Hub {
     return [this.selfName, ...Object.values(this.state.computers).map((c) => c.name)].filter(Boolean).join(', ');
   }
 
-  forward(computer, tool, args) {
+  // onStage hears 'computer' when the call is handed to the computer, and 'relay' if it has to wait again.
+  forward(computer, tool, args, onStage) {
     if (!this.isOnline(computer.id)) {
       const problem = this.live.get(computer.id)?.lanProblem;
       const lanOnly = this.routeOf(computer) === 'lan'
@@ -353,7 +363,7 @@ export class Hub {
     }
     const live = this.liveFor(computer.id);
     return new Promise((resolve) => {
-      const call = { id: String(this.nextCall++), tool, args, resolve };
+      const call = { id: String(this.nextCall++), tool, args, resolve, onStage };
       live.queue.push(call);
       this.flush(live);
     });
@@ -375,7 +385,9 @@ export class Hub {
     if (!live.queue.length || !live.waiter || live.waiter.res.destroyed) return;
     const calls = live.queue.splice(0);
     for (const call of calls) live.delivered.set(call.id, call);
-    this.answerWaiter(live, { calls: calls.map(({ id, tool, args }) => ({ id, tool, args })) });
+    if (this.answerWaiter(live, { calls: calls.map(({ id, tool, args }) => ({ id, tool, args })) })) {
+      for (const call of calls) call.onStage?.('computer');
+    }
   }
 
   failPending(live, { queued, delivered }) {
@@ -438,7 +450,7 @@ export class Hub {
     // A call the node does not report as received was lost on the way, so sending it again cannot run it twice.
     const running = new Set(Array.isArray(body.running) ? body.running : []);
     const lost = [...live.delivered.values()].filter((call) => !running.has(call.id));
-    for (const call of lost) live.delivered.delete(call.id);
+    for (const call of lost) { live.delivered.delete(call.id); call.onStage?.('relay'); }
     live.queue.unshift(...lost);
 
     this.answerWaiter(live, { calls: [] });

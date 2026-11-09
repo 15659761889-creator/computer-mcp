@@ -206,7 +206,7 @@ test('the owner sees safe activity while a remote call is pending and after it f
     return { text: 'private command output', meta: { exit_code: 7 } };
   });
 
-  const callResult = call('bash', { computer: 'ACTIVITY-DESK', command: 'rg private-search-term' });
+  const callResult = call('bash', { computer: 'ACTIVITY-DESK', command: 'rg search-term --token=hunter2secret', cwd: 'C:\\work' });
   try {
     await pending;
     for (const key of [TOKEN, computer.key]) {
@@ -218,18 +218,21 @@ test('the owner sees safe activity while a remote call is pending and after it f
     assert.equal(response.headers.get('cache-control'), 'no-store');
     const feed = await response.json();
     assert.equal(feed.active.length, 1);
+    // The computer already has the call, so it is past the relay.
     assert.deepEqual(feed.active[0], {
       id: feed.active[0].id, computer: 'activity-desk', action: 'search', startedAt: feed.active[0].startedAt,
+      detail: 'rg search-term --token=[masked] (in C:\\work)', stage: 'computer', arrivedAt: feed.active[0].arrivedAt,
     });
     assert.ok(Number.isSafeInteger(feed.active[0].startedAt));
-    assert.ok(!JSON.stringify(feed).includes('private-search-term'));
+    assert.ok(feed.active[0].arrivedAt >= feed.active[0].startedAt);
+    assert.ok(!JSON.stringify(feed).includes('hunter2secret'));
 
     release();
     assert.equal((await callResult).content[0].text, 'private command output');
     const finished = await (await admin('activity')).json();
     assert.deepEqual(finished.active, []);
     assert.deepEqual(finished.recent[0], {
-      ...feed.active[0], status: 'failed', durationMs: finished.recent[0].durationMs,
+      ...feed.active[0], stage: 'done', status: 'failed', durationMs: finished.recent[0].durationMs,
     });
     assert.ok(finished.recent[0].durationMs >= 0);
     assert.ok(!JSON.stringify(finished).includes('private command output'));

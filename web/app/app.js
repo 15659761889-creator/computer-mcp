@@ -1222,17 +1222,26 @@ function showSecretRequest(r) {
 }
 
 // ---------- activity ----------
+const openActivity = new Set();
+// stage: relay = waiting at the relay for the computer to pick it up; computer = the computer has it.
 function activityRow(r) {
   const running = r.durationMs === undefined;
   const secs = running ? '' : `${(r.durationMs / 1000).toFixed(1)} 秒`;
-  const sub = running ? h('div', { class: 's', text: '进行中…' })
-    : r.status === 'failed' ? h('div', { class: 's', style: { color: '#ff8a8d' }, text: `没成功 · ${secs}` })
-      : r.status === 'background' ? h('div', { class: 's', text: '在后台继续运行' })
-        : h('div', { class: 's', text: secs });
-  return h('div', { class: 'row' },
+  const transit = r.arrivedAt ? ` · 中转 ${((r.arrivedAt - r.startedAt) / 1000).toFixed(1)} 秒` : '';
+  const sub = running
+    ? h('div', { class: 's' }, r.stage === 'relay'
+      ? h('span', { class: 'pill orange', text: '中转中，等电脑接收' })
+      : h('span', { class: 'pill green', text: '已到电脑，正在执行' }))
+    : r.status === 'failed' ? h('div', { class: 's', style: { color: '#ff8a8d' }, text: `没成功 · ${secs}${transit}` })
+      : r.status === 'background' ? h('div', { class: 's', text: `在后台继续运行${transit}` })
+        : h('div', { class: 's', text: `${secs}${transit}` });
+  // A long command is cut to three lines; a tap shows all of it (kept across the 1-3 s refresh).
+  const toggle = r.detail ? (e) => { openActivity.has(r.id) ? openActivity.delete(r.id) : openActivity.add(r.id); e.currentTarget.classList.toggle('open'); } : null;
+  return h('div', { class: `row${openActivity.has(r.id) ? ' open' : ''}`, onclick: toggle },
     running ? h('div', { class: 'spinner' }) : null,
     h('div', { class: 'grow' },
       h('div', { class: 't', style: { fontWeight: 500, fontSize: '15px' } }, h('span', { class: 'who', text: r.computer || '' }), ` ${toolName(r.action)}`),
+      r.detail ? h('div', { class: 'mono detail', text: r.detail }) : null,
       sub),
     h('div', { class: 'when', text: ago(r.startedAt) }));
 }
@@ -1262,7 +1271,8 @@ async function pollActivity() {
       if (S.tab === 'computers' && !stack.length) renderTab('computers');
     } catch { /* shown by the main loop */ }
   }
-  activityTimer = setTimeout(pollActivity, S.tab === 'activity' ? 3000 : 15000);
+  // While something is running the feed follows it closely, so relay → computer is visible.
+  activityTimer = setTimeout(pollActivity, S.tab !== 'activity' ? 15000 : S.activity?.active?.length ? 1000 : 3000);
 }
 
 // ---------- settings ----------

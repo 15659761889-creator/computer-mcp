@@ -156,6 +156,8 @@ input, textarea { user-select: text; -webkit-user-select: text; }
 
 .feed .row .who { font-weight: 650; }
 .feed .row .when { color: var(--text-3); font-size: 12px; white-space: nowrap; }
+.feed .row .detail { color: var(--text-2); font-size: 12px; margin: 3px 0 4px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.feed .row.open .detail { -webkit-line-clamp: unset; }
 .spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(255,255,255,.25); border-top-color: #fff; animation: spin .8s linear infinite; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 

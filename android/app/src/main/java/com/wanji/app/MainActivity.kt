@@ -405,13 +405,16 @@ class MainActivity : Activity() {
             "browser" -> tr("使用 AI 浏览器", "Use the AI browser")
             else -> tr("调用工具", "Call a tool")
         }
+        // stage: relay = waiting at the relay for the computer; computer = the computer has it.
         val (status, color) = when (entry.optString("status")) {
             "succeeded" -> tr("成功", "Succeeded") to GREEN
             "failed" -> tr("失败", "Failed") to ORANGE
             "background" -> tr("已交给后台任务，结果待确认", "Handed to a background job; result pending") to ORANGE
             "unknown" -> tr("结果未知", "Result unknown") to ORANGE
-            else -> tr("调用进行中", "In progress") to BLUE
+            else -> if (entry.optString("stage") == "relay") tr("中转中，等电脑接收", "At the relay, waiting for the computer") to ORANGE
+                else tr("已到电脑，正在执行", "On the computer, running") to GREEN
         }
+        val transit = if (entry.has("arrivedAt")) entry.getLong("arrivedAt") - entry.getLong("startedAt") else -1
         val computer = if (entry.isNull("computer")) "" else " · ${entry.getString("computer")}"
         val time = clock.format(Date(entry.getLong("startedAt")))
         val duration = entry.optLong("durationMs", -1)
@@ -420,9 +423,18 @@ class MainActivity : Activity() {
             duration < 1000 -> tr(" · ${duration} 毫秒", " · ${duration} ms")
             else -> " · " + String.format(Locale.getDefault(), tr("%.1f 秒", "%.1f s"), duration / 1000.0)
         }
+        val hop = if (transit >= 0) " · " + String.format(Locale.getDefault(), tr("中转 %.1f 秒", "relay %.1f s"), transit / 1000.0) else ""
+        val detail = if (entry.isNull("detail")) null else entry.optString("detail").takeIf { it.isNotEmpty() }
         return card().apply {
             addView(text(action + computer, 15f, INK, bold = true))
-            addView(text(time + elapsed, 13f, MUTED).below(6))
+            // What actually runs: the command, path or click target, cut to three lines until tapped.
+            if (detail != null) addView(text(detail, 13f, INK).apply {
+                typeface = android.graphics.Typeface.MONOSPACE
+                maxLines = 3
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setOnClickListener { maxLines = if (maxLines == 3) Int.MAX_VALUE else 3 }
+            }.below(6))
+            addView(text(time + elapsed + hop, 13f, MUTED).below(6))
             addView(text(status, 13f, color).below(4))
         }.below(10)
     }
