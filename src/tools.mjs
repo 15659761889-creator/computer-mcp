@@ -28,6 +28,7 @@ const DESKTOP_TOOLS = [
       properties: {
         window: { type: 'string', description: 'Window title text or a w: handle. It is brought to the front. Default: the active window.' },
         scope: { type: 'string', enum: ['window', 'screen'], description: 'screen reads every monitor and window. Default window.' },
+        region: { type: 'object', properties: { left: { type: 'number' }, top: { type: 'number' }, right: { type: 'number' }, bottom: { type: 'number' } }, description: 'Only this screen rectangle, in screen pixels {left, top, right, bottom} — the same rects ui_look prints for windows. Use it to read one small area, such as a mirrored phone window, instead of the whole screen; window is ignored when region is given.' },
         find: { type: 'string', description: 'List only elements containing this text.' },
         image: { type: 'string', enum: ['auto', 'true', 'false'], description: 'Attach a screenshot. Default auto.' },
       },
@@ -458,7 +459,7 @@ export function summarizeArgs(name, args = {}) {
     case 'job':
       return { id: args.id, action: args.action, wait: args.wait };
     case 'ui_look':
-      return { window: args.window, scope: args.scope, find: args.find, image: args.image };
+      return { window: args.window, scope: args.scope, region: args.region, find: args.find, image: args.image };
     case 'ui_act':
       return summarizeAct(args);
     case 'write_file':

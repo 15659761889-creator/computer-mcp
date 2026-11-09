@@ -745,6 +745,28 @@ def clip_to_screen(rect):
     return (max(rect[0], vx), max(rect[1], vy), min(rect[2], vx + vw), min(rect[3], vy + vh))
 
 
+def intersects(a, b):
+    return bool(a) and a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+
+
+def parse_region(value):
+    """A caller-supplied screen rectangle {left, top, right, bottom}, clipped to the screen."""
+    if not isinstance(value, dict):
+        raise ToolFailure('region must be an object {left, top, right, bottom} in screen pixels')
+    rect = []
+    for key in ('left', 'top', 'right', 'bottom'):
+        item = value.get(key)
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            raise ToolFailure(f'region.{key} must be a number')
+        if item != item or item in (float('inf'), float('-inf')):
+            raise ToolFailure(f'region.{key} must be a finite number')
+        rect.append(int(item))
+    rect = clip_to_screen(tuple(rect))
+    if rect[2] - rect[0] < 2 or rect[3] - rect[1] < 2:
+        raise ToolFailure('region is outside the screen or too small')
+    return rect
+
+
 def names_agree(a, b):
     a, b = norm(a), norm(b)
     return bool(a and b) and (a == b or a in b or b in a)
@@ -1007,6 +1029,19 @@ class Desktop:
         rects = [window_rect(h) for h in related if window_rect(h)]
         return windows, target, related, clip_to_screen(union(rects))
 
+    def region_scope(self, value):
+        # A caller-supplied rectangle: no window is activated, only what overlaps it is read.
+        problem = input_desktop_problem()
+        if problem:
+            raise ToolFailure(problem)
+        region = parse_region(value)
+        windows = list_windows()
+        target = root_at(*rect_center(region))
+        focus_set = [h for h in windows
+                     if window_class(h) not in NOISE_CLASSES
+                     and intersects(window_rect(h), region)]
+        return windows, target, focus_set, region
+
     def wait_until_still(self, region):
         """A window just opened or just activated is often still drawing."""
         started = time.perf_counter()
@@ -1022,8 +1057,12 @@ class Desktop:
             if now - still_since >= 0.06 or (now - started) * 1000 >= LOOK_SETTLE_MS:
                 return
 
-    def perceive(self, window=None, whole_screen=False, settle=False):
-        windows, target, focus_set, region = self.scope(window, whole_screen)
+    def perceive(self, window=None, whole_screen=False, settle=False, region=None):
+        explicit_region = region is not None
+        if explicit_region:
+            windows, target, focus_set, region = self.region_scope(region)
+        else:
+            windows, target, focus_set, region = self.scope(window, whole_screen)
         if settle:
             self.wait_until_still(region)
         started = time.perf_counter()
@@ -1051,6 +1090,9 @@ class Desktop:
         for label in labels:
             label["hwnd"] = root_at(*rect_center(label["rect"]))
         elements = order(merge(visible, labels))
+        if explicit_region:
+            # A region look reports only what actually overlaps the rectangle.
+            elements = [el for el in elements if intersects(el.get("rect"), region)]
         self.snapshot_number += 1
         numbered = {}
         for number, element in enumerate(elements[:MAX_ELEMENTS], 1):
@@ -1116,7 +1158,7 @@ class Desktop:
         return base64.b64encode(encoded.tobytes()).decode("ascii"), note
 
     def look(self, args):
-        seen = self.perceive(args.get("window"), args.get("scope") == "screen", settle=True)
+        seen = self.perceive(args.get("window"), args.get("scope") == "screen", settle=True, region=args.get("region"))
         text = self.render(seen, args.get("find"))
         return self.package(text, seen, args.get("image", "auto"))
 
