@@ -5,7 +5,7 @@ import path from 'node:path';
 import { timingSafeEqual, createHash } from 'node:crypto';
 import { desktopSupported } from './desktop.mjs';
 import { HandoffManager, HANDOFF_TOOLS } from './handoff.mjs';
-import { SECRET_TOOL, SECRET_LIST_TOOL } from './hub.mjs';
+import { LOGIN_TOOL, SECRET_TOOL, SECRET_LIST_TOOL } from './hub.mjs';
 import { HISTORY_TOOL, latestHandoff, maskSecrets, renderRecentCalls } from './history.mjs';
 import { MEMORY_TOOLS, MEMORY_TOOL_NAMES } from './memory.mjs';
 import { SkillStore, SKILL_TOOLS, SKILL_TOOL_NAMES, SKILL_GUIDE } from './skills.mjs';
@@ -96,7 +96,7 @@ function hubTools(hub, memory, auditFile, skills, tasks) {
   });
   // Task fields only make sense where task_claim exists (not through the official relay).
   const tag = tasks ? taskTagged : (tool) => tool;
-  return [listComputersTool(memory), ...(hub?.transfers ? [tag(TRANSFER_TOOL)] : []), ...(memory ? MEMORY_TOOLS : []), ...(auditFile ? [HISTORY_TOOL] : []), ...(skills ? SKILL_TOOLS : []), ...(tasks ? TASK_TOOLS : []), ...[...ALL_TOOLS, SECRET_TOOL, SECRET_LIST_TOOL, ...HANDOFF_TOOLS].map(tag).map(withComputer)];
+  return [listComputersTool(memory), ...(hub?.transfers ? [tag(TRANSFER_TOOL)] : []), ...(memory ? MEMORY_TOOLS : []), ...(auditFile ? [HISTORY_TOOL] : []), ...(skills ? SKILL_TOOLS : []), ...(tasks ? TASK_TOOLS : []), ...[...ALL_TOOLS, LOGIN_TOOL, SECRET_TOOL, SECRET_LIST_TOOL, ...HANDOFF_TOOLS].map(tag).map(withComputer)];
 }
 
 function instructions(name) {
@@ -210,11 +210,12 @@ async function runThroughHub(name, args, context, handoffTool, onStage) {
   // Takeover goes to the phone app on every computer, the main one included.
   if (handoffTool) return context.hub.takeover(name, target, rest);
   const targetId = target.self ? 'self' : target.computer.id;
-  if ((name === 'ui_act' || name === 'browser' || name === SECRET_TOOL.name) && context.hub.browserLocked(targetId)) {
+  if ((name === 'ui_act' || name === 'browser' || name === SECRET_TOOL.name || name === LOGIN_TOOL.name) && context.hub.browserLocked(targetId)) {
     return { text: 'The owner is using this computer\'s browser from the phone app right now, so nothing was done. Wait, or check with check_human_takeover.', isError: true };
   }
-  if (name === SECRET_TOOL.name) {
-    return context.hub.typeSecret(target, rest, (toolName, uiArgs) => (target.self && context.hub.selfName
+  if (name === SECRET_TOOL.name || name === LOGIN_TOOL.name) {
+    const method = name === LOGIN_TOOL.name ? 'requestLogin' : 'typeSecret';
+    return context.hub[method](target, rest, (toolName, uiArgs) => (target.self && context.hub.selfName
       ? runLocal(toolName, uiArgs, context, false)
       : context.hub.forward(target.computer, toolName, uiArgs, onStage)));
   }
@@ -260,6 +261,7 @@ export function activityDetail(name, args = {}) {
     case 'browser': line = [s.action, s.url, s.index != null && `#${s.index}`].filter(Boolean).join(' '); break;
     case 'transfer': line = s.cancel ? `cancel ${s.id}` : `${s.from}:${s.from_path} → ${s.to}:${s.to_path}`; break;
     case SECRET_TOOL.name: line = `${args.secret ?? ''} (${args.part ?? ''})`; break;
+    case LOGIN_TOOL.name: line = `${args.site ?? ''} @${args.window ?? ''} [${[args.username_field && 'username', args.password_field && 'password'].filter(Boolean).join('+')}]`; break;
     case 'request_human_takeover': line = typeof args.reason === 'string' ? args.reason : ''; break;
     default: return null;
   }
@@ -296,7 +298,7 @@ async function callAndAudit(id, params, context) {
   const historyTool = Boolean(context.auditFile) && name === HISTORY_TOOL.name;
   const skillTool = Boolean(context.skills) && SKILL_TOOL_NAMES.has(name);
   const taskTool = Boolean(context.tasks) && TASK_NAMES.has(name);
-  const known = hasTool(name) || (context.hub && (name === SECRET_TOOL.name || name === SECRET_LIST_TOOL.name || ALL_TOOLS.some((tool) => tool.name === name)));
+  const known = hasTool(name) || (context.hub && (name === SECRET_TOOL.name || name === LOGIN_TOOL.name || name === SECRET_LIST_TOOL.name || ALL_TOOLS.some((tool) => tool.name === name)));
   if (typeof name !== 'string' || (!known && !handoffTool && !hubTool && !transferTool && !memoryTool && !historyTool && !skillTool && !taskTool)) return rpcError(id, -32602, `unknown tool: ${name}`);
   const args = params.arguments;
   if (args !== undefined && (typeof args !== 'object' || args === null || Array.isArray(args))) {
@@ -324,7 +326,7 @@ async function callAndAudit(id, params, context) {
   let outcome;
   try {
     if (taskLinked) {
-      if (![...ALL_TOOLS.map(t => t.name), SECRET_TOOL.name, SECRET_LIST_TOOL.name, ...HANDOFF_TOOLS.map(t => t.name), TRANSFER_TOOL.name].includes(name))
+      if (![...ALL_TOOLS.map(t => t.name), SECRET_TOOL.name, LOGIN_TOOL.name, SECRET_LIST_TOOL.name, ...HANDOFF_TOOLS.map(t => t.name), TRANSFER_TOOL.name].includes(name))
         throw new Error('Task links are only supported on computer actions.');
       if (typeof args.task_id !== 'string' || typeof args.task_lease !== 'string')
         throw new Error('Specify both task_id and task_lease to run a tracked action.');
@@ -401,7 +403,7 @@ async function callAndAudit(id, params, context) {
   context.audit({
     tool: name,
     computer: args?.computer,
-    args: taskTool ? { id: args?.id, project: args?.project, actor: args?.actor, step_index: args?.step_index, status: args?.status } : name === SECRET_TOOL.name ? { secret: args?.secret, part: args?.part } : summarizeArgs(name, actionArgs),
+    args: taskTool ? { id: args?.id, project: args?.project, actor: args?.actor, step_index: args?.step_index, status: args?.status } : name === SECRET_TOOL.name ? { secret: args?.secret, part: args?.part } : name === LOGIN_TOOL.name ? { site: args?.site, window: args?.window, username_field: args?.username_field, password_field: args?.password_field } : summarizeArgs(name, actionArgs),
     task: linkedTask?.id,
     ms: Date.now() - started,
     error: outcome.isError ? maskSecrets(outcome.text.slice(0, 500)) : undefined,

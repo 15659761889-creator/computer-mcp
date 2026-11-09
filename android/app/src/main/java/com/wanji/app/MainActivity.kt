@@ -397,6 +397,7 @@ class MainActivity : Activity() {
             "ui_act" -> tr("操作电脑界面", "Operate the computer UI")
             "type_secret" -> tr("请求使用已保存的账号", "Request a saved account")
             "request_human_takeover" -> tr("请求手机接管", "Request phone takeover")
+            "request_login" -> tr("请你登录", "Ask you to log in")
             "check_human_takeover" -> tr("查看接管状态", "Check takeover status")
             "cancel_human_takeover" -> tr("结束接管", "End takeover")
             "memory_write" -> tr("写入共享记忆", "Write shared memory")
@@ -737,8 +738,12 @@ class MainActivity : Activity() {
             setStroke(dp(1), BLUE)
             cornerRadius = dp(14).toFloat()
         }
-        val part = if (request.part == "username") tr("账号", "username") else tr("密码", "password")
-        addView(text(tr("AI 想在 ${request.computer} 上填写「${request.hint}」的$part", "The AI wants to fill in the $part for “${request.hint}” on ${request.computer}"), 16f, BLUE, bold = true))
+        val title = if (request.part == "login") tr("AI 想在 ${request.computer} 上登录「${request.hint}」", "The AI wants to log in to “${request.hint}” on ${request.computer}")
+        else {
+            val part = if (request.part == "username") tr("账号", "username") else tr("密码", "password")
+            tr("AI 想在 ${request.computer} 上填写「${request.hint}」的$part", "The AI wants to fill in the $part for “${request.hint}” on ${request.computer}")
+        }
+        addView(text(title, 16f, BLUE, bold = true))
         if (request.reason.isNotEmpty()) addView(text(request.reason, 13f, INK).below(4))
         addView(primary(tr("选择账号", "Choose an account")) { approveSecret(request) }.below(10))
     }
@@ -746,15 +751,21 @@ class MainActivity : Activity() {
     private fun approveSecret(request: SecretRequest) {
         val current = client ?: return
         val entries = vault.load()
+        val login = request.part == "login"
         if (entries.isEmpty()) {
             AlertDialog.Builder(this)
                 .setTitle(tr("密码库里还没有账号", "No accounts in the vault yet"))
-                .setMessage(tr("先把「${request.hint}」的账号密码存进来，再允许 AI 使用。", "Save the account for “${request.hint}” first, then allow the AI to use it."))
+                .setMessage(if (login) tr("可以存一个「${request.hint}」的账号，或者只这一次输入、不保存。", "Save an account for “${request.hint}”, or type one just this once without saving it.")
+                    else tr("先把「${request.hint}」的账号密码存进来，再允许 AI 使用。", "Save the account for “${request.hint}” first, then allow the AI to use it."))
                 .setPositiveButton(tr("添加账号", "Add account")) { _, _ -> editEntry(VaultEntry(label = request.hint, username = "", password = "")) { approveSecret(request) } }
                 .setNegativeButton(tr("拒绝", "Deny")) { _, _ -> answer(current, request, null) }
+                .apply { if (login) setNeutralButton(tr("只用这一次", "Just this once")) { _, _ -> oneOffLogin(current, request) } }
                 .show()
             return
         }
+        // request_login also offers a one-off account typed here and never kept.
+        val oneOff = tr("＋ 输入新账号（只用这一次，不保存）", "+ Type an account (just this once, not saved)")
+        val items = entries.map { "${it.label}  ·  ${it.username}" } + (if (login) listOf(oneOff) else emptyList())
         val match = vault.bestMatch(request.hint)
         var chosen = entries.indexOf(match).coerceAtLeast(0)
         val where = listOfNotNull(
@@ -764,8 +775,9 @@ class MainActivity : Activity() {
         ).joinToString("\n")
         AlertDialog.Builder(this)
             .setTitle(tr("允许 AI 填写「${request.hint}」？", "Allow the AI to fill in “${request.hint}”?"))
-            .setSingleChoiceItems(entries.map { "${it.label}  ·  ${it.username}" }.toTypedArray(), chosen) { _, which -> chosen = which }
+            .setSingleChoiceItems(items.toTypedArray(), chosen) { _, which -> chosen = which }
             .setPositiveButton(tr("允许填写", "Allow filling")) { _, _ ->
+                if (chosen >= entries.size) { oneOffLogin(current, request); return@setPositiveButton }
                 AlertDialog.Builder(this)
                     .setTitle(tr("确认", "Confirm"))
                     .setMessage(tr("$where\n\n将使用「${entries[chosen].label}」。只在你认得的登录页面上允许；密码会被直接输入电脑，AI 看不到。10 分钟内同一账号不再询问。", "$where\n\nWill use “${entries[chosen].label}”. Only allow this on a login page you recognize; the password is typed straight into the computer and the AI never sees it. It won’t ask again for this account for 10 minutes."))
@@ -778,8 +790,27 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun answer(current: HubClient, request: SecretRequest, entry: VaultEntry?) {
-        work({ current.answerSecret(request.id, entry) }, { error -> toast(error.message ?: tr("失败", "Failed")) }) {
+    /** A login typed here for one request_login only: sent once, never written to the vault. */
+    private fun oneOffLogin(current: HubClient, request: SecretRequest) {
+        val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
+        val username = EditText(this).apply { hint = tr("账号", "username"); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS }
+        val password = EditText(this).apply { hint = tr("密码", "password"); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
+        form.addView(username)
+        form.addView(password)
+        form.addView(text(tr("只填这一次，不存进密码库。AI 看不到明文。", "Typed this once and not saved. The AI never sees it."), 13f, MUTED).below(8))
+        AlertDialog.Builder(this)
+            .setTitle(tr("登录「${request.hint}」", "Log in to “${request.hint}”"))
+            .setView(form)
+            .setPositiveButton(tr("允许并填入", "Allow and fill")) { _, _ ->
+                val entry = VaultEntry(label = request.hint, username = username.text.toString().trim(), password = password.text.toString())
+                answer(current, request, entry, oneOff = true)
+            }
+            .setNegativeButton(tr("取消", "Cancel")) { _, _ -> approveSecret(request) }
+            .show()
+    }
+
+    private fun answer(current: HubClient, request: SecretRequest, entry: VaultEntry?, oneOff: Boolean = false) {
+        work({ current.answerSecret(request.id, entry, oneOff) }, { error -> toast(error.message ?: tr("失败", "Failed")) }) {
             toast(if (entry == null) tr("已拒绝", "Denied") else tr("已允许，电脑上正在填写", "Allowed; the computer is filling it in"))
             refresh()
         }

@@ -10,8 +10,8 @@ android {
         applicationId = "com.wanji.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.6.8"
+        versionCode = 12
+        versionName = "0.6.9"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

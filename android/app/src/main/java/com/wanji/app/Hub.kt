@@ -482,10 +482,11 @@ class HubClient(private val connection: Connection) {
     /** Blocks until something changes on the hub (up to about 25 seconds) and returns its new version. */
     fun waitForEvent(since: Int): Int = request("GET", "wait?since=$since", readTimeoutMs = 45000).optInt("version")
 
-    /** Sends the chosen account for one request, or declines it when entry is null. */
-    fun answerSecret(id: String, entry: VaultEntry?) {
+    /** Sends the chosen account for one request, or declines it when entry is null. oneOff: typed for one request_login, not saved. */
+    fun answerSecret(id: String, entry: VaultEntry?, oneOff: Boolean = false) {
         val body = JSONObject().put("approve", entry != null)
         if (entry != null) body.put("label", entry.label).put("username", entry.username).put("password", entry.password)
+        if (oneOff) body.put("fresh", true).put("saved", false)
         request("POST", "secrets/$id", body)
     }
 

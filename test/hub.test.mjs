@@ -446,6 +446,62 @@ test('a declined secret runs nothing', async () => {
   assert.deepEqual(typed, []);
 });
 
+test('request_login types both halves after one approval, new or saved, and refuses unclear forms', async () => {
+  const typed = [];
+  let form = 'snapshot 1\nwindow w:9 "Sign in - Shop"\n[3] edit "Email" (10,10)\n[4] edit "Password" (10,40)\n[5] button "Sign in" (10,70)';
+  await addComputer('zeta', async (tool, args) => {
+    if (tool === 'ui_look') return { text: form };
+    typed.push(args);
+    return { text: `typed ${args.steps.map((s) => s.text).join(',')}` };
+  });
+  const nextRequest = async () => {
+    for (let i = 0; i < 100; i += 1) {
+      const request = (await (await admin('status')).json()).secretRequests[0];
+      if (request) return request;
+      await new Promise((r) => { setTimeout(r, 20); });
+    }
+    throw new Error('no login request appeared');
+  };
+  const answer = (id, body) => fetch(`${base}/hub/api/secrets/${id}`, { method: 'POST', headers: { Authorization: `Bearer ${adminKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const args = { computer: 'zeta', site: 'Shop', window: 'Sign in - Shop', username_field: 'Email', password_field: 'Password', press_enter: true, reason: 'check the order' };
+
+  // A new account typed on the phone and saved there: both fields, then Enter, in one act.
+  const first = call('request_login', args);
+  const request = await nextRequest();
+  assert.deepEqual({ ...request, id: undefined }, { id: undefined, computer: 'zeta', hint: 'Shop', part: 'login', fields: ['username', 'password'], reason: 'check the order', where: 'window "Sign in - Shop", username field "Email", password field "Password"' });
+  await answer(request.id, { approve: true, label: 'Shop', username: 'new@example.com', password: 'brand-new-密码', fresh: true, saved: true });
+  const done = await first;
+  assert.equal(done.isError, undefined);
+  assert.match(done.content[0].text, /new account .*\(saved to their vault\)/);
+  assert.doesNotMatch(JSON.stringify(done), /brand-new|new@example/);
+  assert.deepEqual(typed[0], { steps: [
+    { action: 'type', text: 'new@example.com', element_id: 3, window: 'Sign in - Shop', clear: true },
+    { action: 'type', text: 'brand-new-密码', element_id: 4, window: 'Sign in - Shop', clear: true },
+    { action: 'key', keys: 'enter', window: 'Sign in - Shop' },
+  ], observe: false });
+
+  // A saved account, not stored again: the AI is told which one, never the values.
+  const second = call('request_login', { ...args, press_enter: false });
+  await answer((await nextRequest()).id, { approve: true, label: 'Shop 主号', username: 'me@example.com', password: 'old-secret' });
+  const saved = await second;
+  assert.match(saved.content[0].text, /saved account "Shop 主号"/);
+  assert.equal(typed[1].steps.length, 2);
+
+  // Two fields with the same name: refused, nothing typed.
+  form = 'window w:9 "Sign in - Shop"\n[3] edit "Password" (10,10)\n[4] edit "Password" (10,40)';
+  const unclear = call('request_login', { computer: 'zeta', site: 'Shop', window: 'Sign in - Shop', password_field: 'Password' });
+  await answer((await nextRequest()).id, { approve: true, label: 'Shop', username: 'u', password: 'p' });
+  const refused = await unclear;
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /nothing was typed/);
+  assert.equal(typed.length, 2);
+
+  // No field named at all: refused before the phone is even asked.
+  const empty = await call('request_login', { computer: 'zeta', site: 'Shop', window: 'Sign in - Shop' });
+  assert.equal(empty.isError, true);
+  assert.deepEqual((await (await admin('status')).json()).secretRequests, []);
+});
+
 test('a phone action on a covered browser brings it back once and retries', async () => {
   let inputs = 0;
   const seen = [];

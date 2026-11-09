@@ -426,7 +426,7 @@ function ago(ms) {
 }
 const TOOL_NAMES = {
   ui_look: '看了屏幕', ui_act: '操作了界面', bash: '运行了命令', powershell: '运行了命令', job: '查看了任务', browser: '用了浏览器',
-  transfer: '传了文件', type_secret: '输入了保存的账号', secret_list: '查看了账号列表', request_human_takeover: '请你接手浏览器',
+  transfer: '传了文件', type_secret: '输入了保存的账号', secret_list: '查看了账号列表', request_human_takeover: '请你接手浏览器', request_login: '请你登录',
   check_human_takeover: '查看接手状态', cancel_human_takeover: '取消了接手', read_file: '读了文件', write_file: '写了文件', edit_file: '改了文件',
   computers: '查看了电脑列表', list_computers: '查看了电脑列表', memory: '用了共享记忆', memory_write: '写了共享记忆', screenshot: '截了屏',
   search: '搜索了文件', list_files: '列出了文件',
@@ -1170,7 +1170,93 @@ function bestMatch(meta, hint) {
     || meta.find((m) => (m.username || '').toLowerCase().includes(w)) || null;
 }
 
+// request_login: pick a saved account or type a new one here, optionally keeping it in the vault.
+function showLoginRequest(r) {
+  const v = loadVault();
+  const meta = v?.meta || [];
+  const wants = r.fields?.length ? r.fields : ['username', 'password'];
+  let picked = bestMatch(meta, r.hint);
+  let fresh = !picked;
+  let keep = Boolean(v);
+  const label = h('input', { class: 'field', placeholder: '名称，例如 GitHub', value: r.hint || '', autocomplete: 'off' });
+  const user = h('input', { class: 'field', placeholder: '用户名 / 邮箱 / 手机号', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
+  const pass = h('input', { class: 'field', type: 'password', placeholder: '密码', autocomplete: 'new-password' });
+  const keepSwitch = h('div', { class: `switch${keep ? ' on' : ''}` });
+  const err = h('div', { class: 'note', style: { color: '#ff8a8d' } });
+  const freshBox = h('div', {},
+    wants.includes('username') ? [h('div', { class: 'label', text: '用户名' }), user] : null,
+    wants.includes('password') ? [h('div', { class: 'label', text: '密码' }), pass] : null,
+    h('div', { class: 'row tap', style: { minHeight: '50px', padding: '8px 0' }, onclick: () => {
+      if (!v) { toast('先在“密码”页设置密码库，才能保存'); return; }
+      keep = !keep; keepSwitch.classList.toggle('on', keep); labelBox.style.display = keep ? '' : 'none';
+      draw();
+    } }, h('div', { class: 'grow', style: { fontSize: '15px' }, text: '保存到密码库' }), keepSwitch));
+  const labelBox = h('div', { style: { display: keep ? '' : 'none' } }, h('div', { class: 'label', text: '保存为' }), label);
+  freshBox.append(labelBox);
+  const choices = h('div', { class: 'choice-list' });
+  const face = h('div', { class: 'faceid', icon: 'faceid' });
+  const yes = h('button', { class: 'btn primary tap' });
+  const draw = () => {
+    choices.textContent = '';
+    const choice = (on, logo, color, title, sub, pick) => h('button', { class: `choice tap${on ? ' on' : ''}`, style: { width: '100%', textAlign: 'left' }, onclick: () => { pick(); draw(); } },
+      h('div', { class: 'logo', style: { background: color }, text: logo }),
+      h('div', { class: 'grow' }, h('div', { class: 't', style: { fontSize: '15px', fontWeight: 600 }, text: title }), h('div', { class: 's', style: { fontSize: '12.5px', color: 'var(--text-2)' }, text: sub })));
+    for (const m of meta) choices.append(choice(!fresh && picked?.id === m.id, [...m.label][0]?.toUpperCase() || '?', colorFor(m.label), m.label, m.username || '', () => { picked = m; fresh = false; }));
+    choices.append(choice(fresh, '+', 'rgba(255,255,255,.22)', '输入新账号', '在这里填用户名和密码', () => { fresh = true; }));
+    freshBox.style.display = fresh ? '' : 'none';
+    // A saved account or a new one kept in the vault needs the vault unlocked; a one-off login does not.
+    yes.textContent = fresh && !keep ? '允许并填入' : v?.mode === 'code' ? '解锁并允许' : '用 Face ID 允许';
+  };
+  yes.onclick = async () => {
+    err.textContent = '';
+    try {
+      let body;
+      if (fresh) {
+        const username = user.value.trim().slice(0, 120);
+        const password = pass.value;
+        if (wants.includes('username') && !username) { err.textContent = '请填用户名'; return; }
+        if (wants.includes('password') && !password) { err.textContent = '请填密码'; return; }
+        const name = label.value.trim().slice(0, 60) || r.hint || '新账号';
+        face.classList.add('scan');
+        if (keep && v) await writeAccount({ id: Array.from(rand(8), (b) => b.toString(16).padStart(2, '0')).join(''), label: name, username }, password);
+        body = { approve: true, label: name, username, password, fresh: true, saved: Boolean(keep && v) };
+      } else {
+        face.classList.add('scan');
+        const { secrets } = await readSecrets({ fresh: true });
+        body = { approve: true, label: picked.label, username: picked.username || '', password: secrets[picked.id] || '' };
+      }
+      await api(`secrets/${r.id}`, { method: 'POST', body });
+      done('approved');
+      toast(body.saved ? '已填入，并保存到密码库' : '已填入，AI 看不到明文');
+    } catch (e) { face.classList.remove('scan'); vaultErr(e); }
+  };
+  const no = h('button', { class: 'btn secondary tap', text: '拒绝', onclick: async () => {
+    try { await api(`secrets/${r.id}`, { method: 'POST', body: { approve: false } }); } catch { /* expired anyway */ }
+    done('denied');
+    toast('已拒绝');
+  } });
+  const win = /window "([^"]*)"/.exec(r.where || '')?.[1];
+  const facts = [['电脑', r.computer], win ? ['窗口', win] : null, ['要填', wants.map((w) => (w === 'username' ? '用户名' : '密码')).join(' + ')], r.reason ? ['原因', r.reason] : null].filter(Boolean);
+  const content = [
+    face,
+    h('h3', { text: `AI 想登录「${r.hint}」` }),
+    h('div', { class: 'sub', text: '选一个保存的账号，或在这里输入新的。账号密码直接填进那台电脑，AI 看不到明文。' }),
+    h('div', { class: 'facts' }, facts.map(([k, val]) => h('div', { class: 'row', style: { minHeight: '44px', padding: '10px 0' } }, h('div', { style: { color: 'var(--text-2)', flex: 'none', fontSize: '14px' }, text: k }), h('div', { class: 'grow', style: { textAlign: 'right', fontSize: '14px', overflowWrap: 'anywhere' }, text: val })))),
+    h('div', { class: 'label', text: '用哪个账号' }),
+    choices,
+    freshBox,
+    err,
+    h('div', { class: 'btns' }, no, yes),
+  ];
+  draw();
+  const entry = openSheet(content, { dismissable: false });
+  secretSheet = { id: r.id, entry };
+  const done = (why) => { if (secretSheet?.id === r.id) secretSheet = null; entry.close(why); setTimeout(handleSecretRequests, 700); };
+  if (fresh) setTimeout(() => (wants.includes('username') ? user : pass).focus(), 400);
+}
+
 function showSecretRequest(r) {
+  if (r.part === 'login') { showLoginRequest(r); return; }
   const v = loadVault();
   const meta = v?.meta || [];
   let picked = bestMatch(meta, r.hint);

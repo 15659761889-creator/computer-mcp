@@ -59,6 +59,56 @@ export const SECRET_TOOL = {
   annotations: { title: 'Type a saved secret', destructiveHint: true, openWorldHint: true },
 };
 
+export const LOGIN_TOOL = {
+  name: 'request_login',
+  description: 'Ask the owner to log in for you: their phone shows the request, they pick a saved account or type a new username and password there (and choose whether to save it to their phone vault), approve, and the hub types both into the login form. You never see the values. Use it whenever a site needs credentials, including ones the owner has not saved yet. Give the exact window title and the visible names of the username and password inputs from the latest ui_look; the hub checks both are enabled editable controls in that window right before typing and refuses anything ambiguous. Waits up to 2 minutes for the owner.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      site: { type: 'string', description: 'What to log into, as the owner would name it, such as "GitHub" or "公司邮箱". Shown to the owner and used to suggest a saved account.' },
+      window: { type: 'string', description: 'Required exact window title, matching the latest ui_look.' },
+      username_field: { type: 'string', description: 'Exact visible name of the username/email input. Omit when the form only asks for a password.' },
+      username_element_id: { type: 'integer', description: 'Optional ID of the username input from the latest ui_look, to confirm which one.' },
+      password_field: { type: 'string', description: 'Exact visible name of the password input. Omit when this step only asks for a username.' },
+      password_element_id: { type: 'integer', description: 'Optional ID of the password input from the latest ui_look, to confirm which one.' },
+      press_enter: { type: 'boolean', description: 'Press Enter afterwards in the same window.' },
+      reason: { type: 'string', description: 'One short sentence shown to the owner: what you are logging into and why.' },
+    },
+    required: ['site', 'window'],
+    additionalProperties: false,
+  },
+  annotations: { title: 'Ask the owner to log in', destructiveHint: true, openWorldHint: true },
+};
+
+// Finds the one enabled editable control named `target` (and numbered elementId, if given) in a
+// fresh ui_look of `window`. Anything ambiguous, missing or not editable is an error: never blind-type.
+export function verifyField(lookText, window, target, elementId, part) {
+  const lines = String(lookText).split(/\r?\n/);
+  const windowLine = lines.find((line) => /^window w:\S+ "/.test(line));
+  const title = /^window w:\S+ "([^"]*)"/.exec(windowLine || '')?.[1] || '';
+  const wantedWindow = window.trim().toLocaleLowerCase();
+  const shownWindow = title.toLocaleLowerCase();
+  if (!title || !(shownWindow === wantedWindow || (title.length === 80 && wantedWindow.startsWith(shownWindow)))) {
+    return { error: `The requested window "${window}" could not be confirmed; nothing was typed.` };
+  }
+  const controls = lines.map((line) => {
+    const match = /^\[(\d+)\] ([a-z]+) "([^"]*)" \([^)]*\)(.*)$/i.exec(line);
+    return match ? { id: Number(match[1]), role: match[2].toLowerCase(), name: match[3], flags: match[4] } : null;
+  }).filter(Boolean);
+  const targetName = target.trim().toLocaleLowerCase();
+  const chosen = elementId != null
+    ? controls.find((control) => control.id === elementId && control.name.toLocaleLowerCase() === targetName)
+    : (() => {
+      const matches = controls.filter((control) => control.name.toLocaleLowerCase() === targetName);
+      return matches.length === 1 ? matches[0] : null;
+    })();
+  const allowedRole = chosen && (chosen.role === 'edit' || (part === 'username' && chosen.role === 'combobox'));
+  if (!chosen || !allowedRole || /\bdisabled\b/i.test(chosen.flags)) {
+    return { error: `The requested ${part} field "${target}" was not verified as one enabled editable control in window "${window}"; nothing was typed.` };
+  }
+  return { control: chosen };
+}
+
 export const SECRET_LIST_TOOL = {
   name: 'secret_list',
   description: 'List the saved accounts the owner keeps in the 万机 phone app, by label and username only, so the AI can tell accounts apart before typing anything. Each entry also says autoAllow: true when the owner lets the AI use that account without asking each time. Passwords are never stored on the hub and never appear here. Name any connected computer; the list is the same for the whole hub. Call this before type_secret when the label alone does not say which account it is, and confirm the username with the owner before typing.',
@@ -966,29 +1016,9 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
     if (!seen || seen.isError || typeof seen.text !== 'string') {
       return { text: `Could not verify the ${part} field in window "${args.window}"; nothing was typed.`, isError: true };
     }
-    const lines = seen.text.split(/\r?\n/);
-    const windowLine = lines.find((line) => /^window w:\S+ "/.test(line));
-    const title = /^window w:\S+ "([^"]*)"/.exec(windowLine || '')?.[1] || '';
-    const wantedWindow = args.window.trim().toLocaleLowerCase();
-    const shownWindow = title.toLocaleLowerCase();
-    if (!title || !(shownWindow === wantedWindow || (title.length === 80 && wantedWindow.startsWith(shownWindow)))) {
-      return { text: `The requested window "${args.window}" could not be confirmed; nothing was typed.`, isError: true };
-    }
-    const controls = lines.map((line) => {
-      const match = /^\[(\d+)\] ([a-z]+) "([^"]*)" \([^)]*\)(.*)$/i.exec(line);
-      return match ? { id: Number(match[1]), role: match[2].toLowerCase(), name: match[3], flags: match[4] } : null;
-    }).filter(Boolean);
-    const targetName = args.target.trim().toLocaleLowerCase();
-    const chosen = hasId
-      ? controls.find((control) => control.id === args.element_id && control.name.toLocaleLowerCase() === targetName)
-      : (() => {
-        const matches = controls.filter((control) => control.name.toLocaleLowerCase() === targetName);
-        return matches.length === 1 ? matches[0] : null;
-      })();
-    const allowedRole = chosen && (chosen.role === 'edit' || (part === 'username' && chosen.role === 'combobox'));
-    if (!chosen || !allowedRole || /\bdisabled\b/i.test(chosen.flags)) {
-      return { text: `The requested ${part} field was not verified as one enabled editable control in window "${args.window}"; nothing was typed.`, isError: true };
-    }
+    const checked = verifyField(seen.text, args.window, args.target, hasId ? args.element_id : null, part);
+    if (checked.error) return { text: checked.error, isError: true };
+    const chosen = checked.control;
     const first = { action: 'type', text: value, element_id: chosen.id, window: args.window, clear: true };
     // Keys go only to the same named window as the verified field.
     const enter = { action: 'key', keys: 'enter', window: args.window };
@@ -1000,6 +1030,65 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
     return { text: `Typed the ${part} of the saved account "${grant.label}" on ${computerName}${args.press_enter ? ' and pressed Enter' : ''}. The value is never shown to you; use ui_look to check the result.` };
   }
 
+  // The owner picks a saved account or types a new one on the phone (saving it there if they
+  // choose); both halves are typed after one approval. The AI only learns whether it was saved.
+  async requestLogin(target, args, run) {
+    const id = target.self ? 'self' : target.computer.id;
+    const computerName = target.self ? this.selfName : target.computer.name;
+    const hint = String(args.site ?? '').trim().slice(0, 60);
+    if (!hint) return { text: 'name what to log into in site', isError: true };
+    const fields = [
+      ['username', args.username_field, args.username_element_id],
+      ['password', args.password_field, args.password_element_id],
+    ].filter(([, name]) => typeof name === 'string' && name.trim())
+      .map(([part, name, elementId]) => ({ part, name: name.trim(), elementId: Number.isInteger(elementId) && elementId > 0 ? elementId : null }));
+    if (typeof args.window !== 'string' || !args.window.trim() || !fields.length) {
+      return { text: 'For safety, request_login needs the exact window title and at least one of username_field or password_field, named as in ui_look.', isError: true };
+    }
+    const where = [`window "${args.window}"`, ...fields.map((f) => `${f.part} field "${f.name}"`)].join(', ');
+    const request = {
+      id: randomBytes(6).toString('hex'), computerId: id, computer: computerName, hint, part: 'login',
+      fields: fields.map((f) => f.part), reason: String(args.reason ?? '').slice(0, 200), where, created: Date.now(), waiters: [],
+    };
+    this.secretRequests.set(request.id, request);
+    this.bump();
+    this.notify({ kind: 'secret', tag: `secret-${request.id}`, title: `AI 想登录「${hint}」`, body: `${computerName} · 打开万机选择账号或输入新账号` });
+    const grant = await new Promise((resolve) => {
+      request.waiters.push(resolve);
+      setTimeout(() => {
+        if (this.secretRequests.delete(request.id)) this.bump();
+        resolve(null);
+      }, SECRET_WAIT_MS).unref();
+    });
+    if (grant === 'denied') return { text: `The owner declined to log in to "${hint}" on ${computerName}. Do not ask again unless they tell you to.`, isError: true };
+    if (!grant) return { text: `The owner did not answer the login request for "${hint}" within 2 minutes. Ask them to open the 万机 app, then call request_login again.`, isError: true };
+    if (this.browserLocked(id)) return { text: 'The owner is using this computer’s browser; nothing was typed. Ask again after takeover ends.', isError: true };
+    const missing = fields.filter((f) => !grant[f.part]);
+    if (missing.length) return { text: `The account "${grant.label}" has no ${missing.map((f) => f.part).join(' or ')}; nothing was typed.`, isError: true };
+
+    // One fresh look covers both fields; each must be a single enabled editable control.
+    const seen = await run('ui_look', { window: args.window, scope: 'window' });
+    if (!seen || seen.isError || typeof seen.text !== 'string') {
+      return { text: `Could not verify the login form in window "${args.window}"; nothing was typed.`, isError: true };
+    }
+    const steps = [];
+    for (const f of fields) {
+      const checked = verifyField(seen.text, args.window, f.name, f.elementId, f.part);
+      if (checked.error) return { text: checked.error, isError: true };
+      steps.push({ action: 'type', text: grant[f.part], element_id: checked.control.id, window: args.window, clear: true });
+    }
+    if (args.press_enter) steps.push({ action: 'key', keys: 'enter', window: args.window });
+    const result = await run('ui_act', { steps, observe: false });
+    const values = fields.map((f) => grant[f.part]).filter(Boolean);
+    const scrub = (text) => values.reduce((out, value) => out.split(value).join('***'), String(text ?? ''));
+    if (result.isError) return { text: `Typing the login failed: ${scrub(result.text)}`, isError: true };
+    const typed = fields.map((f) => f.part).join(' and ');
+    const source = grant.fresh
+      ? `a new account the owner typed on the phone (${grant.saved ? 'saved to their vault' : 'not saved'})`
+      : `the saved account "${grant.label}"`;
+    return { text: `Typed the ${typed} of ${source} on ${computerName}${args.press_enter ? ' and pressed Enter' : ''}. The values are never shown to you; use ui_look to check the result.` };
+  }
+
   answerSecret(requestId, body) {
     const request = this.secretRequests.get(requestId);
     if (!request) return false;
@@ -1009,6 +1098,9 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
         label: String(body.label || request.hint).slice(0, 60),
         username: typeof body.username === 'string' ? body.username : '',
         password: typeof body.password === 'string' ? body.password : '',
+        // Only for request_login: whether the owner typed it fresh and kept it in the phone vault.
+        fresh: body.fresh === true,
+        saved: body.saved === true,
       };
       for (const wake of request.waiters) wake(grant);
     } else {
@@ -1122,7 +1214,7 @@ Tell the user to open the app, finish the verification and tap Return to AI. ui_
       version: this.version,
       license: this.licenseStatus(),
       mcp: { full: `${origin}/t/${token}/mcp`, address: `${origin}/mcp`, key: token },
-      secretRequests: [...this.secretRequests.values()].map(({ id, computer, hint, part, reason, where }) => ({ id, computer, hint, part, reason, where })),
+      secretRequests: [...this.secretRequests.values()].map(({ id, computer, hint, part, fields, reason, where }) => ({ id, computer, hint, part, ...(fields ? { fields } : {}), reason, where })),
       vaultAccounts: this.vaultAccounts.size,
       computers: [
         ...(this.selfName ? [{
