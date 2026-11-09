@@ -13,7 +13,6 @@ import threading
 import time
 import traceback
 import unicodedata
-import zlib
 from ctypes import wintypes
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -53,6 +52,13 @@ READ_BACK_CHARS = 200000
 LABEL_GAP = 0.55
 TARGET_RETRY_MS = 1500
 LOOK_SETTLE_MS = 1200
+# Re-reading only the rows that changed since the last read of the same area: changed rows
+# closer than BAND_GAP join one band, each band grows by BAND_PAD, and past BAND_MAX_SHARE
+# of the height or BAND_MAX_COUNT bands the whole area is read again.
+BAND_GAP = 24
+BAND_PAD = 6
+BAND_MAX_SHARE = 0.5
+BAND_MAX_COUNT = 8
 
 ROLE_NAMES = {
     UIA.UIA_ButtonControlTypeId: "button", UIA.UIA_CheckBoxControlTypeId: "checkbox",
@@ -563,6 +569,9 @@ class Ocr:
                 "Det.box_thresh": 0.3, "Det.unclip_ratio": 1.3,
                 "Rec.engine_type": EngineType.ONNXRUNTIME, "Rec.lang_type": LangRec.CH, "Rec.model_type": ModelType.SERVER,
                 "Rec.ocr_version": OCRVersion.PPOCRV5,
+                # Recognition is ~90% of OCR time; batches of 32 were 40% faster than the
+                # default 6 with identical text. 64 got slower and changed results.
+                "Rec.rec_batch_num": 32,
                 "EngineConfig.onnxruntime.use_dml": True,
             })
             warm = np.full((200, 600, 3), 255, np.uint8)
@@ -743,6 +752,20 @@ def union(rects):
 def clip_to_screen(rect):
     vx, vy, vw, vh = virtual_screen()
     return (max(rect[0], vx), max(rect[1], vy), min(rect[2], vx + vw), min(rect[3], vy + vh))
+
+
+def changed_bands(before, after):
+    """Row ranges that differ between two frames of one area; None when too much changed."""
+    rows = np.flatnonzero((cv2.absdiff(before, after).max(axis=2) > CHANGE_PIXEL_THRESHOLD).any(axis=1))
+    bands = []
+    for y in rows.tolist():
+        if bands and y - bands[-1][1] <= BAND_GAP:
+            bands[-1][1] = y + 1
+        else:
+            bands.append([y, y + 1])
+    if len(bands) > BAND_MAX_COUNT or sum(y1 - y0 for y0, y1 in bands) > len(after) * BAND_MAX_SHARE:
+        return None
+    return [tuple(band) for band in bands]
 
 
 def intersects(a, b):
@@ -1042,6 +1065,47 @@ class Desktop:
                      and intersects(window_rect(h), region)]
         return windows, target, focus_set, region
 
+    def read_text(self, frame, region):
+        """OCR the frame, re-reading only the rows that changed since the last read of the same area."""
+        last = self.ocr_cache
+        labels = None
+        if last and last[0] == region and last[1].shape == frame.shape:
+            bands = changed_bands(last[1], frame)
+            if bands is not None:
+                labels = self._read_bands(frame, region, last[2], bands)
+        if labels is None:
+            labels = self.ocr.read(frame, (region[0], region[1]))
+        self.ocr_cache = (region, frame, [dict(label) for label in labels])
+        return [dict(label) for label in labels]
+
+    def _read_bands(self, frame, region, old, bands):
+        top = region[1]
+        height = frame.shape[0]
+        spans = [(label["rect"][1] - top, label["rect"][3] - top) for label in old]
+        # A band must swallow every old line it cuts, or half a line would be read.
+        grown = []
+        for y0, y1 in bands:
+            y0, y1 = max(0, y0 - BAND_PAD), min(height, y1 + BAND_PAD)
+            while True:
+                cut = [s for s in spans if s[0] < y1 and s[1] > y0 and (s[0] < y0 or s[1] > y1)]
+                if not cut:
+                    break
+                y0, y1 = max(0, min([y0] + [s[0] for s in cut])), min(height, max([y1] + [s[1] for s in cut]))
+            grown.append((y0, y1))
+        merged = []
+        for y0, y1 in sorted(grown):
+            if merged and y0 <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], y1))
+            else:
+                merged.append((y0, y1))
+        grown = merged
+        if sum(y1 - y0 for y0, y1 in grown) > height * BAND_MAX_SHARE:
+            return None
+        kept = [label for label, s in zip(old, spans) if not any(s[0] < y1 and s[1] > y0 for y0, y1 in grown)]
+        for y0, y1 in grown:
+            kept += self.ocr.read(frame[y0:y1], (region[0], top + y0))
+        return kept
+
     def wait_until_still(self, region):
         """A window just opened or just activated is often still drawing."""
         started = time.perf_counter()
@@ -1074,18 +1138,12 @@ class Desktop:
         frame = self.grab(region)
         started = time.perf_counter()
         ocr_error = None
-        key = (region, zlib.crc32(frame.tobytes()))
-        if self.ocr_cache and self.ocr_cache[0] == key:
-            labels = [dict(label) for label in self.ocr_cache[1]]
-        else:
-            try:
-                labels = self.ocr.read(frame, (region[0], region[1]))
-            except Exception as error:  # noqa: BLE001 - OCR must never fail the whole look
-                ocr_error = f"{type(error).__name__}: {error}"
-                print(traceback.format_exc(), file=sys.stderr, flush=True)
-                labels = []
-            else:
-                self.ocr_cache = (key, [dict(label) for label in labels])
+        try:
+            labels = self.read_text(frame, region)
+        except Exception as error:  # noqa: BLE001 - OCR must never fail the whole look
+            ocr_error = f"{type(error).__name__}: {error}"
+            print(traceback.format_exc(), file=sys.stderr, flush=True)
+            labels = []
         ocr_ms = int((time.perf_counter() - started) * 1000)
         for label in labels:
             label["hwnd"] = root_at(*rect_center(label["rect"]))

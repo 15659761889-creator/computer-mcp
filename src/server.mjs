@@ -94,7 +94,9 @@ function hubTools(hub, memory, auditFile, skills, tasks) {
       required: ['computer', ...(tool.inputSchema.required || [])],
     },
   });
-  return [listComputersTool(memory), ...(hub?.transfers ? [taskTagged(TRANSFER_TOOL)] : []), ...(memory ? MEMORY_TOOLS : []), ...(auditFile ? [HISTORY_TOOL] : []), ...(skills ? SKILL_TOOLS : []), ...(tasks ? TASK_TOOLS : []), ...[...ALL_TOOLS, SECRET_TOOL, SECRET_LIST_TOOL, ...HANDOFF_TOOLS].map(taskTagged).map(withComputer)];
+  // Task fields only make sense where task_claim exists (not through the official relay).
+  const tag = tasks ? taskTagged : (tool) => tool;
+  return [listComputersTool(memory), ...(hub?.transfers ? [tag(TRANSFER_TOOL)] : []), ...(memory ? MEMORY_TOOLS : []), ...(auditFile ? [HISTORY_TOOL] : []), ...(skills ? SKILL_TOOLS : []), ...(tasks ? TASK_TOOLS : []), ...[...ALL_TOOLS, SECRET_TOOL, SECRET_LIST_TOOL, ...HANDOFF_TOOLS].map(tag).map(withComputer)];
 }
 
 function instructions(name) {
@@ -177,7 +179,7 @@ async function handleRpc(message, context) {
     case 'tools/list': {
       const tools = context.hub
         ? hubTools(context.hub, context.memory, context.auditFile, context.skills, context.tasks)
-        : [...(context.memory ? [listComputersTool(context.memory)] : []), ...(desktopSupported ? [...TOOLS, ...HANDOFF_TOOLS] : TOOLS).map(taskTagged), ...(context.memory ? MEMORY_TOOLS : []), ...(context.auditFile ? [HISTORY_TOOL] : []), ...(context.skills ? SKILL_TOOLS : []), ...(context.tasks ? TASK_TOOLS : [])];
+        : [...(context.memory ? [listComputersTool(context.memory)] : []), ...(desktopSupported ? [...TOOLS, ...HANDOFF_TOOLS] : TOOLS).map(context.tasks ? taskTagged : (tool) => tool), ...(context.memory ? MEMORY_TOOLS : []), ...(context.auditFile ? [HISTORY_TOOL] : []), ...(context.skills ? SKILL_TOOLS : []), ...(context.tasks ? TASK_TOOLS : [])];
       return rpcResult(id, { tools: context.allowedTools ? tools.filter((tool) => context.allowedTools.has(tool.name)) : tools });
     }
     case 'tools/call':
