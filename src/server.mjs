@@ -443,7 +443,32 @@ export function sendJson(res, status, body, extra = {}) {
   res.end(JSON.stringify(body));
 }
 
-// Fast calls stay plain JSON; slow ones become an event stream so the tunnel keeps the request open.
+// Whether this client reads its reply from an event stream. Some MCP clients
+// (notably Claude's remote connector) only read Streamable HTTP replies sent
+// as SSE, so a client that accepts text/event-stream gets SSE, not plain JSON.
+function wantsSse(req) {
+  return String(req.headers.accept || '').includes('text/event-stream');
+}
+
+function sendSse(res, body) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'X-Accel-Buffering': 'no',
+  });
+  res.end(`event: message\ndata: ${JSON.stringify(body)}\n\n`);
+}
+
+// One JSON-RPC reply, as SSE when the client accepts a stream, else plain JSON.
+function sendReply(req, res, body, allowSse = true) {
+  if (allowSse && wantsSse(req)) {
+    sendSse(res, body);
+    return;
+  }
+  sendJson(res, 200, body);
+}
+
+// Slow calls become an event stream so the tunnel keeps the request open; a client that accepts SSE gets SSE even when the call is fast, because it may not read plain JSON at all.
 async function respondToCall(req, res, pending, allowSse = true) {
   if (!allowSse) {
     sendJson(res, 200, await pending);
@@ -457,7 +482,8 @@ async function respondToCall(req, res, pending, allowSse = true) {
   ]);
   clearTimeout(timer);
   if (first !== null) {
-    sendJson(res, 200, first);
+    if (accepts) sendSse(res, first);
+    else sendJson(res, 200, first);
     return;
   }
   if (!accepts) {
@@ -506,7 +532,7 @@ export async function serveMcp(req, res, context, allowSse = true) {
     return;
   }
   const reply = await pending;
-  if (reply) sendJson(res, 200, reply);
+  if (reply) sendReply(req, res, reply, allowSse);
   else {
     res.writeHead(202);
     res.end();
