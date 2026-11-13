@@ -54,7 +54,11 @@ test('auth: path token, bearer token, and rejections', async () => {
   assert.equal((await post('/mcp', init)).status, 401);
   assert.equal((await post('/mcp', init, { Authorization: 'Bearer wrong' })).status, 401);
   assert.equal((await post('/mcp', init, { Authorization: `Bearer ${TOKEN}` })).status, 200);
-  assert.equal((await fetch(`${base}/t/${TOKEN}/mcp`)).status, 405);
+  // GET opens a server-to-client event stream (Streamable HTTP), not a 405.
+  const get = await fetch(`${base}/t/${TOKEN}/mcp`);
+  assert.equal(get.status, 200);
+  assert.match(get.headers.get('content-type'), /text\/event-stream/);
+  await get.body.cancel();
   assert.equal((await fetch(`${base}/healthz`)).status, 200);
 });
 
@@ -81,6 +85,39 @@ test('protocol: initialize, version negotiation, notifications, tool list', asyn
   assert.equal((await rpc('tools/call', { name: 'nope' })).error.code, -32602);
   const bad = await fetch(`${base}/t/${TOKEN}/mcp`, { method: 'POST', body: '{oops' });
   assert.equal(bad.status, 400);
+});
+
+test('session: initialize issues Mcp-Session-Id, later calls echo it, stateless still works', async () => {
+  // initialize returns a session id in the header.
+  const initRes = await post(`/t/${TOKEN}/mcp`, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
+  assert.equal(initRes.status, 200);
+  const sid = initRes.headers.get('mcp-session-id');
+  assert.ok(sid && sid.length > 0, 'initialize should return Mcp-Session-Id');
+  // tools/list with the session id works over SSE and over JSON.
+  const sse = await post(`/t/${TOKEN}/mcp`, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, { 'Mcp-Session-Id': sid, Accept: 'text/event-stream' });
+  assert.equal(sse.status, 200);
+  assert.match(sse.headers.get('content-type'), /text\/event-stream/);
+  assert.equal(sse.headers.get('mcp-session-id'), sid);
+  const sseText = await sse.text();
+  assert.ok(JSON.parse(sseText.split('\n').find((line) => line.startsWith('data: ')).slice(6)).result.tools.length > 0);
+  const js = await post(`/t/${TOKEN}/mcp`, { jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} }, { 'Mcp-Session-Id': sid, Accept: 'application/json' });
+  assert.equal(js.status, 200);
+  assert.match(js.headers.get('content-type'), /application\/json/);
+  assert.equal(js.headers.get('mcp-session-id'), sid);
+  assert.ok((await js.json()).result.tools.length > 0);
+  // No session id at all still works (stateless clients unaffected).
+  const noSid = await post(`/t/${TOKEN}/mcp`, { jsonrpc: '2.0', id: 4, method: 'tools/list', params: {} }, { Accept: 'application/json' });
+  assert.equal(noSid.status, 200);
+  assert.ok((await noSid.json()).result.tools.length > 0);
+  // GET with an unknown session id is a 404; with a known one it opens a stream.
+  assert.equal((await fetch(`${base}/t/${TOKEN}/mcp`, { headers: { 'Mcp-Session-Id': 'no-such-session' } })).status, 404);
+  const stream = await fetch(`${base}/t/${TOKEN}/mcp`, { headers: { 'Mcp-Session-Id': sid } });
+  assert.equal(stream.status, 200);
+  assert.equal(stream.headers.get('mcp-session-id'), sid);
+  await stream.body.cancel();
+  // DELETE ends the session; the id is then unknown.
+  assert.equal((await fetch(`${base}/t/${TOKEN}/mcp`, { method: 'DELETE', headers: { 'Mcp-Session-Id': sid } })).status, 204);
+  assert.equal((await fetch(`${base}/t/${TOKEN}/mcp`, { headers: { 'Mcp-Session-Id': sid } })).status, 404);
 });
 
 test('bash: output, exit code, Chinese, cwd, stderr', async () => {

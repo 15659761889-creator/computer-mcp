@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { timingSafeEqual, createHash } from 'node:crypto';
+import { timingSafeEqual, createHash, randomBytes } from 'node:crypto';
 import { desktopSupported } from './desktop.mjs';
 import { HandoffManager, HANDOFF_TOOLS } from './handoff.mjs';
 import { LOGIN_TOOL, SECRET_TOOL, SECRET_LIST_TOOL } from './hub.mjs';
@@ -23,6 +23,27 @@ const MAX_AUDIT_BYTES = 50 * 1024 * 1024;
 // Cloudflare drops requests silent for 100 s, so slow calls switch to a stream with keepalives.
 const SWITCH_TO_STREAM_MS = 5000;
 const KEEPALIVE_MS = 15000;
+
+// Sessions for the Streamable HTTP transport. The server keeps no per-session
+// state beyond the id itself; a client that never sends one works statelessly.
+// Some MCP clients (notably Claude's remote connector) require the server to
+// return a Mcp-Session-Id on initialize, so one is issued there and echoed
+// back on later calls in the same session.
+const MCP_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const mcpSessions = new Map(); // id -> createdAt ms
+function newMcpSession() {
+  const id = randomBytes(16).toString('base64url');
+  const now = Date.now();
+  for (const [old, at] of mcpSessions) if (now - at > MCP_SESSION_TTL_MS) mcpSessions.delete(old);
+  mcpSessions.set(id, now);
+  return id;
+}
+function validMcpSession(id) {
+  return typeof id === 'string' && id.length > 0 && mcpSessions.has(id);
+}
+function endMcpSession(id) {
+  return mcpSessions.delete(id);
+}
 
 function sameSecret(a, b) {
   const hash = (value) => createHash('sha256').update(value).digest();
@@ -450,28 +471,29 @@ function wantsSse(req) {
   return String(req.headers.accept || '').includes('text/event-stream');
 }
 
-function sendSse(res, body) {
+function sendSse(res, body, extra = {}) {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'X-Accel-Buffering': 'no',
+    ...extra,
   });
   res.end(`event: message\ndata: ${JSON.stringify(body)}\n\n`);
 }
 
 // One JSON-RPC reply, as SSE when the client accepts a stream, else plain JSON.
-function sendReply(req, res, body, allowSse = true) {
+function sendReply(req, res, body, allowSse = true, extra = {}) {
   if (allowSse && wantsSse(req)) {
-    sendSse(res, body);
+    sendSse(res, body, extra);
     return;
   }
-  sendJson(res, 200, body);
+  sendJson(res, 200, body, extra);
 }
 
 // Slow calls become an event stream so the tunnel keeps the request open; a client that accepts SSE gets SSE even when the call is fast, because it may not read plain JSON at all.
-async function respondToCall(req, res, pending, allowSse = true) {
+async function respondToCall(req, res, pending, allowSse = true, extra = {}) {
   if (!allowSse) {
-    sendJson(res, 200, await pending);
+    sendJson(res, 200, await pending, extra);
     return;
   }
   const accepts = String(req.headers.accept || '').includes('text/event-stream');
@@ -482,18 +504,19 @@ async function respondToCall(req, res, pending, allowSse = true) {
   ]);
   clearTimeout(timer);
   if (first !== null) {
-    if (accepts) sendSse(res, first);
-    else sendJson(res, 200, first);
+    if (accepts) sendSse(res, first, extra);
+    else sendJson(res, 200, first, extra);
     return;
   }
   if (!accepts) {
-    sendJson(res, 200, await pending);
+    sendJson(res, 200, await pending, extra);
     return;
   }
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     'X-Accel-Buffering': 'no',
+    ...extra,
   });
   res.write(': running\n\n');
   const keepalive = setInterval(() => res.write(': running\n\n'), KEEPALIVE_MS);
@@ -504,9 +527,43 @@ async function respondToCall(req, res, pending, allowSse = true) {
 
 // Answers one authorized request to the MCP endpoint.
 export async function serveMcp(req, res, context, allowSse = true) {
+  // GET opens a server-to-client event stream (Streamable HTTP). This server
+  // has no server-initiated messages, so the stream only carries keepalives
+  // until the client goes away. An unknown session id is a 404 per spec.
+  if (req.method === 'GET') {
+    const sid = req.headers['mcp-session-id'];
+    if (sid && !validMcpSession(sid)) {
+      sendJson(res, 404, { error: 'session not found' });
+      return;
+    }
+    const headers = {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'X-Accel-Buffering': 'no',
+      ...(sid ? { 'Mcp-Session-Id': sid } : {}),
+    };
+    res.writeHead(200, headers);
+    res.write(': connected\n\n');
+    const keepalive = setInterval(() => { try { res.write(': running\n\n'); } catch { /* client gone */ } }, KEEPALIVE_MS);
+    const stop = () => clearInterval(keepalive);
+    req.on('close', stop);
+    res.on('close', stop);
+    return;
+  }
+  // DELETE ends a session.
+  if (req.method === 'DELETE') {
+    const sid = req.headers['mcp-session-id'];
+    if (sid && validMcpSession(sid)) {
+      endMcpSession(sid);
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    sendJson(res, 404, { error: 'session not found' });
+    return;
+  }
   if (req.method !== 'POST') {
-    // Stateless server: no standalone stream to open and no session to delete.
-    sendJson(res, 405, { error: 'method not allowed' }, { Allow: 'POST' });
+    sendJson(res, 405, { error: 'method not allowed' }, { Allow: 'POST, GET, DELETE' });
     return;
   }
   let parsed;
@@ -517,24 +574,41 @@ export async function serveMcp(req, res, context, allowSse = true) {
     sendJson(res, 400, rpcError(null, -32700, 'invalid JSON'));
     return;
   }
+  // Session: initialize starts one (a fresh id); a later request echoes the id
+  // it sent when we issued it. A request with no (or an unknown) session id
+  // still works statelessly, so older clients are unaffected.
+  const incoming = req.headers['mcp-session-id'];
+  let sessionId = validMcpSession(incoming) ? incoming : null;
+  const isInit = (m) => m && typeof m === 'object' && m.method === 'initialize';
+  if (Array.isArray(parsed) ? parsed.some(isInit) : isInit(parsed)) sessionId = newMcpSession();
+  const extra = sessionId ? { 'Mcp-Session-Id': sessionId } : {};
   if (Array.isArray(parsed)) {
     const replies = (await Promise.all(parsed.map((message) => handleRpc(message, context)))).filter(Boolean);
-    if (replies.length) sendJson(res, 200, replies);
-    else {
-      res.writeHead(202);
+    if (replies.length) {
+      if (allowSse && wantsSse(req)) {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'X-Accel-Buffering': 'no',
+          ...extra,
+        });
+        res.end(replies.map((r) => `event: message\ndata: ${JSON.stringify(r)}\n\n`).join(''));
+      } else sendJson(res, 200, replies, extra);
+    } else {
+      res.writeHead(202, extra);
       res.end();
     }
     return;
   }
   const pending = handleRpc(parsed, context);
   if (parsed?.method === 'tools/call' && parsed.id !== undefined && parsed.id !== null) {
-    await respondToCall(req, res, pending, allowSse);
+    await respondToCall(req, res, pending, allowSse, extra);
     return;
   }
   const reply = await pending;
-  if (reply) sendReply(req, res, reply, allowSse);
+  if (reply) sendReply(req, res, reply, allowSse, extra);
   else {
-    res.writeHead(202);
+    res.writeHead(202, extra);
     res.end();
   }
 }
