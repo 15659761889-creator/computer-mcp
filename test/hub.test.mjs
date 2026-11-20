@@ -302,7 +302,7 @@ test('tools list requires a computer on device tools, not hub-level coordination
   });
   const { tools } = (await res.json()).result;
   for (const tool of tools) {
-    if (['list_computers', 'transfer', 'skill_list', 'skill_load', 'skill_read', 'skill_risk', 'task_create', 'task_list', 'task_get', 'task_claim', 'task_update', 'task_archive', 'task_unarchive', 'task_reopen', 'task_renew'].includes(tool.name)) continue;
+    if (['list_computers', 'transfer', 'batch', 'skill_list', 'skill_load', 'skill_read', 'skill_risk', 'task_create', 'task_list', 'task_get', 'task_claim', 'task_update', 'task_archive', 'task_unarchive', 'task_reopen', 'task_renew'].includes(tool.name)) continue;
     assert.ok(tool.inputSchema.required.includes('computer'), tool.name);
   }
   assert.ok(tools.some((tool) => tool.name === 'ui_act'));
@@ -696,4 +696,23 @@ test('list_computers summaries obey memory_read and task_list token scopes', asy
     scopedHub.close();
     fs.rmSync(scopedDir, { recursive: true, force: true });
   }
+});
+
+test('batch sends each item to its own computer, in parallel, with images', async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  await addComputer('batch-one', async (tool, args) => { await gate; return { text: `batch-one ${tool} ${args.command}` }; });
+  await addComputer('batch-two', async (tool) => { release(); return { text: `batch-two ${tool}`, image: { data: 'BBBB', mimeType: 'image/png' } }; });
+  const out = await call('batch', { computer: 'batch-one', calls: [
+    { tool: 'bash', args: { command: 'one' } },
+    { tool: 'ui_look', args: { computer: 'batch-two' } },
+    { tool: 'bash', args: { computer: 'nobody', command: 'x' } },
+  ] });
+  const text = out.content[0].text;
+  // batch-one waits for batch-two, so this only finishes when both ran at the same time.
+  assert.match(text, /^batch: 2 ok, 1 failed, 0 skipped/);
+  assert.match(text, /=== \[1\] bash @batch-one ok \d+ ms\nbatch-one bash one/);
+  assert.match(text, /=== \[2\] ui_look @batch-two ok \d+ ms\nbatch-two ui_look\n\[1 image\(s\) attached\]/);
+  assert.match(text, /=== \[3\] bash @nobody ERROR \d+ ms\nThere is no computer named "nobody"/);
+  assert.equal(out.content[1].data, 'BBBB');
 });

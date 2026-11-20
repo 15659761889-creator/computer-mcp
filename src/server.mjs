@@ -10,6 +10,7 @@ import { HISTORY_TOOL, latestHandoff, maskSecrets, renderRecentCalls } from './h
 import { MEMORY_TOOLS, MEMORY_TOOL_NAMES } from './memory.mjs';
 import { SkillStore, SKILL_TOOLS, SKILL_TOOL_NAMES, SKILL_GUIDE } from './skills.mjs';
 import { TaskStore, TASK_TOOLS, TASK_NAMES } from './tasks.mjs';
+import { BATCH_TOOL, runBatch } from './batch.mjs';
 import { availableShells, defaultShell, findBash } from './shell.mjs';
 import { ALL_TOOLS, callTool, hasTool, summarizeArgs, TOOLS } from './tools.mjs';
 import { TRANSFER_TOOL } from './transfer.mjs';
@@ -117,7 +118,7 @@ function hubTools(hub, memory, auditFile, skills, tasks) {
   });
   // Task fields only make sense where task_claim exists (not through the official relay).
   const tag = tasks ? taskTagged : (tool) => tool;
-  return [listComputersTool(memory), ...(hub?.transfers ? [tag(TRANSFER_TOOL)] : []), ...(memory ? MEMORY_TOOLS : []), ...(auditFile ? [HISTORY_TOOL] : []), ...(skills ? SKILL_TOOLS : []), ...(tasks ? TASK_TOOLS : []), ...[...ALL_TOOLS, LOGIN_TOOL, SECRET_TOOL, SECRET_LIST_TOOL, ...HANDOFF_TOOLS].map(tag).map(withComputer)];
+  return [listComputersTool(memory), ...(hub?.transfers ? [tag(TRANSFER_TOOL)] : []), ...(memory ? MEMORY_TOOLS : []), ...(auditFile ? [HISTORY_TOOL] : []), ...(skills ? SKILL_TOOLS : []), ...(tasks ? TASK_TOOLS : []), BATCH_TOOL, ...[...ALL_TOOLS, LOGIN_TOOL, SECRET_TOOL, SECRET_LIST_TOOL, ...HANDOFF_TOOLS].map(tag).map(withComputer)];
 }
 
 function instructions(name) {
@@ -200,7 +201,7 @@ async function handleRpc(message, context) {
     case 'tools/list': {
       const tools = context.hub
         ? hubTools(context.hub, context.memory, context.auditFile, context.skills, context.tasks)
-        : [...(context.memory ? [listComputersTool(context.memory)] : []), ...(desktopSupported ? [...TOOLS, ...HANDOFF_TOOLS] : TOOLS).map(context.tasks ? taskTagged : (tool) => tool), ...(context.memory ? MEMORY_TOOLS : []), ...(context.auditFile ? [HISTORY_TOOL] : []), ...(context.skills ? SKILL_TOOLS : []), ...(context.tasks ? TASK_TOOLS : [])];
+        : [...(context.memory ? [listComputersTool(context.memory)] : []), ...(desktopSupported ? [...TOOLS, ...HANDOFF_TOOLS] : TOOLS).map(context.tasks ? taskTagged : (tool) => tool), ...(context.memory ? MEMORY_TOOLS : []), ...(context.auditFile ? [HISTORY_TOOL] : []), ...(context.skills ? SKILL_TOOLS : []), ...(context.tasks ? TASK_TOOLS : []), BATCH_TOOL];
       return rpcResult(id, { tools: context.allowedTools ? tools.filter((tool) => context.allowedTools.has(tool.name)) : tools });
     }
     case 'tools/call':
@@ -276,7 +277,8 @@ export function activityDetail(name, args = {}) {
   switch (name) {
     case 'bash': line = `${s.command ?? ''}${s.cwd ? `  (in ${s.cwd})` : ''}${s.background ? '  [background]' : ''}`; break;
     case 'job': line = s.id ? `${s.action || 'status'} ${s.id}` : 'list'; break;
-    case 'read_file': case 'write_file': case 'edit_file': line = s.path; break;
+    case 'read_file': line = s.paths ? `${s.paths.length} files: ${s.paths.join(', ')}` : s.path; break;
+    case 'write_file': case 'edit_file': line = s.path; break;
     case 'grep': line = `"${s.pattern ?? ''}"${s.glob ? ` ${s.glob}` : ''}${s.path ? `  (in ${s.path})` : ''}`; break;
     case 'glob': line = `${s.pattern ?? ''}${s.path ? `  (in ${s.path})` : ''}`; break;
     case 'wait_for': line = [s.file_match && `log ${s.file_match.path}`, s.file_changed && `change ${s.file_changed}`, s.process_exit && `pid ${s.process_exit} exit`, s.port_open && `port ${s.port_open}`, s.job_done && `job ${s.job_done}`].filter(Boolean).join(', '); break;
@@ -314,6 +316,11 @@ export function leaseRenewalExpired(started, now = Date.now()) {
 async function callAndAudit(id, params, context) {
   const name = params?.name;
   if (context.allowedTools && !context.allowedTools.has(name)) return rpcError(id, -32601, `tool is not enabled for this token: ${name}`);
+  // Each item is an ordinary call of its own: same checks, routing, audit and feed line.
+  if (name === BATCH_TOOL.name) {
+    const outcome = await runBatch(params.arguments, (tool, args) => callAndAudit(id, { name: tool, arguments: args }, context));
+    return rpcResult(id, { content: [{ type: 'text', text: outcome.text }, ...(outcome.images ?? [])], ...(outcome.isError ? { isError: true } : {}) });
+  }
   const handoffTool = HANDOFF_TOOLS.some(tool => tool.name === name);
   // A server with one computer answers list_computers only when shared memory is on; it has nothing else to say.
   const hubTool = Boolean(context.hub || context.memory) && name === LIST_COMPUTERS_TOOL.name;

@@ -16,6 +16,8 @@ const DEFAULT_READ_LINES = 2000;
 const MAX_READ_LINES = 20000;
 const MAX_LINE_CHARS = 4000;
 const MAX_READ_CHARS = 100000;
+const MAX_READ_PATHS = 50;
+const MIN_SHARE_CHARS = 4000;
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const IMAGE_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
 
@@ -112,15 +114,15 @@ const BASE_TOOLS = [
   },
   {
     name: 'read_file',
-    description: 'Read a text file with numbered lines, decoding UTF-8, UTF-16 and GBK automatically, or view a PNG, JPEG, GIF or WebP image. Other binary files return only type and size.',
+    description: 'Read a text file with numbered lines, decoding UTF-8, UTF-16 and GBK automatically, or view a PNG, JPEG, GIF or WebP image. Other binary files return only type and size. To read several files in one call, give paths instead of path.',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'File path; relative paths start at the home directory.' },
+        paths: { type: 'array', items: { type: 'string' }, maxItems: MAX_READ_PATHS, description: `Several files at once (max ${MAX_READ_PATHS}); offset and limit apply to each.` },
         offset: { type: 'integer', minimum: 1, description: 'First line to read, from 1.' },
         limit: { type: 'integer', minimum: 1, description: `Number of lines. Default ${DEFAULT_READ_LINES}, max ${MAX_READ_LINES}.` },
       },
-      required: ['path'],
       additionalProperties: false,
     },
     annotations: { title: 'Read file', readOnlyHint: true, openWorldHint: false },
@@ -356,9 +358,29 @@ async function readRaw(file) {
 }
 
 async function readFile(args) {
-  const file = resolvePath(needString(args, 'path'));
+  if (args.paths === undefined) return readOne(resolvePath(needString(args, 'path')), args, MAX_READ_CHARS);
+  if (args.path !== undefined) throw new ToolError('give path or paths, not both');
+  if (!Array.isArray(args.paths) || !args.paths.length || args.paths.some((p) => typeof p !== 'string')) throw new ToolError('paths must be a non-empty list of file paths');
+  if (args.paths.length > MAX_READ_PATHS) throw new ToolError(`at most ${MAX_READ_PATHS} paths per call`);
+  // The files share one reply, so each gets an equal part of it.
+  const share = Math.max(MIN_SHARE_CHARS, Math.floor(MAX_READ_CHARS / args.paths.length));
+  const parts = await Promise.all(args.paths.map(async (input) => {
+    const file = resolvePath(input);
+    try {
+      const one = await readOne(file, args, share, false);
+      return { text: `=== ${file}\n${one.text}`, isError: one.isError };
+    } catch (err) {
+      if (!(err instanceof ToolError)) throw err;
+      return { text: `=== ${file}\nERROR: ${err.message}`, isError: true };
+    }
+  }));
+  return { text: parts.map((p) => p.text).join('\n'), isError: parts.every((p) => p.isError) };
+}
+
+async function readOne(file, args, maxChars, allowImage = true) {
   const buf = await readRaw(file);
   const imageType = IMAGE_TYPES[path.extname(file).toLowerCase()];
+  if (imageType && !allowImage) return { text: `image, ${buf.length} bytes: read it on its own with path to see it` };
   if (imageType) {
     if (buf.length > MAX_IMAGE_BYTES) {
       return { text: `image is ${buf.length} bytes, too large to return: ${file}; shrink it first`, isError: true };
@@ -382,7 +404,7 @@ async function readFile(args) {
       ? `${lines[i].slice(0, MAX_LINE_CHARS)} [... line cut, ${lines[i].length} chars in total]`
       : lines[i];
     chars += line.length;
-    if (chars > MAX_READ_CHARS && out.length > 0) break;
+    if (chars > maxChars && out.length > 0) break;
     out.push(`${i + 1}\t${line}`);
     last = i + 1;
   }
@@ -560,6 +582,8 @@ export function summarizeArgs(name, args = {}) {
       };
     case 'transfer':
       return { from: args.from, from_path: args.from_path, to: args.to, to_path: args.to_path, route: args.route, overwrite: args.overwrite, id: args.id, cancel: args.cancel };
+    case 'read_file':
+      return { path: args.path, paths: Array.isArray(args.paths) ? args.paths.slice(0, 50) : undefined, offset: args.offset, limit: args.limit };
     case 'grep':
       return { pattern: clip(args.pattern), path: args.path, glob: args.glob, type: args.type, output_mode: args.output_mode, head_limit: args.head_limit };
     case 'glob':
