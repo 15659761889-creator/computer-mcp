@@ -277,6 +277,9 @@ export function activityDetail(name, args = {}) {
     case 'bash': line = `${s.command ?? ''}${s.cwd ? `  (in ${s.cwd})` : ''}${s.background ? '  [background]' : ''}`; break;
     case 'job': line = s.id ? `${s.action || 'status'} ${s.id}` : 'list'; break;
     case 'read_file': case 'write_file': case 'edit_file': line = s.path; break;
+    case 'grep': line = `"${s.pattern ?? ''}"${s.glob ? ` ${s.glob}` : ''}${s.path ? `  (in ${s.path})` : ''}`; break;
+    case 'glob': line = `${s.pattern ?? ''}${s.path ? `  (in ${s.path})` : ''}`; break;
+    case 'wait_for': line = [s.file_match && `log ${s.file_match.path}`, s.file_changed && `change ${s.file_changed}`, s.process_exit && `pid ${s.process_exit} exit`, s.port_open && `port ${s.port_open}`, s.job_done && `job ${s.job_done}`].filter(Boolean).join(', '); break;
     case 'ui_look': line = [s.window && `@${s.window}`, s.scope, s.region && `region ${s.region.left},${s.region.top},${s.region.right},${s.region.bottom}`, s.find && `find "${s.find}"`].filter(Boolean).join(' ') || 'active window'; break;
     case 'ui_act': line = s.steps ? s.steps.map(act).join(' → ') : act(s); break;
     case 'browser': line = [s.action, s.url, s.index != null && `#${s.index}`].filter(Boolean).join(' '); break;

@@ -8,6 +8,8 @@ import { describeJob, findJob, jobOutput, killJob, listJobs, logPathOf, startJob
 import { DEFAULT_TIMEOUT_SECS, DEFAULT_WAIT_SECS, MAX_TIMEOUT_SECS, MAX_WAIT_SECS, defaultShell } from './shell.mjs';
 import { decodeFile, encodeFile, looksBinary } from './text.mjs';
 import { maskSecrets } from './history.mjs';
+import { DEFAULT_GLOB_LIMIT, DEFAULT_HEAD_LIMIT, SearchError, glob as globFiles, grep as grepFiles } from './search.mjs';
+import { WaitError, waitFor } from './wait-for.mjs';
 
 const MAX_FILE_BYTES = 256 * 1024 * 1024;
 const DEFAULT_READ_LINES = 2000;
@@ -153,6 +155,72 @@ const BASE_TOOLS = [
       additionalProperties: false,
     },
     annotations: { title: 'Edit file', destructiveHint: true, openWorldHint: false },
+  },
+  {
+    name: 'grep',
+    description: 'Search file contents with a regular expression (JavaScript syntax), faster and safer than grep through bash. Skips .git, node_modules and files in .gitignore. Reads UTF-8, UTF-16 and GBK files. Default output lists matching files, newest first; output_mode content shows path:line:text.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Regular expression, e.g. "function\\s+\\w+" or "TODO".' },
+        path: { type: 'string', description: 'File or folder to search. Defaults to the home directory; name a project folder for speed.' },
+        glob: { type: 'string', description: 'Only files matching this glob, e.g. "*.lua" or "src/**/*.{ts,tsx}".' },
+        type: { type: 'string', description: 'Only this file type, e.g. js, py, lua, cs, md.' },
+        output_mode: { type: 'string', enum: ['files_with_matches', 'content', 'count'], description: 'Default files_with_matches.' },
+        '-i': { type: 'boolean', description: 'Ignore case.' },
+        context: { type: 'integer', minimum: 0, description: 'Lines before and after each match (content mode).' },
+        '-B': { type: 'integer', minimum: 0, description: 'Lines before each match (content mode).' },
+        '-A': { type: 'integer', minimum: 0, description: 'Lines after each match (content mode).' },
+        head_limit: { type: 'integer', minimum: 0, description: `Max output lines or files. Default ${DEFAULT_HEAD_LIMIT}; 0 = no limit.` },
+        ignored: { type: 'boolean', description: 'Also search .gitignore\'d files and node_modules.' },
+      },
+      required: ['pattern'],
+      additionalProperties: false,
+    },
+    annotations: { title: 'Search file contents', readOnlyHint: true, openWorldHint: false },
+  },
+  {
+    name: 'glob',
+    description: 'Find files by name pattern, e.g. "**/*.lua" or "src/**/test_*.py". Returns full paths, most recently modified first. Skips .git, node_modules and files in .gitignore.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Glob relative to path. ** spans folders; a pattern without / matches file names at any depth.' },
+        path: { type: 'string', description: 'Folder to search. Defaults to the home directory.' },
+        limit: { type: 'integer', minimum: 1, description: `Max files returned. Default ${DEFAULT_GLOB_LIMIT}.` },
+        ignored: { type: 'boolean', description: 'Also list .gitignore\'d files and node_modules.' },
+      },
+      required: ['pattern'],
+      additionalProperties: false,
+    },
+    annotations: { title: 'Find files by name', readOnlyHint: true, openWorldHint: false },
+  },
+  {
+    name: 'wait_for',
+    description: `Wait until any one of the given conditions holds, instead of polling with sleep. Replies at once with which condition fired, or "timeout" after timeout seconds (max ${MAX_WAIT_SECS}); then call again to keep waiting.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file_match: {
+          type: 'object',
+          description: 'A line of the file matches regex, e.g. a log printing "Listening".',
+          properties: {
+            path: { type: 'string' },
+            regex: { type: 'string' },
+            new_only: { type: 'boolean', description: 'Only text added after this call started. Default false: the whole file counts.' },
+            ignore_case: { type: 'boolean' },
+          },
+          required: ['path', 'regex'],
+        },
+        file_changed: { type: 'object', description: 'The file is created, modified or deleted.', properties: { path: { type: 'string' } }, required: ['path'] },
+        process_exit: { type: 'object', description: 'The process with this PID is gone.', properties: { pid: { type: 'integer' } }, required: ['pid'] },
+        port_open: { type: 'object', description: 'A TCP port accepts connections.', properties: { host: { type: 'string', description: 'Default 127.0.0.1.' }, port: { type: 'integer' } }, required: ['port'] },
+        job_done: { type: 'object', description: 'A bash job has finished; then read its output with the job tool.', properties: { id: { type: 'string' } }, required: ['id'] },
+        timeout: { type: 'number', description: `Seconds to wait. Default 60, max ${MAX_WAIT_SECS}.` },
+      },
+      additionalProperties: false,
+    },
+    annotations: { title: 'Wait for a condition', readOnlyHint: true, openWorldHint: false },
   },
   BROWSER_TOOL,
 ];
@@ -426,7 +494,23 @@ async function desktopCall(method, args) {
   return { text: reply.text, isError: reply.isError === true, image: reply.image };
 }
 
-const HANDLERS = { bash, job, read_file: readFile, write_file: writeFile, edit_file: editFile, browser: browserTool };
+// Search and wait errors are the caller's to fix, like ToolError.
+const asToolError = (fn) => async (args) => {
+  try {
+    return await fn(args);
+  } catch (err) {
+    if (err instanceof SearchError || err instanceof WaitError) throw new ToolError(err.message);
+    throw err;
+  }
+};
+const searchRoot = (args) => (args.path === undefined ? os.homedir() : resolvePath(needString(args, 'path')));
+
+const HANDLERS = {
+  bash, job, read_file: readFile, write_file: writeFile, edit_file: editFile, browser: browserTool,
+  grep: asToolError((args) => grepFiles(args, searchRoot(args))),
+  glob: asToolError((args) => globFiles(args, searchRoot(args))),
+  wait_for: asToolError((args) => waitFor(args, resolvePath)),
+};
 if (desktopSupported) {
   HANDLERS.ui_look = (args) => desktopCall('look', args);
   HANDLERS.ui_act = (args) => desktopCall('act', args);
@@ -476,6 +560,12 @@ export function summarizeArgs(name, args = {}) {
       };
     case 'transfer':
       return { from: args.from, from_path: args.from_path, to: args.to, to_path: args.to_path, route: args.route, overwrite: args.overwrite, id: args.id, cancel: args.cancel };
+    case 'grep':
+      return { pattern: clip(args.pattern), path: args.path, glob: args.glob, type: args.type, output_mode: args.output_mode, head_limit: args.head_limit };
+    case 'glob':
+      return { pattern: args.pattern, path: args.path, limit: args.limit };
+    case 'wait_for':
+      return { file_match: args.file_match && { path: args.file_match.path, regex: clip(args.file_match.regex) }, file_changed: args.file_changed?.path, process_exit: args.process_exit?.pid, port_open: args.port_open && `${args.port_open.host || '127.0.0.1'}:${args.port_open.port}`, job_done: args.job_done?.id, timeout: args.timeout };
     case 'edit_file':
       return { path: args.path, old_chars: args.old?.length, new_chars: args.new?.length, replace_all: args.replace_all };
     case 'memory_write':

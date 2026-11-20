@@ -427,7 +427,7 @@ function ago(ms) {
 const TOOL_NAMES = {
   ui_look: '看了屏幕', ui_act: '操作了界面', bash: '运行了命令', powershell: '运行了命令', job: '查看了任务', browser: '用了浏览器',
   transfer: '传了文件', type_secret: '输入了保存的账号', secret_list: '查看了账号列表', request_human_takeover: '请你接手浏览器', request_login: '请你登录',
-  check_human_takeover: '查看接手状态', cancel_human_takeover: '取消了接手', read_file: '读了文件', write_file: '写了文件', edit_file: '改了文件',
+  check_human_takeover: '查看接手状态', cancel_human_takeover: '取消了接手', read_file: '读了文件', write_file: '写了文件', edit_file: '改了文件', grep: '搜了文件内容', glob: '找了文件', wait_for: '在等待',
   computers: '查看了电脑列表', list_computers: '查看了电脑列表', memory: '用了共享记忆', memory_write: '写了共享记忆', screenshot: '截了屏',
   search: '搜索了文件', list_files: '列出了文件',
 };
