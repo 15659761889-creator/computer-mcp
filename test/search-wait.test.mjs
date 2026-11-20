@@ -66,6 +66,8 @@ for (const engine of ['walker', ...(RG ? ['ripgrep'] : [])]) {
       assert.equal(out.isError, undefined, out.text);
       const files = rel(out.text).sort();
       assert.deepEqual(files, ['enc/utf16.txt', 'keep.log', 'src/main.lua', 'src/util/helper.lua'].sort());
+      // Lookahead: JavaScript regex that ripgrep rejects, so its prefilter must step aside.
+      assert.deepEqual(rel((await callTool('grep', { pattern: 'needle(?= one)', path: root })).text), ['src/main.lua']);
       const gbk = await callTool('grep', { pattern: '中文针', path: root });
       assert.deepEqual(rel(gbk.text).sort(), ['enc/gbk.txt', 'enc/utf16.txt']);
     });

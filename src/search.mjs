@@ -150,8 +150,9 @@ export function findRipgrep() {
 export function resetRipgrepCache() { rgCache = undefined; }
 
 // No --glob from the caller: ripgrep lets a glob override .gitignore, so globMatcher filters names.
-async function* ripgrepFiles(rg, root, { type, ignored, deadline }) {
-  const args = ['--files', '--hidden', '--no-require-git', '--no-messages', '--glob', '!.git'];
+// With prefilter, ripgrep also reads the files and lists only those that may match.
+async function* ripgrepFiles(rg, root, { type, ignored, deadline, prefilter }) {
+  const args = [...(prefilter ? ['--files-with-matches', '--max-filesize', '50M', ...(prefilter.ignoreCase ? ['-i'] : []), '-e', prefilter.pattern] : ['--files']), '--hidden', '--no-require-git', '--no-messages', '--glob', '!.git'];
   if (ignored) args.push('--no-ignore');
   else args.push('--glob', '!node_modules');
   if (type) args.push('--type', type);
@@ -181,7 +182,7 @@ async function* ripgrepFiles(rg, root, { type, ignored, deadline }) {
 }
 
 // Every file below root that passes the filters, from ripgrep or the built-in walker.
-async function* candidates(root, { glob, type, ignored, deadline }) {
+async function* candidates(root, { glob, type, ignored, deadline, prefilter }) {
   const rg = findRipgrep();
   let exts = null;
   if (type && !rg) {
@@ -189,7 +190,7 @@ async function* candidates(root, { glob, type, ignored, deadline }) {
     if (!exts) throw new SearchError(`unknown type "${type}"; known: ${Object.keys(TYPES).join(', ')}. Or use glob, e.g. *.ext`);
   }
   const match = glob ? globMatcher(glob) : null;
-  const source = rg ? ripgrepFiles(rg, root, { type, ignored, deadline }) : walk(root, { ignored, deadline });
+  const source = rg ? ripgrepFiles(rg, root, { type, ignored, deadline, prefilter }) : walk(root, { ignored, deadline });
   for await (const item of source) {
     if (item.stop) { yield item; return; }
     if (exts && !exts.includes(path.extname(item.rel).slice(1).toLowerCase())) continue;
@@ -246,9 +247,22 @@ export async function grep(args, root) {
   let stop = null;
   if (stat.isFile()) files.push(root);
   else {
-    for await (const item of candidates(root, { glob: args.glob, type: args.type, ignored: args.ignored === true, deadline })) {
-      if (item.stop) { stop = item.stop; break; }
-      files.push(path.join(root, item.rel));
+    const options = { glob: args.glob, type: args.type, ignored: args.ignored === true, deadline };
+    // ripgrep can skip non-matching files itself, but it reads GBK as bytes and its regex
+    // syntax differs a little, so only ASCII patterns use it and a pattern it rejects falls back.
+    const prefilter = findRipgrep() && /^[ -]*$/.test(args.pattern) ? { pattern: args.pattern, ignoreCase: args['-i'] === true } : null;
+    for (const pre of prefilter ? [prefilter, null] : [null]) {
+      try {
+        for await (const item of candidates(root, { ...options, prefilter: pre })) {
+          if (item.stop) { stop = item.stop; break; }
+          files.push(path.join(root, item.rel));
+        }
+        break;
+      } catch (err) {
+        if (!pre || !(err instanceof SearchError)) throw err;
+        files.length = 0;
+        stop = null;
+      }
     }
   }
 
@@ -303,7 +317,7 @@ export async function grep(args, root) {
     }
   }
   const notes = [];
-  if (!out.length) notes.push(`no matches in ${stat.isFile() ? root : `${files.length} files under ${root}`}`);
+  if (!out.length) notes.push(`no matches in ${root}`);
   else if (mode === 'count') notes.push(`${hits.reduce((n, h) => n + h.matched.length, 0)} matches in ${hits.length} files`);
   else if (mode === 'files_with_matches') notes.push(`${hits.length} files`);
   if (more) notes.push(`cut at head_limit ${headLimit}; raise it or narrow the search`);
