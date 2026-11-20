@@ -250,7 +250,7 @@ export async function grep(args, root) {
     const options = { glob: args.glob, type: args.type, ignored: args.ignored === true, deadline };
     // ripgrep can skip non-matching files itself, but it reads GBK as bytes and its regex
     // syntax differs a little, so only ASCII patterns use it and a pattern it rejects falls back.
-    const prefilter = findRipgrep() && /^[ -]*$/.test(args.pattern) ? { pattern: args.pattern, ignoreCase: args['-i'] === true } : null;
+    const prefilter = findRipgrep() && /^[\x00-\x7f]*$/.test(args.pattern) ? { pattern: args.pattern, ignoreCase: args['-i'] === true } : null;
     for (const pre of prefilter ? [prefilter, null] : [null]) {
       try {
         for await (const item of candidates(root, { ...options, prefilter: pre })) {
@@ -320,6 +320,7 @@ export async function grep(args, root) {
   if (!out.length) notes.push(`no matches in ${root}`);
   else if (mode === 'count') notes.push(`${hits.reduce((n, h) => n + h.matched.length, 0)} matches in ${hits.length} files`);
   else if (mode === 'files_with_matches') notes.push(`${hits.length} files`);
+  else notes.push(`${outputLines} matching lines in ${hits.length} files`);
   if (more) notes.push(`cut at head_limit ${headLimit}; raise it or narrow the search`);
   if (stop) notes.push(stopNote(stop));
   return { text: [...out, `[${notes.join('; ')}]`].join('\n') };
