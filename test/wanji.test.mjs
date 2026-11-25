@@ -79,7 +79,7 @@ test('protocol: initialize, version negotiation, notifications, tool list', asyn
   const note = await post(`/t/${TOKEN}/mcp`, { jsonrpc: '2.0', method: 'notifications/initialized' });
   assert.equal(note.status, 202);
   const { result } = await rpc('tools/list');
-  const desktopTools = process.platform === 'win32' ? ['ui_look', 'ui_act', 'request_human_takeover', 'check_human_takeover', 'cancel_human_takeover'] : [];
+  const desktopTools = process.platform === 'win32' || process.platform === 'darwin' ? ['ui_look', 'ui_act', 'request_human_takeover', 'check_human_takeover', 'cancel_human_takeover'] : [];
   assert.deepEqual(result.tools.map((tool) => tool.name), ['bash', 'job', 'read_file', 'write_file', 'edit_file', 'grep', 'glob', 'wait_for', 'browser', ...desktopTools, 'recent_calls', 'skill_list', 'skill_load', 'skill_risk', 'skill_read', 'skill_verify', 'task_create', 'task_list', 'task_get', 'task_claim', 'task_update', 'task_archive', 'task_unarchive', 'task_reopen', 'task_renew', 'batch']);
   assert.equal((await rpc('nope')).error.code, -32601);
   assert.equal((await rpc('tools/call', { name: 'nope' })).error.code, -32602);
