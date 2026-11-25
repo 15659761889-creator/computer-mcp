@@ -9,7 +9,7 @@ const IDLE = 5 * 60 * 1000;
 export const HANDOFF_TOOLS = [
   {
     name: 'request_human_takeover',
-    description: 'Ask the human to take over the currently active Windows browser window. Returns a temporary, browser-openable handoff link; tell the user to open it on their phone, complete the verification, tap Return to AI, and then say continue. During the takeover AI ui_act calls are blocked. The page never receives the full MCP credential. Only use when human interaction is required.',
+    description: 'Ask the human to take over the currently active Windows or macOS browser window. Returns a temporary, browser-openable handoff link; tell the user to open it on their phone, complete the verification, tap Return to AI, and then say continue. During the takeover AI ui_act calls are blocked. The page never receives the full MCP credential. Only use when human interaction is required.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     annotations: { title: 'Hand browser control to human', openWorldHint: true }
   },
@@ -67,7 +67,7 @@ export class HandoffManager {
   locked() { return this.status() === 'waiting' || this.pendingStart; }
   async invoke(name, args) {
     if (name === 'request_human_takeover') {
-      if (!desktopSupported) return { text: 'Human takeover requires Windows desktop control', isError: true };
+      if (!desktopSupported) return { text: 'Human takeover requires Windows or macOS desktop control', isError: true };
       if (this.locked()) return { text: 'A handoff is already active; use check_human_takeover.', isError: true };
       this.pendingStart = true;
       try {

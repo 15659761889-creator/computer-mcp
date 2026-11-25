@@ -17,6 +17,8 @@
     "src",
     "desktop/helper.py",
     "desktop/requirements.txt",
+    "desktop/macos/helper.swift",
+    "desktop/macos/Info.plist",
     "web",
     "installer/install-relay.sh",
     "README.md"

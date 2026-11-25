@@ -1,6 +1,6 @@
 # 万机
 
-Give any computer its own MCP link, so a model can control it. Requires Node.js >=20. On Windows, Python 3.10-3.13 is needed for desktop control. Bash is optional: without Git for Windows the AI uses PowerShell, and `wanji shell bash` downloads Portable Git (about 60 MB, no administrator rights).
+Give any computer its own MCP link, so a model can control it. Requires Node.js >=20. On Windows, Python 3.10-3.13 is needed for desktop control. On macOS, native desktop control uses Accessibility, CoreGraphics and Vision; install Apple Command Line Tools (`xcode-select --install`) before running `wanji desktop`. Bash is optional: without Git for Windows the AI uses PowerShell, and `wanji shell bash` downloads Portable Git (about 60 MB, no administrator rights).
 
 ## Tools
 
@@ -11,8 +11,8 @@ Give any computer its own MCP link, so a model can control it. Requires Node.js 
 | `read_file` | Read text with line numbers (UTF-8, UTF-16, GBK), or view an image. |
 | `write_file` | Create or overwrite a file, atomically. |
 | `edit_file` | Replace exact text, keeping encoding and line endings. Refuses if the match is not unique. |
-| `ui_look` | Windows only. Windows, controls and on-screen text as a numbered list with coordinates, plus a screenshot when needed. |
-| `ui_act` | Windows only. Click, type, press keys, scroll, drag and manage windows by id, text or coordinates, then return the new state. |
+| `ui_look` | Windows and macOS. Open windows, controls and on-screen text as a numbered list with coordinates, plus a screenshot when needed. |
+| `ui_act` | Windows and macOS. Click, type, press keys, scroll, drag and manage windows by id, text or coordinates, then return the new state. |
 | `browser` | The AI's own browser: headless Chromium with its own profile (logins kept), read as numbered elements and text like `ui_look`. Works on computers without a screen. Install with `wanji browser` (about 300 MB; on Linux it also installs the libraries and Chinese fonts when sudo needs no password). |
 | `transfer` | With several computers: copy a file or folder between them, any size, over the LAN when possible. Resumes after interruptions and checks SHA-256 before putting it in place. |
 | `recent_calls` | Read-only. The latest tool calls from every AI session, newest first, so a new AI can tell what the last one did, whether it finished and where to continue. See "Picking up unfinished work". |
@@ -116,7 +116,7 @@ When an AI is cut off (a dropped connection, a full context, a closed chat) it o
 
 ## Desktop control
 
-`ui_look` merges UI Automation with OCR (PP-OCRv5 on the GPU through DirectML), so custom-drawn apps such as Blender, Godot and Flutter apps are readable too. It keeps a warm helper process and uses about 500 MB of disk. `wanji setup` installs it; `wanji desktop` installs or repairs it.
+`ui_look` combines native accessibility controls with OCR and returns coordinates for `ui_act`. Windows coordinates are screen pixels; macOS coordinates are Quartz global display coordinates (logical points on Retina displays). Windows uses UI Automation plus PP-OCRv5 (DirectML); macOS uses Accessibility plus Apple Vision OCR, ScreenCaptureKit screen capture and CoreGraphics input. The helper app is locally ad-hoc signed; it is not Developer ID signed or notarized. Unchanged builds are reused to preserve the current app signature and privacy grants; a helper source update changes the ad-hoc signature and may require permissions to be approved again. On macOS, `wanji desktop` builds a small native helper with the installed Swift compiler; first use requires Accessibility, Screen Recording and permission to post keyboard/mouse events. macOS prompts for the helper app, “Wanji Desktop Control”; approve those prompts, then restart the Wanji service so the permission changes take effect. Native desktop control requires macOS 12.3 or later. macOS 15.2 and later use ScreenCaptureKit for all active displays; macOS 12.3–15.1 fall back to the main display only. `wanji setup` attempts the desktop installation automatically; `wanji desktop` installs or repairs it. `wanji autostart` installs a per-user LaunchAgent (`~/Library/LaunchAgents/com.wanji.service.plist`), and `wanji autostart off` removes it. With automatic start disabled, `wanji start` does not silently re-enable it; use `wanji run` for a foreground session.
 
 Safety built into `ui_act`: nothing happens when a target is ambiguous, gone, disabled or covered, and the reply explains why. Keys and typing go only to the window from the last look. After acting it waits for the screen to change instead of sleeping, and says so if nothing changed. Typing is read back where the control allows it.
 
@@ -136,9 +136,9 @@ Each joined computer has a route, set in the phone app or with `wanji route <nam
 
 ## Linux
 
-The same package runs on Linux as a joined computer or a relay: shell (bash), files, jobs, `browser` and `transfer`; `ui_look` and `ui_act` are Windows-only. `wanji join` (or `wanji autostart`) installs a systemd user service with lingering, so it starts at boot. Inside WSL it also puts a small hidden script in the Windows Startup folder that keeps the distro running from logon, because WSL stops a distro when no Windows program uses it. `wanji autostart off` removes both.
+The same package runs on Linux as a joined computer or a relay: shell (bash), files, jobs, `browser` and `transfer`; native desktop control is currently supported on Windows and macOS, not Linux. `wanji join` (or `wanji autostart`) installs a systemd user service with lingering, so it starts at boot. Inside WSL it also puts a small hidden script in the Windows Startup folder that keeps the distro running from logon, because WSL stops a distro when no Windows program uses it. `wanji autostart off` removes both.
 
-The phone app's browser takeover works on the AI's own browser too: on a computer without a desktop it shows that browser straight away, and on Windows its tabs are listed as "AI 浏览器" next to the desktop's browser windows. When the AI asks for a takeover while it is using its own browser, that is the one the owner gets. While the owner is on it, `ui_act` and `browser` on that computer wait.
+The phone app's browser takeover works on the AI's own browser too: on a computer without a desktop it shows that browser straight away, and on Windows and macOS its native browser windows are listed next to the AI browser. When the AI asks for a takeover while it is using its own browser, that is the one the owner gets. While the owner is on it, `ui_act` and `browser` on that computer wait.
 
 ## Administrator rights
 

@@ -1,0 +1,64 @@
+name: macOS support
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'src/**'
+      - 'desktop/macos/**'
+      - 'test/**'
+      - 'scripts/build-macos-helper.sh'
+      - 'installer/build-mac.sh'
+      - 'installer/WanjiMac.swift'
+      - 'package.json'
+      - '.github/workflows/macos.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'desktop/macos/**'
+      - 'test/**'
+      - 'scripts/build-macos-helper.sh'
+      - 'installer/build-mac.sh'
+      - 'installer/WanjiMac.swift'
+      - 'package.json'
+      - '.github/workflows/macos.yml'
+
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+          - os: macos-14
+            arch: arm64
+          - os: macos-13
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+      - name: Run Node tests
+        run: node --test
+      - name: Build native desktop helper app
+        run: ./scripts/build-macos-helper.sh "$RUNNER_TEMP/Wanji Desktop Control.app"
+      - name: Smoke-test native desktop helper binary
+        run: |
+          REPLY=$(printf '{"id":1,"method":"ping"}\n' | "$RUNNER_TEMP/Wanji Desktop Control.app/Contents/MacOS/wanji-desktop-control")
+          echo "$REPLY"
+          echo "$REPLY" | grep -q '"id":1'
+      - name: Build macOS installer (.pkg and .dmg)
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: bash installer/build-mac.sh
+      - name: Upload macOS installers
+        if: matrix.os == 'macos-15' || matrix.os == 'macos-13'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wanji-macos-${{ matrix.arch }}-${{ matrix.os }}
+          path: |
+            dist/*.pkg
+            dist/*.dmg

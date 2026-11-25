@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -7,12 +8,19 @@ import { homeDir } from './config.mjs';
 import { download } from './bash-install.mjs';
 
 const IS_WINDOWS = process.platform === 'win32';
+const IS_MACOS = process.platform === 'darwin';
 const DESKTOP_DIR = fileURLToPath(new URL('../desktop/', import.meta.url));
 const REQUEST_TIMEOUT_MS = 120000;
 const PYTHON_VERSIONS = ['3.12', '3.11', '3.10', '3.13'];
 
-export const desktopSupported = IS_WINDOWS;
+export const desktopSupported = IS_WINDOWS || IS_MACOS;
 
+const macHelperDir = () => path.join(homeDir(), 'desktop');
+const macHelperAppPath = () => path.join(macHelperDir(), 'Wanji Desktop Control.app');
+const macHelperPath = () => path.join(macHelperAppPath(), 'Contents', 'MacOS', 'wanji-desktop-control');
+const macHelperSource = () => path.join(DESKTOP_DIR, 'macos', 'helper.swift');
+const macHelperInfoPlist = () => path.join(DESKTOP_DIR, 'macos', 'Info.plist');
+const macHelperBuildStamp = (app = macHelperAppPath()) => path.join(app, 'Contents', 'Resources', 'wanji-build.sha256');
 const venvDir = () => path.join(homeDir(), 'desktop-venv');
 
 function venvPython() {
@@ -23,8 +31,11 @@ function venvPython() {
 // half-made environment does not count as installed and the next install starts clean.
 const unfinishedMark = () => path.join(venvDir(), '.wanji-installing');
 
-export const desktopInstalled = () => fs.existsSync(venvPython())
-  && (Boolean(process.env.COMPUTER_MCP_PYTHON) || !fs.existsSync(unfinishedMark()));
+export const desktopInstalled = () => {
+  if (IS_MACOS) return fs.existsSync(macHelperPath()) && fs.statSync(macHelperPath()).size > 0;
+  return IS_WINDOWS && fs.existsSync(venvPython())
+    && (Boolean(process.env.COMPUTER_MCP_PYTHON) || !fs.existsSync(unfinishedMark()));
+};
 
 // Prints the interpreter only for 64-bit x86: onnxruntime-directml has wheels for
 // win_amd64 alone, so an ARM64 or 32-bit Python could never install desktop control.
@@ -111,7 +122,8 @@ const PIP_MIRROR = 'https://pypi.tuna.tsinghua.edu.cn/simple';
 
 // Installs the engine and downloads the OCR models now, so the first look is not a long wait.
 export async function installDesktop({ proxy } = {}) {
-  if (!IS_WINDOWS) throw new Error('desktop control is Windows-only so far');
+  if (IS_MACOS) return installMacDesktop();
+  if (!IS_WINDOWS) throw new Error('desktop control is available on Windows and macOS');
   const python = path.join(venvDir(), 'Scripts', 'python.exe');
   // An earlier attempt was cut off: keep its environment only if pip still runs in it.
   if (fs.existsSync(unfinishedMark()) && spawnSync(python, ['-m', 'pip', '--version'], { stdio: 'ignore', windowsHide: true }).status !== 0) {
@@ -147,6 +159,87 @@ export async function installDesktop({ proxy } = {}) {
   console.log('Desktop control is ready.');
 }
 
+// macOS uses native Accessibility, CoreGraphics input/screen capture, and Vision OCR.
+// Build locally so the app is signed locally against this Mac's installed SDK and receives a stable bundle identity for macOS privacy permissions.
+export function installMacDesktop() {
+  if (!IS_MACOS) throw new Error('the native desktop helper can only be built on macOS');
+  const systemVersion = spawnSync('sw_vers', ['-productVersion'], { encoding: 'utf8', timeout: 10000 });
+  const versionParts = systemVersion.status === 0 ? systemVersion.stdout.trim().split('.').map(Number) : [];
+  if (versionParts.length < 2 || !versionParts.every(Number.isFinite)) {
+    throw new Error('could not determine the macOS version with sw_vers');
+  }
+  if (versionParts[0] < 12 || (versionParts[0] === 12 && versionParts[1] < 3)) {
+    throw new Error(`native desktop control requires macOS 12.3 or later; this Mac reports ${systemVersion.stdout.trim()}`);
+  }
+  if (!fs.existsSync(macHelperSource())) throw new Error(`missing native desktop source: ${macHelperSource()}`);
+  if (!fs.existsSync(macHelperInfoPlist())) throw new Error(`missing macOS app metadata: ${macHelperInfoPlist()}`);
+  const buildHash = createHash('sha256')
+    .update(fs.readFileSync(macHelperSource()))
+    .update('\0')
+    .update(fs.readFileSync(macHelperInfoPlist()))
+    .digest('hex');
+  if (fs.existsSync(macHelperPath()) && fs.existsSync(macHelperBuildStamp())) {
+    const installedHash = fs.readFileSync(macHelperBuildStamp(), 'utf8').trim();
+    if (installedHash === buildHash) {
+      const verified = spawnSync('codesign', ['--verify', '--deep', '--strict', macHelperAppPath()], { encoding: 'utf8', timeout: 30000 });
+      if (verified.status === 0) {
+        console.log('macOS desktop helper is already up to date; preserving its signed app identity and permissions.');
+        return macHelperAppPath();
+      }
+    }
+  }
+  const probe = spawnSync('xcrun', ['--find', 'swiftc'], { encoding: 'utf8', timeout: 15000 });
+  const swiftc = probe.status === 0 ? probe.stdout.trim() : null;
+  if (!swiftc) {
+    throw new Error('Swift compiler not found. Install Apple Command Line Tools first with: xcode-select --install; then run: wanji desktop');
+  }
+  fs.mkdirSync(macHelperDir(), { recursive: true });
+  const target = macHelperAppPath();
+  const temporary = `${target}.new-${process.pid}`;
+  const backup = `${target}.old-${process.pid}`;
+  fs.rmSync(temporary, { recursive: true, force: true });
+  fs.rmSync(backup, { recursive: true, force: true });
+  const executableDir = path.join(temporary, 'Contents', 'MacOS');
+  fs.mkdirSync(executableDir, { recursive: true });
+  const binary = path.join(executableDir, 'wanji-desktop-control');
+  const build = spawnSync(swiftc, [
+    '-O', '-mmacosx-version-min=12.3', '-framework', 'AppKit', '-framework', 'ApplicationServices',
+    '-framework', 'Vision', '-framework', 'ScreenCaptureKit', '-framework', 'CoreGraphics', '-framework', 'ImageIO',
+    '-o', binary, macHelperSource(),
+  ], { encoding: 'utf8', timeout: 300000, maxBuffer: 8 * 1024 * 1024 });
+  if (build.status !== 0 || !fs.existsSync(binary)) {
+    fs.rmSync(temporary, { recursive: true, force: true });
+    throw new Error(`could not build the macOS desktop helper: ${(build.stderr || build.stdout || '').trim().slice(-2500)}`);
+  }
+  fs.copyFileSync(macHelperInfoPlist(), path.join(temporary, 'Contents', 'Info.plist'));
+  const resources = path.join(temporary, 'Contents', 'Resources');
+  fs.mkdirSync(resources, { recursive: true });
+  fs.writeFileSync(path.join(resources, 'wanji-build.sha256'), `${buildHash}\n`, { mode: 0o644 });
+  const signed = spawnSync('codesign', ['--force', '--deep', '--sign', '-', '--identifier', 'com.wanji.desktop-control', temporary], {
+    encoding: 'utf8', timeout: 30000,
+  });
+  if (signed.status !== 0) {
+    fs.rmSync(temporary, { recursive: true, force: true });
+    throw new Error(`could not sign the macOS desktop app: ${(signed.stderr || signed.stdout || '').trim().slice(-1000)}`);
+  }
+  const verified = spawnSync('codesign', ['--verify', '--deep', '--strict', temporary], { encoding: 'utf8', timeout: 30000 });
+  if (verified.status !== 0) {
+    fs.rmSync(temporary, { recursive: true, force: true });
+    throw new Error(`macOS desktop app signature verification failed: ${(verified.stderr || verified.stdout || '').trim().slice(-1000)}`);
+  }
+  if (fs.existsSync(target)) fs.renameSync(target, backup);
+  try {
+    fs.renameSync(temporary, target);
+    fs.rmSync(backup, { recursive: true, force: true });
+  } catch (err) {
+    if (fs.existsSync(backup) && !fs.existsSync(target)) fs.renameSync(backup, target);
+    fs.rmSync(temporary, { recursive: true, force: true });
+    throw err;
+  }
+  console.log('macOS desktop app built. Grant Accessibility, Screen Recording and event-control permissions to “Wanji Desktop Control” when macOS asks, then restart the service (`wanji stop && wanji start`). A changed ad-hoc-signed helper may require macOS permissions to be approved again.');
+  return target;
+}
+
 class Helper {
   constructor() {
     this.child = null;
@@ -159,11 +252,12 @@ class Helper {
   start() {
     if (this.child) return;
     if (!desktopInstalled()) throw new Error('desktop control is not installed; run: wanji desktop');
-    const child = spawn(venvPython(), [path.join(DESKTOP_DIR, 'helper.py')], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-      env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
-    });
+    const child = IS_MACOS
+      ? spawn(macHelperPath(), [], { stdio: ['pipe', 'pipe', 'pipe'], env: process.env })
+      : spawn(venvPython(), [path.join(DESKTOP_DIR, 'helper.py')], {
+        stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+        env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
+      });
     this.child = child;
     readline.createInterface({ input: child.stdout }).on('line', (line) => this.onLine(line));
     child.stderr.on('data', (chunk) => {
@@ -237,7 +331,7 @@ export function callDesktop(method, args) {
 
 // Loading the OCR model takes seconds, so the service does it before anyone is waiting.
 export function warmDesktop() {
-  if (!IS_WINDOWS || !desktopInstalled()) return;
+  if (!desktopSupported || !desktopInstalled()) return;
   try {
     helper.call('ping', {}).catch(() => {});
   } catch {

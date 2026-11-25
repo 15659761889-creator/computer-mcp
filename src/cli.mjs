@@ -133,7 +133,7 @@ const HELP = `wanji: give this computer its own fixed MCP link
       --check [--plain]       ask the update server whether a newer signed version exists
       --download              download it, check its signature and SHA-256, print the installer path
   wanji autostart [off]  start automatically with the computer (Windows: logon task;
-                              Linux: systemd user service, plus a keeper in Windows under WSL)
+                              macOS: per-user LaunchAgent; Linux: systemd user service)
   wanji start | stop   start or stop the service
   wanji run            run in the foreground (what the startup task calls)
   wanji uninstall      remove automatic start, keep the link for a later setup
@@ -210,7 +210,7 @@ async function setup({ flags, positional }) {
     name, domain, hostname, port, tunnelId, cloudflared, proxy, token: existing?.token || newToken(),
   });
   installAppCopy();
-  if (desktopSupported && !flags['no-desktop'] && !desktopInstalled()) {
+  if (desktopSupported && !flags['no-desktop'] && (process.platform === 'darwin' || !desktopInstalled())) {
     try {
       await installDesktop({ proxy });
     } catch (err) {
@@ -222,10 +222,10 @@ async function setup({ flags, positional }) {
     console.log(autostart.note);
   } else {
     startService();
-    if (autostart.level !== 'Highest') {
-      if (!flags.limited) console.log('Note: administrator rights were not granted, so windows running as administrator cannot be controlled. Run setup again and allow the prompt to change that.');
+    if (process.platform === 'win32' && autostart.level !== 'Highest' && !flags.limited) {
+      console.log('Note: administrator rights were not granted, so windows running as administrator cannot be controlled. Run setup again and allow the prompt to change that.');
     }
-    if (!findBash()) console.log('Note: Git Bash was not found, so the AI uses PowerShell. To give it Bash, run: wanji shell bash');
+    if (process.platform === 'win32' && !findBash()) console.log('Note: Git Bash was not found, so the AI uses PowerShell. To give it Bash, run: wanji shell bash');
     if (!await waitFor(() => localHealthy(port), 30)) {
       throw new Error(`the service did not start on port ${port}; try wanji run to see why`);
     }
@@ -551,7 +551,10 @@ async function finishJoin(existing, joined, flags, joinFile) {
   // loop, which a normal process cannot stop and which would restart the old service
   // while its files are being replaced. The task is started only at the end.
   fs.mkdirSync(homeDir(), { recursive: true });
-  say('[2/4] 设置开机自动启动（如果弹出“是否允许更改”，请点“是”）...', 'Setting up automatic start...');
+  say(
+    process.platform === 'darwin' ? '[2/4] 设置当前用户的开机启动...' : '[2/4] 设置开机自动启动（如果弹出“是否允许更改”，请点“是”）...',
+    process.platform === 'darwin' ? 'Setting up a per-user login agent...' : 'Setting up automatic start...',
+  );
   const autostart = installAutostart({ limited: flags.limited === true, node, stopFirst: true });
   if (autostart.note) console.log(autostart.note);
   await stopService();
@@ -563,8 +566,11 @@ async function finishJoin(existing, joined, flags, joinFile) {
   installAppCopy();
   const cli = path.join(homeDir(), 'app', 'bin', 'wanji.mjs');
   let desktopProblem = null;
-  if (desktopSupported && !flags['no-desktop'] && !desktopInstalled()) {
-    say('[4/4] 安装桌面控制（看屏幕、点鼠标）：要下载约 500 MB，可能要几分钟，请不要关闭窗口...', 'Installing desktop control...');
+  if (desktopSupported && !flags['no-desktop'] && (process.platform === 'darwin' || !desktopInstalled())) {
+    say(
+      process.platform === 'darwin' ? '[4/4] 编译 macOS 原生桌面控制（需要 Apple Command Line Tools）...' : '[4/4] 安装桌面控制（看屏幕、点鼠标）：要下载约 500 MB，可能要几分钟，请不要关闭窗口...',
+      process.platform === 'darwin' ? 'Building native macOS desktop control...' : 'Installing desktop control...',
+    );
     try {
       await installDesktop({ proxy });
     } catch (err) {
@@ -1118,6 +1124,7 @@ async function status() {
     console.log(`joined to:   ${config.joined.origin}`);
     console.log(`local:       ${await localHealthy(config.port) ? 'running' : 'NOT running'}`);
     console.log(`autostart:   ${autostartState()}`);
+    if (desktopSupported) console.log(`desktop:     ${desktopInstalled() ? 'installed' : 'not installed; run wanji desktop'}`);
     console.log(`browser:     ${browserInstalled() ? 'installed' : 'not installed; run wanji browser'}`);
     console.log(`audit log:   ${path.join(logDir(), 'audit.jsonl')}`);
     return;
@@ -1291,11 +1298,22 @@ export async function main(argv) {
         return undefined;
       }
       requireConfig();
+      const macAutostartWasInstalled = process.platform === 'darwin' && autostartState() !== 'not installed';
+      const macDesktopWasInstalled = process.platform === 'darwin' && desktopInstalled();
       await stopService();
       installAppCopy();
       if (process.platform === 'win32') writeLauncher();
-      startService();
-      console.log('The service now runs this version.');
+      if (process.platform === 'darwin' && macDesktopWasInstalled) {
+        try {
+          await installDesktop({ proxy: loadConfig()?.proxy });
+        } catch (err) {
+          console.log(`Warning: macOS desktop helper was not rebuilt; the previous helper remains in place: ${err.message}`);
+        }
+      }
+      if (process.platform !== 'darwin' || macAutostartWasInstalled) startService();
+      console.log(process.platform === 'darwin' && !macAutostartWasInstalled
+        ? 'The Mac files were updated. Automatic start remains off; run `wanji run` to start manually or `wanji autostart` to enable it.'
+        : 'The service now runs this version.');
       return undefined;
     case 'autostart': {
       requireConfig();

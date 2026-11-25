@@ -7,12 +7,16 @@ import { securePrivateFile, writePrivateFile } from './private-file.mjs';
 
 export const DEFAULT_PORT = 8765;
 
-export function homeDir() {
-  if (process.env.COMPUTER_MCP_HOME) return process.env.COMPUTER_MCP_HOME;
-  if (process.platform === 'win32') {
-    return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'computer-mcp');
+export function homeDir(platform = process.platform, env = process.env) {
+  if (env.WANJI_HOME) return env.WANJI_HOME;
+  if (env.COMPUTER_MCP_HOME) return env.COMPUTER_MCP_HOME;
+  if (platform === 'win32') {
+    return path.join(env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'computer-mcp');
   }
-  return path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'computer-mcp');
+  if (platform === 'darwin') {
+    return path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'wanji');
+  }
+  return path.join(env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'computer-mcp');
 }
 
 export const configPath = () => path.join(homeDir(), 'config.json');

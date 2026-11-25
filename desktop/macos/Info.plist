@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleExecutable</key><string>wanji-desktop-control</string>
+  <key>CFBundleIdentifier</key><string>com.wanji.desktop-control</string>
+  <key>CFBundleName</key><string>Wanji Desktop Control</string>
+  <key>CFBundleDisplayName</key><string>Wanji Desktop Control</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>12.3</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>LSUIElement</key><true/>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSScreenCaptureUsageDescription</key><string>Wanji reads the visible desktop so the AI can describe the screen and confirm actions.</string>
+  <key>NSAccessibilityUsageDescription</key><string>Wanji reads accessible control labels and operates the controls you ask it to use.</string>
+</dict>
+</plist>

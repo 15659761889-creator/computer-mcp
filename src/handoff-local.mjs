@@ -1,8 +1,8 @@
 import { aiBrowserHandoff, aiBrowserRunning, browserInstalled, isAiBrowserHandle } from './browser.mjs';
 import { callDesktop, desktopSupported } from './desktop.mjs';
 
-// The phone's browser takeover on this computer: Windows browser windows through desktop control,
-// and the AI's own headless browser (negative handles) through Playwright.
+// The phone's browser takeover on this computer: native Windows/macOS browser windows through desktop control,
+// and the AI's own browser (negative handles) through Playwright.
 const desktop = (method, args) => callDesktop(method, args).catch((err) => ({ text: err.message, isError: true }));
 
 export async function localHandoff(method, args = {}) {

@@ -21,6 +21,9 @@ import { loadVapid, vapidPath } from './web-push.mjs';
 import {
   installLinuxAutostart, linuxAutostartState, removeLinuxAutostart, startLinuxService, stopLinuxService,
 } from './autostart-linux.mjs';
+import {
+  installMacAutostart, macAutostartState, removeMacAutostart, startMacService, stopMacService,
+} from './autostart-macos.mjs';
 
 const IS_WINDOWS = process.platform === 'win32';
 // COMPUTER_MCP_TASK lets a test install next to the real service without touching it.
@@ -372,6 +375,7 @@ export function writeLauncher(node = process.execPath) {
 export function installAutostart({ limited: asked = false, node, stopFirst = false } = {}) {
   const limited = asked || process.env.COMPUTER_MCP_AUTOSTART === 'limited' || (IS_WINDOWS && !isAdminUser());
   if (process.platform === 'linux') return installLinuxAutostart();
+  if (process.platform === 'darwin') return installMacAutostart({ node });
   if (!IS_WINDOWS) {
     return { installed: false, note: 'Automatic start is not built for this system yet; run `wanji run` from your service manager.' };
   }
@@ -409,6 +413,7 @@ Register-ScheduledTask -TaskName ${TASK} -Action $action -Trigger $trigger -Prin
 
 export function startService() {
   if (process.platform === 'linux') return startLinuxService();
+  if (process.platform === 'darwin') return startMacService();
   if (!IS_WINDOWS) throw new Error('on this system start it with: wanji run');
   const result = powershell(`Start-ScheduledTask -TaskName ${TASK}`);
   if (result.status !== 0) throw new Error(`could not start the task: ${result.stderr.trim()}`);
@@ -436,6 +441,7 @@ export async function stopService() {
   if (IS_WINDOWS) powershell(`Stop-ScheduledTask -TaskName ${TASK} -ErrorAction SilentlyContinue`);
   // Stopped through systemd first, or Restart=always would bring it straight back.
   if (process.platform === 'linux') stopLinuxService();
+  if (process.platform === 'darwin') stopMacService();
   const config = loadConfig();
   if (config) await askToStop(config);
   const state = readState();
@@ -453,6 +459,7 @@ export async function stopService() {
 // Returns false if the task is still registered (e.g. the prompt was declined).
 export function removeAutostart() {
   if (process.platform === 'linux') return removeLinuxAutostart();
+  if (process.platform === 'darwin') return removeMacAutostart();
   if (!IS_WINDOWS) return true;
   const launcher = path.join(homeDir(), 'launcher.vbs');
   const script = `${stopTaskScript(launcher)}
@@ -469,6 +476,7 @@ Unregister-ScheduledTask -TaskName ${TASK} -Confirm:$false -ErrorAction Silently
 
 export function autostartState() {
   if (process.platform === 'linux') return linuxAutostartState();
+  if (process.platform === 'darwin') return macAutostartState();
   if (!IS_WINDOWS) return 'not supported';
   const result = powershell(`(Get-ScheduledTask -TaskName ${TASK} -ErrorAction SilentlyContinue | ForEach-Object { "$($_.State), run level $($_.Principal.RunLevel)" })`);
   return result.stdout.trim() || 'not installed';

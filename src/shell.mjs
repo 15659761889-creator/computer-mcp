@@ -15,7 +15,7 @@ export const DEFAULT_WAIT_SECS = 60;
 export const MAX_WAIT_SECS = 90;
 
 export function workDir() {
-  const dir = path.join(os.tmpdir(), 'computer-mcp');
+  const dir = path.join(os.tmpdir(), process.platform === 'darwin' ? 'wanji' : 'computer-mcp');
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
