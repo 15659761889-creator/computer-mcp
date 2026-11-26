@@ -13,7 +13,7 @@ MACOS="$CONTENTS/MacOS"
 mkdir -p "$MACOS"
 TMP="$MACOS/wanji-desktop-control.new.$$"
 trap 'rm -f "$TMP"' EXIT HUP INT TERM
-"$SWIFTC" -O -mmacosx-version-min=12.3 \
+"$SWIFTC" -O -target "$(uname -m)-apple-macosx12.3" \
   -framework AppKit \
   -framework ApplicationServices \
   -framework Vision \

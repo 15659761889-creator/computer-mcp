@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -203,7 +204,7 @@ export function installMacDesktop() {
   fs.mkdirSync(executableDir, { recursive: true });
   const binary = path.join(executableDir, 'wanji-desktop-control');
   const build = spawnSync(swiftc, [
-    '-O', '-mmacosx-version-min=12.3', '-framework', 'AppKit', '-framework', 'ApplicationServices',
+    '-O', '-target', `${os.machine()}-apple-macosx12.3`, '-framework', 'AppKit', '-framework', 'ApplicationServices',
     '-framework', 'Vision', '-framework', 'ScreenCaptureKit', '-framework', 'CoreGraphics', '-framework', 'ImageIO',
     '-o', binary, macHelperSource(),
   ], { encoding: 'utf8', timeout: 300000, maxBuffer: 8 * 1024 * 1024 });

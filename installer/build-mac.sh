@@ -12,8 +12,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="$(node -p "JSON.parse(require('fs').readFileSync('${ROOT}/package.json','utf8')).version")"
 ARCH="${ARCH:-$(uname -m)}"
 case "${ARCH}" in
-  arm64|aarch64) ARCH="arm64"; CF_ARCH="arm64" ;;
-  x86_64|x64|amd64) ARCH="x64"; CF_ARCH="amd64" ;;
+  arm64|aarch64) ARCH="arm64"; CF_ARCH="arm64"; SWIFT_ARCH="arm64" ;;
+  x86_64|x64|amd64) ARCH="x64"; CF_ARCH="amd64"; SWIFT_ARCH="x86_64" ;;
   *) echo "Unsupported ARCH: ${ARCH}" >&2; exit 1 ;;
 esac
 
@@ -61,7 +61,7 @@ echo "==> Building Wanji Desktop Control.app..."
 
 # 5. Compile native Swift menu-bar / status app
 echo "==> Compiling Wanji.app..."
-swiftc -O -target "${ARCH}-apple-macosx12.3" \
+swiftc -O -target "${SWIFT_ARCH}-apple-macosx12.3" \
   -framework Cocoa -framework ApplicationServices \
   "${ROOT}/installer/WanjiMac.swift" \
   -o "${APP_BUNDLE}/Contents/MacOS/Wanji"
