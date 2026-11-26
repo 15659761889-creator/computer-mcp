@@ -160,6 +160,47 @@ export async function installDesktop({ proxy } = {}) {
   console.log('Desktop control is ready.');
 }
 
+// The macOS installer ships a helper that CI built from this exact source (Contents/Resources/desktop next to app/).
+// Installing that copy means a Mac without Apple Command Line Tools still gets desktop control.
+const macBundledHelperAppPath = () => path.resolve(DESKTOP_DIR, '..', '..', 'desktop', 'Wanji Desktop Control.app');
+const MAC_PERMISSION_HINT = 'Grant Accessibility, Screen Recording and event-control permissions to “Wanji Desktop Control” when macOS asks, then restart the service (`wanji stop && wanji start`). A changed ad-hoc-signed helper may require macOS permissions to be approved again.';
+
+function swapInMacHelper(temporary, target) {
+  const backup = `${target}.old-${process.pid}`;
+  fs.rmSync(backup, { recursive: true, force: true });
+  if (fs.existsSync(target)) fs.renameSync(target, backup);
+  try {
+    fs.renameSync(temporary, target);
+    fs.rmSync(backup, { recursive: true, force: true });
+  } catch (err) {
+    if (fs.existsSync(backup) && !fs.existsSync(target)) fs.renameSync(backup, target);
+    fs.rmSync(temporary, { recursive: true, force: true });
+    throw err;
+  }
+}
+
+function installBundledMacHelper(buildHash) {
+  const bundled = macBundledHelperAppPath();
+  const stamp = macHelperBuildStamp(bundled);
+  if (!fs.existsSync(path.join(bundled, 'Contents', 'MacOS', 'wanji-desktop-control')) || !fs.existsSync(stamp)) return null;
+  if (fs.readFileSync(stamp, 'utf8').trim() !== buildHash) return null;
+  const check = (app) => spawnSync('codesign', ['--verify', '--deep', '--strict', app], { encoding: 'utf8', timeout: 30000 }).status === 0;
+  if (!check(bundled)) return null;
+  const target = macHelperAppPath();
+  const temporary = `${target}.new-${process.pid}`;
+  try {
+    fs.mkdirSync(macHelperDir(), { recursive: true });
+    fs.rmSync(temporary, { recursive: true, force: true });
+    fs.cpSync(bundled, temporary, { recursive: true, verbatimSymlinks: true });
+    if (!check(temporary)) throw new Error('signature check failed after copying');
+    swapInMacHelper(temporary, target);
+  } catch {
+    fs.rmSync(temporary, { recursive: true, force: true });
+    return null;
+  }
+  return target;
+}
+
 // macOS uses native Accessibility, CoreGraphics input/screen capture, and Vision OCR.
 // Build locally so the app is signed locally against this Mac's installed SDK and receives a stable bundle identity for macOS privacy permissions.
 export function installMacDesktop() {
@@ -189,6 +230,11 @@ export function installMacDesktop() {
       }
     }
   }
+  const prebuilt = installBundledMacHelper(buildHash);
+  if (prebuilt) {
+    console.log(`Installed the prebuilt macOS desktop helper that ships with Wanji. ${MAC_PERMISSION_HINT}`);
+    return prebuilt;
+  }
   const probe = spawnSync('xcrun', ['--find', 'swiftc'], { encoding: 'utf8', timeout: 15000 });
   const swiftc = probe.status === 0 ? probe.stdout.trim() : null;
   if (!swiftc) {
@@ -197,9 +243,7 @@ export function installMacDesktop() {
   fs.mkdirSync(macHelperDir(), { recursive: true });
   const target = macHelperAppPath();
   const temporary = `${target}.new-${process.pid}`;
-  const backup = `${target}.old-${process.pid}`;
   fs.rmSync(temporary, { recursive: true, force: true });
-  fs.rmSync(backup, { recursive: true, force: true });
   const executableDir = path.join(temporary, 'Contents', 'MacOS');
   fs.mkdirSync(executableDir, { recursive: true });
   const binary = path.join(executableDir, 'wanji-desktop-control');
@@ -230,16 +274,8 @@ export function installMacDesktop() {
     fs.rmSync(temporary, { recursive: true, force: true });
     throw new Error(`macOS desktop app signature verification failed: ${(verified.stderr || verified.stdout || '').trim().slice(-1000)}`);
   }
-  if (fs.existsSync(target)) fs.renameSync(target, backup);
-  try {
-    fs.renameSync(temporary, target);
-    fs.rmSync(backup, { recursive: true, force: true });
-  } catch (err) {
-    if (fs.existsSync(backup) && !fs.existsSync(target)) fs.renameSync(backup, target);
-    fs.rmSync(temporary, { recursive: true, force: true });
-    throw err;
-  }
-  console.log('macOS desktop app built. Grant Accessibility, Screen Recording and event-control permissions to “Wanji Desktop Control” when macOS asks, then restart the service (`wanji stop && wanji start`). A changed ad-hoc-signed helper may require macOS permissions to be approved again.');
+  swapInMacHelper(temporary, target);
+  console.log(`macOS desktop app built. ${MAC_PERMISSION_HINT}`);
   return target;
 }
 

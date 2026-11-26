@@ -92,6 +92,10 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+# Ad-hoc sign the bundle so its seal covers Info.plist and Resources (the nested helper app is already signed)
+codesign --force --sign - --identifier com.wanji.app "${APP_BUNDLE}"
+codesign --verify "${APP_BUNDLE}"
+
 # 6. CLI wrapper (/usr/local/bin/wanji) installed by .pkg postinstall
 cat > "${PKG_SCRIPTS}/postinstall" <<'POST'
 #!/bin/bash

@@ -52,6 +52,20 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
         run: bash installer/build-mac.sh
+      - name: Install the .pkg and check the installed app
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          sudo installer -pkg "dist/Wanji-$(node -p "require('./package.json').version")-macOS-${ARCH}.pkg" -target /
+          codesign --verify /Applications/Wanji.app
+          /Applications/Wanji.app/Contents/Resources/bin/cloudflared --version
+          export WANJI_HOME="$RUNNER_TEMP/wanji-home"
+          OUT=$(/usr/local/bin/wanji desktop 2>&1)
+          echo "$OUT"
+          echo "$OUT" | grep -q "prebuilt macOS desktop helper"
+          REPLY=$(printf '{"id":1,"method":"ping"}\n' | "$WANJI_HOME/desktop/Wanji Desktop Control.app/Contents/MacOS/wanji-desktop-control")
+          echo "$REPLY"
+          echo "$REPLY" | grep -q '"id":1'
       - name: Upload macOS installers
         if: matrix.os == 'macos-15' || matrix.os == 'macos-15-intel'
         uses: actions/upload-artifact@v4
