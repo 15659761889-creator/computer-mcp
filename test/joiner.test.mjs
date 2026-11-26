@@ -116,7 +116,7 @@ test('invite --cancel ignores case and unknown ids', async () => {
   assert.equal((await joinWith(invite.code, 'gone')).status, 403);
 });
 
-test('a desktop install that was cut off does not count as installed', async () => {
+test('a desktop install that was cut off does not count as installed', { skip: process.platform !== 'win32' && 'checks the Windows Python venv layout' }, async () => {
   const saved = { home: process.env.COMPUTER_MCP_HOME, python: process.env.COMPUTER_MCP_PYTHON };
   process.env.COMPUTER_MCP_HOME = path.join(dir, 'desktop-home');
   delete process.env.COMPUTER_MCP_PYTHON;
