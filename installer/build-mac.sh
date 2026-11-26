@@ -114,9 +114,21 @@ chmod 755 "${PKG_SCRIPTS}/postinstall"
 # 7. Build .pkg and .dmg
 PKG_OUT="${DIST}/Wanji-${VERSION}-macOS-${ARCH}.pkg"
 DMG_OUT="${DIST}/Wanji-${VERSION}-macOS-${ARCH}.dmg"
+# Make every bundle non-relocatable. Otherwise Installer may "upgrade" another copy of Wanji.app (or the
+# desktop helper) found elsewhere on the disk, such as the DMG, Downloads or a build folder, and leave /Applications empty.
+COMPONENT_PLIST="${STAGE}/components.plist"
+pkgbuild --analyze --root "${STAGE}/payload" "${COMPONENT_PLIST}" >/dev/null
+COMPONENT_COUNT=$(/usr/libexec/PlistBuddy -c "Print" "${COMPONENT_PLIST}" | grep -c "BundleIsRelocatable" || true)
+i=0
+while [ "$i" -lt "$COMPONENT_COUNT" ]; do
+  /usr/libexec/PlistBuddy -c "Set :$i:BundleIsRelocatable false" "${COMPONENT_PLIST}"
+  i=$((i + 1))
+done
+
 echo "==> Building ${PKG_OUT}..."
 pkgbuild \
   --root "${STAGE}/payload" \
+  --component-plist "${COMPONENT_PLIST}" \
   --scripts "${PKG_SCRIPTS}" \
   --identifier "com.wanji.pkg" \
   --version "${VERSION}" \
