@@ -41,17 +41,23 @@ test('batch: listed, runs real tools in parallel, each item audited', async () =
   const list = await (await fetch(`${base}/t/${TOKEN}/mcp`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }) })).json();
   assert.ok(list.result.tools.some((t) => t.name === 'batch'));
   const a = path.join(dir, 'a.txt');
+  const firstInterval = path.join(dir, 'first-interval.json');
+  const secondInterval = path.join(dir, 'second-interval.json');
   fs.writeFileSync(a, 'alpha\n');
-  const started = Date.now();
+  const timedCommand = (file, value) => (
+    `node -e "const fs=require('node:fs');const start=Date.now();setTimeout(()=>{fs.writeFileSync(process.argv[1],JSON.stringify({start,end:Date.now()}));console.log(${value})},1200)" "${file}"`
+  );
   const out = await call('batch', { calls: [
-    { tool: 'bash', args: { command: 'node -e "setTimeout(()=>console.log(1),800)"' } },
-    { tool: 'bash', args: { command: 'node -e "setTimeout(()=>console.log(2),800)"' } },
+    { tool: 'bash', args: { command: timedCommand(firstInterval, 1) } },
+    { tool: 'bash', args: { command: timedCommand(secondInterval, 2) } },
     { tool: 'read_file', args: { path: a } },
     { tool: 'grep', args: { pattern: 'alpha', path: dir } },
   ] });
   assert.equal(out.isError, false, out.text);
   assert.match(out.text, /^batch: 4 ok, 0 failed, 0 skipped/);
-  assert.ok(Date.now() - started < 2500, 'ran in parallel');
+  const first = JSON.parse(fs.readFileSync(firstInterval, 'utf8'));
+  const second = JSON.parse(fs.readFileSync(secondInterval, 'utf8'));
+  assert.ok(Math.max(first.start, second.start) < Math.min(first.end, second.end), 'real execution intervals overlapped');
   assert.match(out.text, /=== \[3\] read_file ok \d+ ms\n1\talpha/);
   const audit = fs.readFileSync(auditFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   assert.deepEqual(audit.slice(-4).map((e) => e.tool).sort(), ['bash', 'bash', 'grep', 'read_file']);

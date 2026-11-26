@@ -1164,6 +1164,13 @@ private class WanjiDesktop {
             let args = request["args"] as? [String: Any] ?? [:]
             let result: [String: Any]
             switch method {
+            case "permissions":
+                // TCC permissions belong to this signed helper app, not the menu-bar parent.
+                result = [
+                    "accessibility": AXIsProcessTrusted(),
+                    "screenRecording": CGPreflightScreenCaptureAccess(),
+                    "eventControl": CGPreflightPostEventAccess()
+                ]
             case "ping":
                 if let problem = accessibilityProblem() { result = ["text": problem, "isError": true] }
                 else { result = ["text": "ok", "elevated": false] }

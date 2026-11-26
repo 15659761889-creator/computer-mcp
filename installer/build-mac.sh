@@ -17,6 +17,15 @@ case "${ARCH}" in
   *) echo "Unsupported ARCH: ${ARCH}" >&2; exit 1 ;;
 esac
 
+APP_IDENTITY="${APPLE_APPLICATION_SIGNING_IDENTITY:--}"
+INSTALLER_IDENTITY="${APPLE_INSTALLER_SIGNING_IDENTITY:-}"
+NOTARY_PROFILE="${APPLE_NOTARY_PROFILE:-}"
+if [ -n "$NOTARY_PROFILE" ] && { [ "$APP_IDENTITY" = "-" ] || [ -z "$INSTALLER_IDENTITY" ]; }; then
+  echo "Notarization requires both APPLE_APPLICATION_SIGNING_IDENTITY and APPLE_INSTALLER_SIGNING_IDENTITY." >&2
+  exit 1
+fi
+export APPLE_APPLICATION_SIGNING_IDENTITY="$APP_IDENTITY"
+
 NODE_VERSION="24.21.0"
 CLOUDFLARED_VERSION="2026.10.7"
 STAGE="${ROOT}/build/mac-${ARCH}"
@@ -57,7 +66,7 @@ chmod 755 "${APP_BUNDLE}/Contents/Resources/bin/cloudflared"
 
 # 4. Build native Swift desktop control helper app (zero Python dependency)
 echo "==> Building Wanji Desktop Control.app..."
-"${ROOT}/scripts/build-macos-helper.sh" "${APP_BUNDLE}/Contents/Resources/desktop/Wanji Desktop Control.app"
+SWIFT_ARCH="${SWIFT_ARCH}" "${ROOT}/scripts/build-macos-helper.sh" "${APP_BUNDLE}/Contents/Resources/desktop/Wanji Desktop Control.app"
 
 # 5. Compile native Swift menu-bar / status app
 echo "==> Compiling Wanji.app..."
@@ -92,9 +101,15 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc sign the bundle so its seal covers Info.plist and Resources (the nested helper app is already signed)
-codesign --force --sign - --identifier com.wanji.app "${APP_BUNDLE}"
-codesign --verify "${APP_BUNDLE}"
+# Sign the outer app. Without a Developer ID, use an ad-hoc signature for local/CI testing.
+if [ "$APP_IDENTITY" = "-" ]; then
+  codesign --force --sign - --identifier com.wanji.app "${APP_BUNDLE}"
+else
+  codesign --force --options runtime --timestamp --sign "$APP_IDENTITY" "${APP_BUNDLE}/Contents/Resources/runtime/node"
+  codesign --force --options runtime --timestamp --sign "$APP_IDENTITY" "${APP_BUNDLE}/Contents/Resources/bin/cloudflared"
+  codesign --force --options runtime --timestamp --sign "$APP_IDENTITY" --identifier com.wanji.app "${APP_BUNDLE}"
+fi
+codesign --verify --deep --strict "${APP_BUNDLE}"
 
 # 6. CLI wrapper (/usr/local/bin/wanji) installed by .pkg postinstall
 cat > "${PKG_SCRIPTS}/postinstall" <<'POST'
@@ -114,6 +129,7 @@ chmod 755 "${PKG_SCRIPTS}/postinstall"
 # 7. Build .pkg and .dmg
 PKG_OUT="${DIST}/Wanji-${VERSION}-macOS-${ARCH}.pkg"
 DMG_OUT="${DIST}/Wanji-${VERSION}-macOS-${ARCH}.dmg"
+rm -f "${PKG_OUT}" "${DMG_OUT}"
 # Make every bundle non-relocatable. Otherwise Installer may "upgrade" another copy of Wanji.app (or the
 # desktop helper) found elsewhere on the disk, such as the DMG, Downloads or a build folder, and leave /Applications empty.
 COMPONENT_PLIST="${STAGE}/components.plist"
@@ -126,14 +142,28 @@ while [ "$i" -lt "$COMPONENT_COUNT" ]; do
 done
 
 echo "==> Building ${PKG_OUT}..."
-pkgbuild \
-  --root "${STAGE}/payload" \
-  --component-plist "${COMPONENT_PLIST}" \
-  --scripts "${PKG_SCRIPTS}" \
-  --identifier "com.wanji.pkg" \
-  --version "${VERSION}" \
-  --install-location "/" \
-  "${PKG_OUT}"
+if [ -n "$INSTALLER_IDENTITY" ]; then
+  PKG_UNSIGNED="${STAGE}/Wanji-${VERSION}-macOS-${ARCH}.unsigned.pkg"
+  pkgbuild \
+    --root "${STAGE}/payload" \
+    --component-plist "${COMPONENT_PLIST}" \
+    --scripts "${PKG_SCRIPTS}" \
+    --identifier "com.wanji.pkg" \
+    --version "${VERSION}" \
+    --install-location "/" \
+    "${PKG_UNSIGNED}"
+  productsign --sign "$INSTALLER_IDENTITY" "${PKG_UNSIGNED}" "${PKG_OUT}"
+  rm -f "${PKG_UNSIGNED}"
+else
+  pkgbuild \
+    --root "${STAGE}/payload" \
+    --component-plist "${COMPONENT_PLIST}" \
+    --scripts "${PKG_SCRIPTS}" \
+    --identifier "com.wanji.pkg" \
+    --version "${VERSION}" \
+    --install-location "/" \
+    "${PKG_OUT}"
+fi
 
 echo "==> Building ${DMG_OUT}..."
 DMG_SRC="${STAGE}/dmg"
@@ -141,6 +171,19 @@ mkdir -p "${DMG_SRC}"
 cp -R "${APP_BUNDLE}" "${DMG_SRC}/Wanji.app"
 cp "${PKG_OUT}" "${DMG_SRC}/"
 hdiutil create -volname "Wanji ${VERSION}" -srcfolder "${DMG_SRC}" -ov -format UDZO "${DMG_OUT}"
+
+if [ -n "$NOTARY_PROFILE" ]; then
+  echo "==> Submitting package for Apple notarization..."
+  xcrun notarytool submit "${PKG_OUT}" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "${PKG_OUT}"
+  echo "==> Submitting disk image for Apple notarization..."
+  xcrun notarytool submit "${DMG_OUT}" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "${DMG_OUT}"
+  xcrun stapler validate "${PKG_OUT}"
+  xcrun stapler validate "${DMG_OUT}"
+else
+  echo "WARNING: not notarized. Set APPLE_NOTARY_PROFILE and both Developer ID signing identities for public distribution."
+fi
 
 echo "DONE:"
 echo "  PKG: ${PKG_OUT}"

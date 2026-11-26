@@ -1,6 +1,6 @@
 # 万机
 
-Give any computer its own MCP link, so a model can control it. Requires Node.js >=20. On Windows, Python 3.10-3.13 is needed for desktop control. On macOS, native desktop control uses Accessibility, CoreGraphics and Vision; install Apple Command Line Tools (`xcode-select --install`) before running `wanji desktop`. Bash is optional: without Git for Windows the AI uses PowerShell, and `wanji shell bash` downloads Portable Git (about 60 MB, no administrator rights).
+Give any computer its own MCP link, so a model can control it. Requires Node.js >=20. On Windows, Python 3.10-3.13 is needed for desktop control. On macOS, native desktop control uses Accessibility, CoreGraphics and Vision. The release `.pkg` includes a prebuilt helper, so end users do not need Apple Command Line Tools; a source checkout without that bundled helper needs `xcode-select --install` before `wanji desktop` can compile it. Bash is optional: without Git for Windows the AI uses PowerShell, and `wanji shell bash` downloads Portable Git (about 60 MB, no administrator rights).
 
 ## Tools
 

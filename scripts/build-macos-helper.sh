@@ -14,7 +14,13 @@ MACOS="$CONTENTS/MacOS"
 mkdir -p "$MACOS"
 TMP="$MACOS/wanji-desktop-control.new.$$"
 trap 'rm -f "$TMP"' EXIT HUP INT TERM
-"$SWIFTC" -O -sdk "$SDK" -target "$(uname -m)-apple-macosx12.3" \
+TARGET_ARCH=${SWIFT_ARCH:-${ARCH:-$(uname -m)}}
+case "$TARGET_ARCH" in
+  arm64|aarch64) TARGET_ARCH="arm64" ;;
+  x86_64|x64|amd64) TARGET_ARCH="x86_64" ;;
+  *) echo "Unsupported SWIFT_ARCH: $TARGET_ARCH" >&2; exit 1 ;;
+esac
+"$SWIFTC" -O -sdk "$SDK" -target "${TARGET_ARCH}-apple-macosx12.3" \
   -framework AppKit \
   -framework ApplicationServices \
   -framework Vision \
@@ -29,7 +35,12 @@ BUILD_HASH=$({ cat "$ROOT/desktop/macos/helper.swift"; printf '\0'; cat "$ROOT/d
 printf '%s\n' "$BUILD_HASH" > "$CONTENTS/Resources/wanji-build.sha256"
 chmod 755 "$TMP"
 mv -f "$TMP" "$MACOS/wanji-desktop-control"
-codesign --force --deep --sign - --identifier com.wanji.desktop-control "$OUT"
+IDENTITY=${APPLE_APPLICATION_SIGNING_IDENTITY:--}
+if [ "$IDENTITY" = "-" ]; then
+  codesign --force --deep --sign - --identifier com.wanji.desktop-control "$OUT"
+else
+  codesign --force --deep --options runtime --timestamp --sign "$IDENTITY" --identifier com.wanji.desktop-control "$OUT"
+fi
 codesign --verify --deep --strict "$OUT"
 trap - EXIT HUP INT TERM
 printf 'Built %s\n' "$OUT"

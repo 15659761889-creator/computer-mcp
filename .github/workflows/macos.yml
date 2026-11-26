@@ -63,6 +63,12 @@ jobs:
           OUT=$(/usr/local/bin/wanji desktop 2>&1)
           echo "$OUT"
           echo "$OUT" | grep -q "prebuilt macOS desktop helper"
+          PERMISSIONS=$(/usr/local/bin/wanji desktop --permissions)
+          echo "$PERMISSIONS"
+          echo "$PERMISSIONS" | grep -q '"installed":true'
+          echo "$PERMISSIONS" | grep -q '"accessibility":'
+          echo "$PERMISSIONS" | grep -q '"screenRecording":'
+          echo "$PERMISSIONS" | grep -q '"eventControl":'
           REPLY=$(printf '{"id":1,"method":"ping"}\n' | "$WANJI_HOME/desktop/Wanji Desktop Control.app/Contents/MacOS/wanji-desktop-control")
           echo "$REPLY"
           echo "$REPLY" | grep -q '"id":1'

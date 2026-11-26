@@ -13,7 +13,7 @@ import {
   autostartState, installAppCopy, installAutostart, installRuntimeCopy, registerUninstallEntry, removeAutostart,
   removeUninstallEntry, runService, runtimeNodePath, startService, stopService, writeLauncher,
 } from './service.mjs';
-import { desktopInstalled, desktopSupported, installDesktop } from './desktop.mjs';
+import { desktopInstalled, desktopSupported, installDesktop, macDesktopPermissions } from './desktop.mjs';
 import { browserInstalled, installBrowser } from './browser.mjs';
 import { connectionParts, copyToClipboard, getQuickLink } from './link.mjs';
 import { defaultShell, findBash, saveShellChoice, shellChoice } from './shell.mjs';
@@ -568,8 +568,8 @@ async function finishJoin(existing, joined, flags, joinFile) {
   let desktopProblem = null;
   if (desktopSupported && !flags['no-desktop'] && (process.platform === 'darwin' || !desktopInstalled())) {
     say(
-      process.platform === 'darwin' ? '[4/4] 编译 macOS 原生桌面控制（需要 Apple Command Line Tools）...' : '[4/4] 安装桌面控制（看屏幕、点鼠标）：要下载约 500 MB，可能要几分钟，请不要关闭窗口...',
-      process.platform === 'darwin' ? 'Building native macOS desktop control...' : 'Installing desktop control...',
+      process.platform === 'darwin' ? '[4/4] 安装 macOS 原生桌面控制...' : '[4/4] 安装桌面控制（看屏幕、点鼠标）：要下载约 500 MB，可能要几分钟，请不要关闭窗口...',
+      process.platform === 'darwin' ? 'Installing native macOS desktop control...' : 'Installing desktop control...',
     );
     try {
       await installDesktop({ proxy });
@@ -1244,7 +1244,11 @@ export async function main(argv) {
       if (parsed.flags.exe) return inviteExeCommand(parsed.flags);
       if (parsed.flags.file) return inviteFileCommand(parsed.flags);
       const invite = await hubApi('invites', { method: 'POST' });
-      console.log(`Pairing code, valid for 10 minutes, one use:\n\n  ${invite.pair}\n\nOn the new computer run: wanji join ${invite.pair}`);
+      if (parsed.flags.json) {
+        console.log(JSON.stringify({ pair: invite.pair, expiresIn: 600, reusable: false }));
+      } else {
+        console.log(`Pairing code, valid for 10 minutes, one use:\n\n  ${invite.pair}\n\nOn the new computer run: wanji join ${invite.pair}`);
+      }
       return undefined;
     }
     case 'join':
@@ -1281,6 +1285,10 @@ export async function main(argv) {
       await installBrowser({ proxy: parsed.flags.proxy === true ? undefined : parsed.flags.proxy || loadConfig()?.proxy });
       return undefined;
     case 'desktop':
+      if (parsed.flags.permissions) {
+        console.log(JSON.stringify(macDesktopPermissions()));
+        return undefined;
+      }
       await installDesktop({ proxy: parsed.flags.proxy === true ? undefined : parsed.flags.proxy || loadConfig()?.proxy });
       return undefined;
     case 'update':

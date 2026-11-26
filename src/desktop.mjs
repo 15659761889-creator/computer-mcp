@@ -38,6 +38,35 @@ export const desktopInstalled = () => {
     && (Boolean(process.env.COMPUTER_MCP_PYTHON) || !fs.existsSync(unfinishedMark()));
 };
 
+// Query TCC from the helper process itself. macOS permissions are associated with
+// the helper's code identity, not with Wanji.app or the Node.js parent process.
+export function macDesktopPermissions() {
+  if (!IS_MACOS) throw new Error('macOS desktop permissions are available only on macOS');
+  if (!desktopInstalled()) {
+    return { installed: false, accessibility: false, screenRecording: false, eventControl: false };
+  }
+  const result = spawnSync(macHelperPath(), [], {
+    input: `${JSON.stringify({ id: 1, method: 'permissions' })}\n`,
+    encoding: 'utf8',
+    timeout: 15000,
+    maxBuffer: 1024 * 1024,
+    env: process.env,
+  });
+  if (result.status !== 0) {
+    throw new Error(`could not query macOS desktop permissions: ${(result.stderr || result.stdout || '').trim().slice(-1000)}`);
+  }
+  const line = result.stdout.split(/\r?\n/).find((item) => item.trim());
+  let reply;
+  try { reply = JSON.parse(line || ''); } catch {
+    throw new Error('macOS desktop helper returned an invalid permissions response');
+  }
+  if (reply?.id !== 1 || !reply.result || typeof reply.result.accessibility !== 'boolean'
+      || typeof reply.result.screenRecording !== 'boolean' || typeof reply.result.eventControl !== 'boolean') {
+    throw new Error('macOS desktop helper returned an incomplete permissions response');
+  }
+  return { installed: true, ...reply.result };
+}
+
 // Prints the interpreter only for 64-bit x86: onnxruntime-directml has wheels for
 // win_amd64 alone, so an ARM64 or 32-bit Python could never install desktop control.
 const PYTHON_PROBE = "import sys,platform;print(sys.executable if sys.maxsize>2**32 and platform.machine() in ('AMD64','x86_64') else '')";

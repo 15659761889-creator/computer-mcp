@@ -1,11 +1,13 @@
 import Cocoa
-import ApplicationServices
 
 class WanjiAppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var statusMenuItem: NSMenuItem!
     var window: NSWindow?
     var logView: NSTextView?
+    var nameField: NSTextField!
+    var domainField: NSTextField!
+    var pairCodeField: NSTextField!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -81,18 +83,31 @@ class WanjiAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func refreshStatus() {
-        let ax = AXIsProcessTrusted() ? "辅助功能: 已授权" : "辅助功能: 未授权"
-        let sc = CGPreflightScreenCaptureAccess() ? "屏幕录制: 已授权" : "屏幕录制: 未授权"
-        runWanji(["status"]) { [weak self] code, out in
-            let line = code == 0 ? (out.components(separatedBy: "\n").first ?? "运行中") : "未运行"
-            self?.statusMenuItem.title = "\(line) | \(ax) | \(sc)"
+        // Query the native helper: macOS TCC status is per helper identity, not this app.
+        runWanji(["desktop", "--permissions"]) { [weak self] _, output in
+            let data = Data(output.utf8)
+            let permissions = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            let installed = permissions?["installed"] as? Bool ?? false
+            let ax = installed
+                ? ((permissions?["accessibility"] as? Bool ?? false) ? "辅助功能: 已授权" : "辅助功能: 未授权")
+                : "桌面控制: 未初始化"
+            let sc = installed
+                ? ((permissions?["screenRecording"] as? Bool ?? false) ? "屏幕录制: 已授权" : "屏幕录制: 未授权")
+                : "屏幕录制: 未检查"
+            let events = installed
+                ? ((permissions?["eventControl"] as? Bool ?? false) ? "输入控制: 已授权" : "输入控制: 未授权")
+                : "输入控制: 未检查"
+            self?.runWanji(["status"]) { [weak self] code, out in
+                let line = code == 0 ? (out.components(separatedBy: "\n").first ?? "运行中") : "未运行"
+                self?.statusMenuItem.title = "\(line) | \(ax) | \(sc) | \(events)"
+            }
         }
     }
 
     @objc func openWindow() {
         if window == nil {
             let w = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 560, height: 400),
+                contentRect: NSRect(x: 0, y: 0, width: 640, height: 640),
                 styleMask: [.titled, .closable, .miniaturizable],
                 backing: .buffered,
                 defer: false
@@ -101,34 +116,86 @@ class WanjiAppDelegate: NSObject, NSApplicationDelegate {
             w.title = "万机 Wanji (macOS 主电脑)"
 
             let content = NSView(frame: w.contentView!.bounds)
-            let scroll = NSScrollView(frame: NSRect(x: 16, y: 60, width: 528, height: 320))
+
+            let heading = NSTextField(labelWithString: "首次配置向导")
+            heading.font = NSFont.boldSystemFont(ofSize: 16)
+            heading.frame = NSRect(x: 18, y: 600, width: 580, height: 24)
+            content.addSubview(heading)
+
+            let nameLabel = NSTextField(labelWithString: "电脑名称")
+            nameLabel.frame = NSRect(x: 18, y: 566, width: 124, height: 24)
+            content.addSubview(nameLabel)
+            nameField = NSTextField(string: ProcessInfo.processInfo.hostName.lowercased()
+                .replacingOccurrences(of: "[^a-z0-9-]+", with: "-", options: .regularExpression)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "-")))
+            nameField.placeholderString = "例如 macbook-pro"
+            nameField.frame = NSRect(x: 150, y: 562, width: 472, height: 28)
+            content.addSubview(nameField)
+
+            let domainLabel = NSTextField(labelWithString: "Cloudflare 域名")
+            domainLabel.frame = NSRect(x: 18, y: 528, width: 124, height: 24)
+            content.addSubview(domainLabel)
+            domainField = NSTextField(string: "")
+            domainField.placeholderString = "你自己管理的域名，例如 example.com"
+            domainField.frame = NSRect(x: 150, y: 524, width: 472, height: 28)
+            content.addSubview(domainField)
+
+            let btnSetup = NSButton(title: "设置为主电脑", target: self, action: #selector(setupMainComputer))
+            btnSetup.frame = NSRect(x: 150, y: 486, width: 150, height: 30)
+            content.addSubview(btnSetup)
+
+            let setupHint = NSTextField(wrappingLabelWithString: "需要你自己的 Cloudflare 域名。首次授权会打开浏览器，请登录并批准域名访问。")
+            setupHint.frame = NSRect(x: 18, y: 454, width: 604, height: 28)
+            content.addSubview(setupHint)
+
+            let pairLabel = NSTextField(labelWithString: "配对码")
+            pairLabel.frame = NSRect(x: 18, y: 420, width: 124, height: 24)
+            content.addSubview(pairLabel)
+            pairCodeField = NSTextField(string: "")
+            pairCodeField.placeholderString = "粘贴主电脑生成的 wanji invite 配对码或邀请链接"
+            pairCodeField.frame = NSRect(x: 150, y: 416, width: 472, height: 28)
+            content.addSubview(pairCodeField)
+
+            let btnJoin = NSButton(title: "加入已有主电脑", target: self, action: #selector(joinExistingComputer))
+            btnJoin.frame = NSRect(x: 150, y: 378, width: 150, height: 30)
+            content.addSubview(btnJoin)
+
+            let btnInvite = NSButton(title: "生成加入码并复制", target: self, action: #selector(createPairingCode))
+            btnInvite.frame = NSRect(x: 310, y: 378, width: 170, height: 30)
+            content.addSubview(btnInvite)
+
+            let logLabel = NSTextField(labelWithString: "运行日志")
+            logLabel.frame = NSRect(x: 18, y: 350, width: 580, height: 20)
+            content.addSubview(logLabel)
+
+            let scroll = NSScrollView(frame: NSRect(x: 16, y: 60, width: 608, height: 280))
             scroll.hasVerticalScroller = true
             let tv = NSTextView(frame: scroll.bounds)
             tv.isEditable = false
             tv.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-            tv.string = "欢迎使用 万机 Wanji macOS 版\n1. 在终端运行 `wanji setup <名称> --domain <域名>` 设为主电脑\n2. 授权「辅助功能」和「屏幕录制」以开启桌面控制\n"
+            tv.string = "欢迎使用 万机 Wanji macOS 版\n选择上面的主电脑设置或加入现有电脑，不需要手动打开终端。\n"
             scroll.documentView = tv
             content.addSubview(scroll)
             logView = tv
 
             let btnStart = NSButton(title: "启动服务", target: self, action: #selector(startService))
-            btnStart.frame = NSRect(x: 16, y: 16, width: 96, height: 32)
+            btnStart.frame = NSRect(x: 16, y: 16, width: 104, height: 32)
             content.addSubview(btnStart)
 
             let btnStop = NSButton(title: "停止服务", target: self, action: #selector(stopService))
-            btnStop.frame = NSRect(x: 120, y: 16, width: 96, height: 32)
+            btnStop.frame = NSRect(x: 126, y: 16, width: 104, height: 32)
             content.addSubview(btnStop)
 
             let btnDesktop = NSButton(title: "桌面控制", target: self, action: #selector(installDesktop))
-            btnDesktop.frame = NSRect(x: 224, y: 16, width: 96, height: 32)
+            btnDesktop.frame = NSRect(x: 236, y: 16, width: 104, height: 32)
             content.addSubview(btnDesktop)
 
             let btnPerm = NSButton(title: "权限设置", target: self, action: #selector(openAccessibility))
-            btnPerm.frame = NSRect(x: 328, y: 16, width: 96, height: 32)
+            btnPerm.frame = NSRect(x: 346, y: 16, width: 104, height: 32)
             content.addSubview(btnPerm)
 
             let btnCopy = NSButton(title: "复制连接", target: self, action: #selector(copyLink))
-            btnCopy.frame = NSRect(x: 432, y: 16, width: 112, height: 32)
+            btnCopy.frame = NSRect(x: 456, y: 16, width: 112, height: 32)
             content.addSubview(btnCopy)
 
             w.contentView = content
@@ -136,6 +203,56 @@ class WanjiAppDelegate: NSObject, NSApplicationDelegate {
         }
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func setupMainComputer() {
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let domain = domainField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !name.isEmpty, !domain.isEmpty else {
+            appendLog("请填写电脑名称和 Cloudflare 域名。")
+            return
+        }
+        appendLog("正在设置主电脑：\(name).\(domain)")
+        appendLog("如果这是首次 Cloudflare 授权，浏览器会打开；请完成登录和域名授权。")
+        runWanji(["setup", name, "--domain", domain]) { [weak self] code, out in
+            self?.appendLog(out.isEmpty ? (code == 0 ? "主电脑设置完成。" : "主电脑设置失败。") : out)
+            self?.refreshStatus()
+        }
+    }
+
+    @objc func joinExistingComputer() {
+        let code = pairCodeField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !code.isEmpty else {
+            appendLog("请粘贴主电脑生成的配对码或邀请链接。")
+            return
+        }
+        var args = ["join", code]
+        if !name.isEmpty { args += ["--name", name] }
+        appendLog("正在加入现有主电脑...")
+        runWanji(args) { [weak self] code, out in
+            self?.appendLog(out.isEmpty ? (code == 0 ? "加入完成。" : "加入失败。") : out)
+            self?.refreshStatus()
+        }
+    }
+
+    @objc func createPairingCode() {
+        appendLog("正在向主电脑申请一次性加入码...")
+        runWanji(["invite", "--json"]) { [weak self] code, out in
+            guard code == 0,
+                  let data = out.data(using: .utf8),
+                  let result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let pair = result["pair"] as? String,
+                  !pair.isEmpty else {
+                self?.appendLog(out.isEmpty ? "加入码生成失败，请确认主电脑服务已启动。" : out)
+                return
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(pair, forType: .string)
+            self?.appendLog("加入码已复制到剪贴板（10 分钟有效，仅可使用一次）：")
+            self?.appendLog(pair)
+            self?.appendLog("在另一台 Mac 的首次配置窗口粘贴此码，然后点击「加入已有主电脑」。")
+        }
     }
 
     @objc func startService() {
