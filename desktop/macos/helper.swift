@@ -42,13 +42,27 @@ private func axAttribute(_ element: AXUIElement, _ attribute: CFString) -> Any? 
     return value
 }
 
+private func axValue(_ value: Any?) -> AXValue? {
+    guard let value = value else { return nil }
+    let object = value as AnyObject
+    guard CFGetTypeID(object) == AXValueGetTypeID() else { return nil }
+    return (object as! AXValue)
+}
+
+private func axElement(_ value: Any?) -> AXUIElement? {
+    guard let value = value else { return nil }
+    let object = value as AnyObject
+    guard CFGetTypeID(object) == AXUIElementGetTypeID() else { return nil }
+    return (object as! AXUIElement)
+}
+
 private func axString(_ element: AXUIElement, _ attribute: CFString) -> String {
     (axAttribute(element, attribute) as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 }
 
 private func axRect(_ element: AXUIElement) -> CGRect? {
-    guard let position = axAttribute(element, kAXPositionAttribute as CFString) as? AXValue,
-          let size = axAttribute(element, kAXSizeAttribute as CFString) as? AXValue else { return nil }
+    guard let position = axValue(axAttribute(element, kAXPositionAttribute as CFString)),
+          let size = axValue(axAttribute(element, kAXSizeAttribute as CFString)) else { return nil }
     var point = CGPoint.zero
     var dimensions = CGSize.zero
     guard AXValueGetValue(position, .cgPoint, &point), AXValueGetValue(size, .cgSize, &dimensions) else { return nil }
@@ -272,7 +286,7 @@ private class WanjiDesktop {
             let pid = app.processIdentifier
             let axApp = AXUIElementCreateApplication(pid)
             var found = axAttribute(axApp, kAXWindowsAttribute as CFString) as? [AXUIElement] ?? []
-            if let focused = axAttribute(axApp, kAXFocusedWindowAttribute as CFString) as? AXUIElement {
+            if let focused = axElement(axAttribute(axApp, kAXFocusedWindowAttribute as CFString)) {
                 if let index = found.firstIndex(where: { CFEqual($0, focused) }), index != 0 {
                     let active = found.remove(at: index)
                     found.insert(active, at: 0)
@@ -543,7 +557,7 @@ private class WanjiDesktop {
             var copy = row
             copy["id"] = index + 1
             rows[index] = copy
-            if let handle = row["_handle"] as? AXUIElement { elementHandles[index + 1] = handle }
+            if let handle = axElement(row["_handle"]) { elementHandles[index + 1] = handle }
         }
         windowRecords = appWindows()
         snapshotNumber += 1
@@ -693,7 +707,7 @@ private class WanjiDesktop {
             "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97,
             "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111,
         ]
-        return codes[name.lower()]
+        return codes[name.lowercased()]
     }
 
     private func pressKeys(_ combo: String) throws {
@@ -919,11 +933,11 @@ private class WanjiDesktop {
                 if let display, window.rect.width >= display.width * 0.93 && window.rect.height >= display.height * 0.88 {
                     return "\"\(window.title)\" already fills its display"
                 }
-                if let zoom = axAttribute(window.element, kAXZoomButtonAttribute as CFString) as? AXUIElement,
+                if let zoom = axElement(axAttribute(window.element, kAXZoomButtonAttribute as CFString)),
                    AXUIElementPerformAction(zoom, kAXPressAction as CFString) == .success { return "maximized \"\(window.title)\"" }
                 throw HelperFailure(message: "this application does not expose a maximize control")
             default:
-                if let close = axAttribute(window.element, kAXCloseButtonAttribute as CFString) as? AXUIElement,
+                if let close = axElement(axAttribute(window.element, kAXCloseButtonAttribute as CFString)),
                    AXUIElementPerformAction(close, kAXPressAction as CFString) == .success { return "asked \"\(window.title)\" to close" }
                 throw HelperFailure(message: "this application does not expose a close control")
             }
@@ -1028,7 +1042,7 @@ private class WanjiDesktop {
 
     private func isFocusedWindow(_ window: WindowRecord) -> Bool {
         let app = AXUIElementCreateApplication(window.pid)
-        guard let focused = axAttribute(app, kAXFocusedWindowAttribute as CFString) as? AXUIElement else { return false }
+        guard let focused = axElement(axAttribute(app, kAXFocusedWindowAttribute as CFString)) else { return false }
         return CFEqual(focused, window.element)
     }
 
@@ -1190,7 +1204,7 @@ private extension CGRect {
     var midpoint: CGPoint { CGPoint(x: midX, y: midY) }
 }
 
-let desktop = WanjiDesktop()
+private let desktop = WanjiDesktop()
 while let line = readLine() {
     guard let bytes = line.data(using: .utf8),
           let request = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] else { continue }
