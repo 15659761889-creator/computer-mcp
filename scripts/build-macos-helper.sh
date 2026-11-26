@@ -8,12 +8,13 @@ if [ -z "$SWIFTC" ]; then
   echo "Swift compiler not found. Install Apple Command Line Tools: xcode-select --install" >&2
   exit 1
 fi
+SDK=$(xcrun --sdk macosx --show-sdk-path)
 CONTENTS="$OUT/Contents"
 MACOS="$CONTENTS/MacOS"
 mkdir -p "$MACOS"
 TMP="$MACOS/wanji-desktop-control.new.$$"
 trap 'rm -f "$TMP"' EXIT HUP INT TERM
-"$SWIFTC" -O -target "$(uname -m)-apple-macosx12.3" \
+"$SWIFTC" -O -sdk "$SDK" -target "$(uname -m)-apple-macosx12.3" \
   -framework AppKit \
   -framework ApplicationServices \
   -framework Vision \

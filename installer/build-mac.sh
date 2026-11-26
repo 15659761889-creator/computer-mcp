@@ -61,7 +61,7 @@ echo "==> Building Wanji Desktop Control.app..."
 
 # 5. Compile native Swift menu-bar / status app
 echo "==> Compiling Wanji.app..."
-swiftc -O -target "${SWIFT_ARCH}-apple-macosx12.3" \
+swiftc -O -sdk "$(xcrun --sdk macosx --show-sdk-path)" -target "${SWIFT_ARCH}-apple-macosx12.3" \
   -framework Cocoa -framework ApplicationServices \
   "${ROOT}/installer/WanjiMac.swift" \
   -o "${APP_BUNDLE}/Contents/MacOS/Wanji"

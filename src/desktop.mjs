@@ -203,8 +203,10 @@ export function installMacDesktop() {
   const executableDir = path.join(temporary, 'Contents', 'MacOS');
   fs.mkdirSync(executableDir, { recursive: true });
   const binary = path.join(executableDir, 'wanji-desktop-control');
+  const sdkProbe = spawnSync('xcrun', ['--sdk', 'macosx', '--show-sdk-path'], { encoding: 'utf8', timeout: 15000 });
+  const sdkArgs = sdkProbe.status === 0 && sdkProbe.stdout.trim() ? ['-sdk', sdkProbe.stdout.trim()] : [];
   const build = spawnSync(swiftc, [
-    '-O', '-target', `${os.machine()}-apple-macosx12.3`, '-framework', 'AppKit', '-framework', 'ApplicationServices',
+    ...sdkArgs, '-O', '-target', `${os.machine()}-apple-macosx12.3`, '-framework', 'AppKit', '-framework', 'ApplicationServices',
     '-framework', 'Vision', '-framework', 'ScreenCaptureKit', '-framework', 'CoreGraphics', '-framework', 'ImageIO',
     '-o', binary, macHelperSource(),
   ], { encoding: 'utf8', timeout: 300000, maxBuffer: 8 * 1024 * 1024 });
