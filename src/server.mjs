@@ -156,7 +156,7 @@ export function auditLogger(file) {
       size = 0;
     }
     size += Buffer.byteLength(line);
-    fs.appendFile(file, line, () => {});
+    try { fs.appendFileSync(file, line); } catch { /* auditing must never break a call */ }
   };
   // recent_calls reads the log back from here.
   log.file = file;
